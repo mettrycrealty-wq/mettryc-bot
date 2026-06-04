@@ -12,7 +12,7 @@ app = FastAPI()
 
 # Configuración inicial
 configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = GenerativeModel("gemini-1.5-flash")
+model = GenerativeModel("gemini-3.5-flash")
 
 @app.post("/webhook")
 async def handle_request(request: Request):
