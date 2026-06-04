@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI, Request, Header, HTTPException
 from google.generativeai import GenerativeModel, configure
 
-# Configurar logs para que veamos qué pasa en la consola de Render
+# Configurar logs para ver el flujo en la consola de Render
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,15 @@ async def handle_request(request: Request):
             logger.error("Intento de acceso con clave inválida")
             raise HTTPException(status_code=403, detail="Acceso denegado")
 
-        mensaje_cliente = data.get("query", "")
+        # Ajuste: El log mostró que el campo se llama 'message', no 'query'
+        mensaje_cliente = data.get("message", "")
         logger.info(f"Mensaje recibido: {mensaje_cliente}")
         
         # IA procesando
-        response = model.generate_content(f"Actúa como asesor de Mettryc Realty. Responde: {mensaje_cliente}")
+        response = model.generate_content(f"Actúa como asesor experto de Mettryc Realty. Responde de forma ejecutiva y profesional: {mensaje_cliente}")
         
+        # Ajuste: AutoResponder espera una lista de strings o una lista de objetos
+        # El formato {"replies": [texto]} es el más compatible con la app
         return {"replies": [response.text]}
     
     except Exception as e:
