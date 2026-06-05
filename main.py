@@ -21,15 +21,14 @@ cache = {
 }
 
 def obtener_inventario_desde_wasi():
-    # URI correcta según la documentación (sin barra al final)
-    url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}"
+    # Añadimos &take=100 para forzar a Wasi a enviar todo tu catálogo (hasta 100 propiedades)
+    url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take=100"
     
     try:
         response = requests.get(url)
         data = response.json()
         propiedades_limpias = []
         
-        # Magia de la documentación: Iteramos solo sobre las llaves numéricas de Wasi
         for key, value in data.items():
             if key.isdigit():
                 # Limpiamos las observaciones para no saturar a la IA
@@ -37,7 +36,7 @@ def obtener_inventario_desde_wasi():
                 
                 # Creamos un bloque de texto ultra-optimizado para Gemini
                 prop = (
-                    f"[ID: {value.get('id_property')}] {value.get('title')} | "
+                    f"-[ID: {value.get('id_property')}] {value.get('title')} | "
                     f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
                     f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
                     f"Área: {value.get('area')} m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
@@ -45,7 +44,9 @@ def obtener_inventario_desde_wasi():
                 )
                 propiedades_limpias.append(prop)
                 
-        # Unimos todo en un solo documento fácil de leer para la IA
+        # LOG PARA TI: Esto te dirá exactamente cuántas propiedades envió Wasi
+        logger.info(f"¡ÉXITO! Se han cargado {len(propiedades_limpias)} propiedades de Wasi.")
+        
         return "\n".join(propiedades_limpias)
         
     except Exception as e:
@@ -58,7 +59,7 @@ def obtener_inventario():
         logger.info("Actualizando caché de Wasi (cada 24h)...")
         inventario_nuevo = obtener_inventario_desde_wasi()
         
-        if inventario_nuevo: # Solo actualizamos si Wasi devolvió datos
+        if inventario_nuevo: 
             cache["inventario_texto"] = inventario_nuevo
             cache["ultima_actualizacion"] = datetime.now()
             
@@ -84,12 +85,13 @@ async def handle_request(request: Request):
         AQUÍ ESTÁ TU INVENTARIO EXACTO Y ACTUALIZADO:
         {inventario}
         
-        REGLAS DE ORO:
-        1. El cliente pide: "{mensaje_cliente}"
-        2. Busca en el inventario de arriba las propiedades que mejor coincidan (por zona o precio).
-        3. NO INVENTES PROPIEDADES. NO CRUCES PRECIOS DE OTRAS PROPIEDADES. Responde estrictamente con la información proporcionada en el inventario.
-        4. Si no hay una propiedad que encaje perfectamente, ofrécele la alternativa más cercana que tengamos.
-        5. Siempre menciona el [ID] y la Ciudad de la propiedad para generar confianza.
+        REGLAS DE ORO ESTRICTAS:
+        1. LEE TODO EL INVENTARIO antes de responder.
+        2. El cliente pide: "{mensaje_cliente}"
+        3. Busca detalladamente propiedades que coincidan en CIUDAD, ZONA o PRECIO.
+        4. Si encuentras una coincidencia, ofrécela mencionando su [ID].
+        5. Si no hay NINGUNA propiedad que coincida exactamente con la ciudad o zona solicitada, DEBES DECIRLO CLARAMENTE: "No tengo propiedades en esa zona exacta, pero te ofrezco esta excelente alternativa..." y ofreces otra de la lista.
+        6. NO repitas la misma propiedad si el cliente pide otra zona.
         """
         
         response = model.generate_content(prompt)
