@@ -42,7 +42,7 @@ def obtener_inventario_desde_wasi():
                     
                     id_prop = value.get('id_property')
                     # RECUERDA CAMBIAR "tudominio.com" POR TU WEB REAL
-                    enlace_web = value.get('url', f"https://www.tudominio.com/propiedad/{value.get('id_property')}")
+                    enlace_web = f"https://www.mettryc.com/s?match={id_prop}"
                     
                     prop = (
                         f"-[ID: {id_prop}] {value.get('title')} | "
