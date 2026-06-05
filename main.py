@@ -9,57 +9,48 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Configuración
 configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = GenerativeModel("gemini-3.5-flash")
 
-# Tus credenciales de Wasi
-WASI_COMPANY_ID = "3966678"
-WASI_TOKEN = "uKfp_v0xp_QH5h_m3OI"
-
 def obtener_inventario():
-    # URL oficial de Wasi para listar propiedades
-    url = f"https://api.wasi.co/v1/properties/?wasi_token={WASI_TOKEN}&id_company={WASI_COMPANY_ID}"
+    # URL estructurada con los parámetros correctos para Wasi
+    url = f"https://api.wasi.co/v1/properties/?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}"
     try:
         response = requests.get(url)
-        if response.status_code == 200:
-            return response.json().get('result', [])
+        data = response.json()
+        
+        # LOG de diagnóstico: veremos qué devuelve Wasi realmente
+        logger.info(f"Respuesta cruda de Wasi: {data}")
+        
+        # La estructura típica de Wasi suele ser data['result']
+        if 'result' in data:
+            return data['result']
         return []
     except Exception as e:
-        logger.error(f"Error conectando a Wasi: {e}")
+        logger.error(f"Error técnico conectando a Wasi: {e}")
         return []
 
 @app.post("/webhook")
 async def handle_request(request: Request):
     try:
         data = await request.json()
-        
-        # Validar clave de agente
-        api_key = request.headers.get("x-api-key")
-        if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
-            raise HTTPException(status_code=403, detail="Acceso denegado")
-
         mensaje_cliente = data.get("message", "") or data.get("query", "")
         
-        # Consultar inventario
+        # Obtenemos inventario y lo convertimos a texto para la IA
         inventario = obtener_inventario()
+        inventario_texto = str(inventario)[:5000] # Limitamos para no exceder el prompt
         
-        # Prompt potenciado con tu inventario real
         prompt = f"""
         Eres el asistente premium de Mettryc Realty. 
-        Aquí tienes el inventario actual de propiedades: {inventario}.
+        Inventario disponible (JSON): {inventario_texto}
         
-        Consulta del cliente: {mensaje_cliente}
-        
-        Instrucciones:
-        1. Responde de forma ejecutiva.
-        2. Si la consulta coincide con una propiedad del inventario, ofrece los detalles (precio, ubicación, descripción).
-        3. Invita siempre a una visita en Valencia, Carabobo o Barquisimeto según corresponda.
+        Si el inventario está vacío, menciona que estamos actualizando nuestro catálogo. 
+        Si hay propiedades, busca la que mejor encaje con la petición: {mensaje_cliente}
         """
         
         response = model.generate_content(prompt)
         return {"replies": [{"message": response.text}]}
     
     except Exception as e:
-        logger.error(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error procesando: {e}")
+        return {"replies": [{"message": "Estamos ajustando los detalles técnicos del catálogo. ¿Podrías intentar en un momento?"}]}
