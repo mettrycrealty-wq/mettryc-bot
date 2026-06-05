@@ -11,7 +11,7 @@ app = FastAPI()
 
 # Configuración inicial
 configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = GenerativeModel("gemini-3.5-flash")
+model = GenerativeModel("gemini-2.5-flash-lite")
 
 def obtener_inventario():
     # Endpoint correcto según la API de Wasi para búsqueda
