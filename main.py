@@ -1,7 +1,7 @@
 import os
 import requests
 import logging
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from google.generativeai import GenerativeModel, configure
 
 logging.basicConfig(level=logging.INFO)
@@ -9,23 +9,27 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+# Configuración inicial
 configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = GenerativeModel("gemini-3.5-flash")
 
 def obtener_inventario():
-    # URL estructurada con los parámetros correctos para Wasi
-    url = f"https://api.wasi.co/v1/properties/?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}"
+    # Endpoint correcto según la API de Wasi para búsqueda
+    wasi_token = os.getenv('WASI_TOKEN')
+    company_id = os.getenv('WASI_COMPANY_ID')
+    url = f"https://api.wasi.co/v1/property/search/?wasi_token={wasi_token}&id_company={company_id}"
+    
     try:
         response = requests.get(url)
-        data = response.json()
+        # Log del estado para diagnóstico
+        logger.info(f"Estado respuesta Wasi: {response.status_code}")
         
-        # LOG de diagnóstico: veremos qué devuelve Wasi realmente
-        logger.info(f"Respuesta cruda de Wasi: {data}")
-        
-        # La estructura típica de Wasi suele ser data['result']
-        if 'result' in data:
-            return data['result']
-        return []
+        if response.status_code == 200:
+            data = response.json()
+            return data
+        else:
+            logger.error(f"Error Wasi: {response.text}")
+            return []
     except Exception as e:
         logger.error(f"Error técnico conectando a Wasi: {e}")
         return []
@@ -36,16 +40,23 @@ async def handle_request(request: Request):
         data = await request.json()
         mensaje_cliente = data.get("message", "") or data.get("query", "")
         
-        # Obtenemos inventario y lo convertimos a texto para la IA
+        # Validación de seguridad
+        api_key = request.headers.get("x-api-key")
+        if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
+            raise HTTPException(status_code=403, detail="Acceso denegado")
+        
+        # Obtenemos inventario
         inventario = obtener_inventario()
-        inventario_texto = str(inventario)[:5000] # Limitamos para no exceder el prompt
+        inventario_texto = str(inventario)[:5000] 
         
         prompt = f"""
-        Eres el asistente premium de Mettryc Realty. 
-        Inventario disponible (JSON): {inventario_texto}
+        Eres el asistente ejecutivo de Mettryc Realty. 
+        Inventario disponible: {inventario_texto}
         
-        Si el inventario está vacío, menciona que estamos actualizando nuestro catálogo. 
-        Si hay propiedades, busca la que mejor encaje con la petición: {mensaje_cliente}
+        Consulta del cliente: {mensaje_cliente}
+        
+        Instrucciones: Analiza el inventario y responde con los detalles de las propiedades que coincidan. 
+        Sé profesional y busca siempre cerrar la cita.
         """
         
         response = model.generate_content(prompt)
@@ -53,4 +64,4 @@ async def handle_request(request: Request):
     
     except Exception as e:
         logger.error(f"Error procesando: {e}")
-        return {"replies": [{"message": "Estamos ajustando los detalles técnicos del catálogo. ¿Podrías intentar en un momento?"}]}
+        return {"replies": [{"message": "Estamos ajustando los detalles del catálogo. Por favor, intenta de nuevo."}]}
