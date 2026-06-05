@@ -21,42 +21,54 @@ cache = {
 }
 
 def obtener_inventario_desde_wasi():
-    # Añadimos &take=100 para forzar a Wasi a enviar todo tu catálogo (hasta 100 propiedades)
-    url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take=100"
+    propiedades_limpias = []
+    take = 100
+    skip = 0
     
-    try:
-        response = requests.get(url)
-        data = response.json()
-        propiedades_limpias = []
+    # Bucle infinito que solo se detiene cuando descarga todas las propiedades
+    while True:
+        url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
         
-        for key, value in data.items():
-            if key.isdigit():
-                # Limpiamos las observaciones para no saturar a la IA
-                obs = str(value.get('observations', ''))[:150].replace('\n', ' ')
+        try:
+            response = requests.get(url)
+            data = response.json()
+            
+            contador_pagina = 0
+            
+            for key, value in data.items():
+                if key.isdigit():
+                    contador_pagina += 1
+                    obs = str(value.get('observations', ''))[:150].replace('\n', ' ')
+                    
+                    prop = (
+                        f"-[ID: {value.get('id_property')}] {value.get('title')} | "
+                        f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
+                        f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
+                        f"Área: {value.get('area')} m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                        f"Detalles: {obs}"
+                    )
+                    propiedades_limpias.append(prop)
+            
+            logger.info(f"Descargando bloque de {contador_pagina} propiedades (Skip: {skip})...")
+            
+            # Si la página trajo menos de 100, significa que ya llegamos al final del catálogo
+            if contador_pagina < take:
+                break
                 
-                # Creamos un bloque de texto ultra-optimizado para Gemini
-                prop = (
-                    f"-[ID: {value.get('id_property')}] {value.get('title')} | "
-                    f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
-                    f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
-                    f"Área: {value.get('area')} m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
-                    f"Detalles: {obs}"
-                )
-                propiedades_limpias.append(prop)
-                
-        # LOG PARA TI: Esto te dirá exactamente cuántas propiedades envió Wasi
-        logger.info(f"¡ÉXITO! Se han cargado {len(propiedades_limpias)} propiedades de Wasi.")
-        
-        return "\n".join(propiedades_limpias)
-        
-    except Exception as e:
-        logger.error(f"Error procesando Wasi: {e}")
-        return ""
+            # Si trajo 100, sumamos 100 al 'skip' para ir a la siguiente página en el próximo ciclo
+            skip += take
+            
+        except Exception as e:
+            logger.error(f"Error procesando Wasi en skip {skip}: {e}")
+            break
+            
+    logger.info(f"¡ÉXITO TOTAL! Se ha cargado el inventario COMPLETO: {len(propiedades_limpias)} propiedades.")
+    return "\n".join(propiedades_limpias)
 
 def obtener_inventario():
     # Caché estricto de 24 horas
     if datetime.now() - cache["ultima_actualizacion"] > timedelta(hours=24):
-        logger.info("Actualizando caché de Wasi (cada 24h)...")
+        logger.info("Actualizando caché COMPLETO de Wasi (cada 24h)...")
         inventario_nuevo = obtener_inventario_desde_wasi()
         
         if inventario_nuevo: 
@@ -78,11 +90,10 @@ async def handle_request(request: Request):
         mensaje_cliente = data.get("message", "") or data.get("query", "")
         inventario = obtener_inventario()
         
-        # Prompt estructurado a prueba de errores
         prompt = f"""
         Eres el Broker Inmobiliario de Mettryc Realty.
         
-        AQUÍ ESTÁ TU INVENTARIO EXACTO Y ACTUALIZADO:
+        AQUÍ ESTÁ TU INVENTARIO COMPLETO Y ACTUALIZADO:
         {inventario}
         
         REGLAS DE ORO ESTRICTAS:
