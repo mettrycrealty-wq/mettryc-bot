@@ -12,33 +12,57 @@ app = FastAPI()
 
 # Configuración
 configure(api_key=os.getenv("GEMINI_API_KEY"))
-# Cambiado al modelo solicitado
 model = GenerativeModel("gemini-2.5-flash-lite")
 
-# Sistema de Caché Global
+# Sistema de Caché 24h
 cache = {
-    "inventario": [],
+    "inventario_texto": "",
     "ultima_actualizacion": datetime.min
 }
 
 def obtener_inventario_desde_wasi():
-    url = f"https://api.wasi.co/v1/property/search/?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}"
+    # URI correcta según la documentación (sin barra al final)
+    url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}"
+    
     try:
         response = requests.get(url)
-        if response.status_code == 200:
-            return response.json().get('result', [])
-        return []
+        data = response.json()
+        propiedades_limpias = []
+        
+        # Magia de la documentación: Iteramos solo sobre las llaves numéricas de Wasi
+        for key, value in data.items():
+            if key.isdigit():
+                # Limpiamos las observaciones para no saturar a la IA
+                obs = str(value.get('observations', ''))[:150].replace('\n', ' ')
+                
+                # Creamos un bloque de texto ultra-optimizado para Gemini
+                prop = (
+                    f"[ID: {value.get('id_property')}] {value.get('title')} | "
+                    f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
+                    f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
+                    f"Área: {value.get('area')} m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                    f"Detalles: {obs}"
+                )
+                propiedades_limpias.append(prop)
+                
+        # Unimos todo en un solo documento fácil de leer para la IA
+        return "\n".join(propiedades_limpias)
+        
     except Exception as e:
-        logger.error(f"Error conectando a Wasi: {e}")
-        return []
+        logger.error(f"Error procesando Wasi: {e}")
+        return ""
 
 def obtener_inventario():
-    # Si han pasado más de 24 horas o el caché está vacío, actualizamos
+    # Caché estricto de 24 horas
     if datetime.now() - cache["ultima_actualizacion"] > timedelta(hours=24):
-        logger.info("Actualizando inventario desde Wasi...")
-        cache["inventario"] = obtener_inventario_desde_wasi()
-        cache["ultima_actualizacion"] = datetime.now()
-    return cache["inventario"]
+        logger.info("Actualizando caché de Wasi (cada 24h)...")
+        inventario_nuevo = obtener_inventario_desde_wasi()
+        
+        if inventario_nuevo: # Solo actualizamos si Wasi devolvió datos
+            cache["inventario_texto"] = inventario_nuevo
+            cache["ultima_actualizacion"] = datetime.now()
+            
+    return cache["inventario_texto"]
 
 @app.post("/webhook")
 async def handle_request(request: Request):
@@ -46,34 +70,31 @@ async def handle_request(request: Request):
         data = await request.json()
         api_key = request.headers.get("x-api-key")
         
-        # Validación de seguridad
+        # Validar agentes
         if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
             raise HTTPException(status_code=403, detail="Acceso denegado")
 
         mensaje_cliente = data.get("message", "") or data.get("query", "")
         inventario = obtener_inventario()
         
-        # Convertimos solo lo necesario a texto para no saturar la IA
-        inventario_texto = str(inventario)
-        
+        # Prompt estructurado a prueba de errores
         prompt = f"""
-        Eres el asistente ejecutivo de Mettryc Realty.
+        Eres el Broker Inmobiliario de Mettryc Realty.
         
-        INVENTARIO (Base de datos oficial):
-        {inventario_texto}
+        AQUÍ ESTÁ TU INVENTARIO EXACTO Y ACTUALIZADO:
+        {inventario}
         
-        REGLAS INQUEBRANTABLES:
-        1. Analiza el inventario y responde basándote ÚNICAMENTE en estos datos.
-        2. Si no hay coincidencia exacta con lo que pide el usuario, NO inventes propiedades. Sé honesto y ofrece alternativas reales presentes en el inventario.
-        3. Indica siempre el nombre o ID de la propiedad que sugieres.
-        4. Mantén un tono profesional y enfocado en concretar la cita.
-        
-        Consulta del usuario: {mensaje_cliente}
+        REGLAS DE ORO:
+        1. El cliente pide: "{mensaje_cliente}"
+        2. Busca en el inventario de arriba las propiedades que mejor coincidan (por zona o precio).
+        3. NO INVENTES PROPIEDADES. NO CRUCES PRECIOS DE OTRAS PROPIEDADES. Responde estrictamente con la información proporcionada en el inventario.
+        4. Si no hay una propiedad que encaje perfectamente, ofrécele la alternativa más cercana que tengamos.
+        5. Siempre menciona el [ID] y la Ciudad de la propiedad para generar confianza.
         """
         
         response = model.generate_content(prompt)
         return {"replies": [{"message": response.text}]}
     
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return {"replies": [{"message": "Estamos ajustando los detalles técnicos del catálogo. Intenta en un momento."}]}
+        logger.error(f"Error general: {e}")
+        return {"replies": [{"message": "Estamos consultando nuestra base de datos, por favor intenta nuevamente en unos segundos."}]}
