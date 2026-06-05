@@ -40,8 +40,8 @@ def obtener_inventario_desde_wasi():
                 if key.isdigit():
                     contador_pagina += 1
                     
-                    # AQUÍ ESTÁ EL ENLACE (PUNTO 1) - CAMBIA EL DOMINIO POR EL TUYO
                     id_prop = value.get('id_property')
+                    # RECUERDA CAMBIAR "tudominio.com" POR TU WEB REAL
                     enlace_web = f"https://www.mettryc.com/s?match={id_prop}"
                     
                     prop = (
@@ -80,12 +80,23 @@ async def handle_request(request: Request):
         if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
             raise HTTPException(status_code=403, detail="Acceso denegado")
 
-        # Capturamos el remitente (teléfono) y el mensaje
-        sender = data.get("sender", "cliente_general")
-        mensaje_cliente = data.get("message", "") or data.get("query", "")
+        # --- CORRECCIÓN CRÍTICA PARA AUTORESPONDER ---
+        # Extraemos el payload dependiendo de cómo lo envíe la app
+        payload = data.get("query") if isinstance(data.get("query"), dict) else data
+        
+        sender = payload.get("sender", "cliente_general")
+        mensaje_cliente = payload.get("message", "")
+        
+        # Obligamos a que el mensaje sea siempre texto puro para no romper Gemini
+        if not isinstance(mensaje_cliente, str):
+            mensaje_cliente = str(mensaje_cliente)
+            
+        if not mensaje_cliente.strip():
+            return {"replies": []} # Ignorar mensajes vacíos
+        # ---------------------------------------------
+
         inventario = obtener_inventario()
         
-        # Inicializamos la memoria para este cliente si es nuevo (PUNTO 2)
         if sender not in memoria_conversaciones:
             memoria_conversaciones[sender] = []
         
@@ -106,19 +117,18 @@ async def handle_request(request: Request):
         EL CLIENTE DICE AHORA: "{mensaje_cliente}"
         """
         
-        # Preparamos el historial para Gemini
+        # Preparamos el historial limpio para Gemini
         historial_api = list(memoria_conversaciones[sender])
         historial_api.append({"role": "user", "parts": [prompt_sistema]})
         
-        # Llamada a la IA con historial
+        # Llamada a la IA
         response = model.generate_content(historial_api)
         respuesta_bot = response.text
         
-        # Guardamos en la memoria la interacción (solo el mensaje, sin el inventario)
+        # Guardamos en la memoria SOLO el texto (para evitar el error de diccionario)
         memoria_conversaciones[sender].append({"role": "user", "parts": [mensaje_cliente]})
         memoria_conversaciones[sender].append({"role": "model", "parts": [respuesta_bot]})
         
-        # Mantenemos solo los últimos 20 mensajes (10 tuyos, 10 del bot)
         if len(memoria_conversaciones[sender]) > 20:
             memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
             
@@ -126,4 +136,4 @@ async def handle_request(request: Request):
     
     except Exception as e:
         logger.error(f"Error general: {e}")
-        return {"replies": [{"message": "Estamos consultando nuestra base de datos, por favor intenta nuevamente en unos segundos."}]}
+        return {"replies": [{"message": "Estamos consultando nuestra base de datos, por favor intenta nuevamente."}]}
