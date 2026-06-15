@@ -8,6 +8,9 @@ from google.generativeai import GenerativeModel, configure
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Dentro del bucle for key, value in data.items():
+logger.info(f"Propiedad {value.get('id_property')} - ID Agente: {value.get('id_agent')}")
+
 app = FastAPI()
 
 # Configuración
