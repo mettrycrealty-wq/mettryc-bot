@@ -3,19 +3,16 @@ import requests
 import logging
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
-from google.generativeai import GenerativeModel, configure
+# Nueva librería oficial
+from google import genai 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Dentro del bucle for key, value in data.items():
-logger.info(f"Propiedad {value.get('id_property')} - ID Agente: {value.get('id_agent')}")
-
 app = FastAPI()
 
-# Configuración
-configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = GenerativeModel("gemini-2.5-flash-lite")
+# Configuración con la nueva librería
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Sistema de Caché 24h
 cache = {
@@ -23,7 +20,7 @@ cache = {
     "ultima_actualizacion": datetime.min
 }
 
-# MEMORIA TEMPORAL: Guardará las conversaciones por número de teléfono
+# MEMORIA TEMPORAL
 memoria_conversaciones = {}
 
 def obtener_inventario_desde_wasi():
@@ -42,9 +39,11 @@ def obtener_inventario_desde_wasi():
             for key, value in data.items():
                 if key.isdigit():
                     contador_pagina += 1
-                    
                     id_prop = value.get('id_property')
-                    # RECUERDA CAMBIAR "tudominio.com" POR TU WEB REAL
+                    
+                    # Log dentro del bucle, donde value existe
+                    logger.info(f"Procesando ID: {id_prop} - Agente: {value.get('id_agent')}")
+                    
                     enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
                     
                     prop = (
@@ -83,52 +82,41 @@ async def handle_request(request: Request):
         if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
             raise HTTPException(status_code=403, detail="Acceso denegado")
 
-        # --- CORRECCIÓN CRÍTICA PARA AUTORESPONDER ---
-        # Extraemos el payload dependiendo de cómo lo envíe la app
         payload = data.get("query") if isinstance(data.get("query"), dict) else data
-        
         sender = payload.get("sender", "cliente_general")
-        mensaje_cliente = payload.get("message", "")
-        
-        # Obligamos a que el mensaje sea siempre texto puro para no romper Gemini
-        if not isinstance(mensaje_cliente, str):
-            mensaje_cliente = str(mensaje_cliente)
+        mensaje_cliente = str(payload.get("message", ""))
             
         if not mensaje_cliente.strip():
-            return {"replies": []} # Ignorar mensajes vacíos
-        # ---------------------------------------------
+            return {"replies": []}
 
         inventario = obtener_inventario()
         
         if sender not in memoria_conversaciones:
             memoria_conversaciones[sender] = []
         
-        # PROMPT ULTRA-ESTRICTO
         prompt_sistema = f"""
         Eres un Broker Inmobiliario de Mettryc Realty altamente eficiente.
-        
-        INVENTARIO DISPONIBLE (Única fuente de verdad):
+        INVENTARIO DISPONIBLE:
         {inventario}
         
-        REGLAS DE ORO (NO NEGOCIABLES):
-        1. RESPUESTAS CORTAS Y PRECISAS: No saludes en exceso. Da una breve introducción y lista las propiedades. Cada propiedad debe tener sus características principales en 1-2 líneas y su "Enlace" al final.
-        2. EXACTAMENTE 3 OPCIONES: Si el cliente pide propiedades, ofrécele las 3 que mejor coincidan al 80%. Si hay menos de 3 que cumplan, ofrece las que haya, pero NUNCA ofrezcas más de 3.
-        3. RESTRICCIÓN DE ZONA ABSOLUTA: Si el cliente indica una zona o ciudad, SOLO busca allí. Si no tienes propiedades en esa zona específica, responde CORTÉSMENTE que no hay disponibilidad en esa área por el momento y termina la respuesta. NO ofrezcas propiedades de otras zonas.
-        4. CERO ALUCINACIONES: Tienes PROHIBIDO inventar información, precios o propiedades que no estén en el texto del INVENTARIO DISPONIBLE.
-        5. MEMORIA: Recuerda el contexto de nuestros mensajes anteriores.
+        REGLAS:
+        1. RESPUESTAS CORTAS: Lista propiedades con características en 1-2 líneas y enlace.
+        2. MÁXIMO 3 OPCIONES.
+        3. RESTRICCIÓN DE ZONA ABSOLUTA: Si pide una zona, busca solo allí. Si no hay, sé honesto y no inventes.
+        4. CERO ALUCINACIONES: No inventes precios ni datos.
         
-        EL CLIENTE DICE AHORA: "{mensaje_cliente}"
+        EL CLIENTE DICE: "{mensaje_cliente}"
         """
         
-        # Preparamos el historial limpio para Gemini
-        historial_api = list(memoria_conversaciones[sender])
-        historial_api.append({"role": "user", "parts": [prompt_sistema]})
+        # Nueva sintaxis de Google GenAI
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt_sistema
+        )
         
-        # Llamada a la IA
-        response = model.generate_content(historial_api)
         respuesta_bot = response.text
         
-        # Guardamos en la memoria SOLO el texto (para evitar el error de diccionario)
+        # Gestión de memoria simple
         memoria_conversaciones[sender].append({"role": "user", "parts": [mensaje_cliente]})
         memoria_conversaciones[sender].append({"role": "model", "parts": [respuesta_bot]})
         
@@ -139,4 +127,4 @@ async def handle_request(request: Request):
     
     except Exception as e:
         logger.error(f"Error general: {e}")
-        return {"replies": [{"message": "Estamos consultando nuestra base de datos, por favor intenta nuevamente."}]}
+        return {"replies": [{"message": "Estamos ajustando los detalles del catálogo."}]}
