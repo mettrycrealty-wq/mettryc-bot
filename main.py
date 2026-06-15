@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Sistema de Caché Original
+# Sistema de Caché en Servidor (Almacena el catálogo por 24 horas)
 cache = {
     "inventario_texto": "",
     "ultima_actualizacion": datetime.min
@@ -18,35 +18,50 @@ cache = {
 # MEMORIA TEMPORAL: Guardará las conversaciones por número de teléfono
 memoria_conversaciones = {}
 
-# ELIGE TU MODELO AQUÍ (Puedes cambiarlo cuando quieras)
+# MODELO DE OPENROUTER (Te sugiero DeepSeek para empezar)
 MODELO_OPENROUTER = "deepseek/deepseek-chat" 
-# Alternativas: "meta-llama/llama-3.3-70b-instruct" o "google/gemini-2.0-flash-001"
 
 def obtener_inventario_desde_wasi():
-    url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}"
     propiedades_limpias = []
+    take = 100
+    skip = 0
     
-    try:
-        response = requests.get(url)
-        data = response.json()
+    logger.info("Iniciando descarga completa del inventario desde Wasi...")
+    
+    while True:
+        url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
         
-        for key, value in data.items():
-            if key.isdigit():
-                id_prop = value.get('id_property')
-                enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
-                
-                prop = (
-                    f"-[ID: {id_prop}] {value.get('title')} | "
-                    f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
-                    f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
-                    f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
-                    f"Enlace: {enlace_web}"
-                )
-                propiedades_limpias.append(prop)
-                
-    except Exception as e:
-        logger.error(f"Error procesando Wasi: {e}")
-        
+        try:
+            response = requests.get(url)
+            data = response.json()
+            contador_pagina = 0
+            
+            for key, value in data.items():
+                if key.isdigit():
+                    contador_pagina += 1
+                    id_prop = value.get('id_property')
+                    enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
+                    
+                    prop = (
+                        f"-[ID: {id_prop}] {value.get('title')} | "
+                        f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
+                        f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
+                        f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                        f"Enlace: {enlace_web}"
+                    )
+                    propiedades_limpias.append(prop)
+            
+            # Si la página trajo menos de 100, terminamos el bucle
+            if contador_pagina < take:
+                break
+            
+            skip += take
+            
+        except Exception as e:
+            logger.error(f"Error paginando Wasi en skip {skip}: {e}")
+            break
+            
+    logger.info(f"¡Éxito! Se almacenaron {len(propiedades_limpias)} propiedades en la copia del servidor.")
     return "\n".join(propiedades_limpias)
 
 def obtener_inventario():
@@ -55,9 +70,9 @@ def obtener_inventario():
         if inventario_nuevo: 
             cache["inventario_texto"] = inventario_nuevo
             cache["ultima_actualizacion"] = datetime.now()
+            logger.info("Copia del servidor actualizada por las próximas 24 horas.")
     return cache["inventario_texto"]
 
-# --- NUEVO MOTOR: OPENROUTER ---
 def consultar_ia(mensajes):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -108,21 +123,18 @@ async def handle_request(request: Request):
         {inventario}
         
         REGLAS DE ORO (NO NEGOCIABLES):
-        1. RESPUESTAS CORTAS Y PRECISAS: Lista las propiedades (1-2 líneas c/u) con su enlace al final.
+        1. RESPUESTAS CORTAS Y PRECISAS: Lista las propiedades (1-2 líneas c/u) con su enlace al final. Manten los enlaces crudos, NO construyas enlaces Markdown ni HTML.
         2. EXACTAMENTE 3 OPCIONES MÁXIMO que coincidan al 80%.
         3. RESTRICCIÓN DE ZONA ABSOLUTA: Busca SOLO en la zona/ciudad pedida. Si no hay, dilo amablemente y no ofrezcas de otras zonas.
         4. CERO ALUCINACIONES: Prohibido inventar propiedades o precios.
         """
         
-        # Estructura de mensajes para OpenRouter (Formato Universal OpenAI)
         historial_api = [{"role": "system", "content": prompt_sistema}]
         historial_api.extend(memoria_conversaciones[sender])
         historial_api.append({"role": "user", "content": mensaje_cliente})
         
-        # Llamada a la IA
         respuesta_bot = consultar_ia(historial_api)
         
-        # Guardamos memoria
         memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
         memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
         
