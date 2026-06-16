@@ -79,7 +79,6 @@ def obtener_inventario():
     return cache["inventario_texto"]
 
 def obtener_agentes_desde_sheet():
-    # Usaremos una variable específica para el sheet de asignación
     sheet_id = os.getenv("GOOGLE_SHEET_TURNOS_ID") 
     if not sheet_id:
         logger.warning("GOOGLE_SHEET_TURNOS_ID no configurada. Omitiendo descarga de agentes.")
@@ -106,7 +105,7 @@ def obtener_agentes_desde_sheet():
                     lista_nueva.append({
                         "nombre": row[0].strip(),
                         "correo": row[1].strip(),
-                        "telegram_id": row[2].strip() if len(row) >= 3 else "" # Captura la 3ra columna
+                        "telegram_id": row[2].strip() if len(row) >= 3 else "" 
                     })
             
             if lista_nueva:
@@ -179,4 +178,79 @@ def consultar_ia(mensajes):
         return respuesta.json()['choices'][0]['message']['content']
     except Exception as e:
         logger.error(f"Error OpenRouter: {e}")
-        return "Estamos experiment
+        return "Estamos experimentando alta demanda, intenta en un momento."
+
+@app.post("/webhook")
+async def handle_request(request: Request):
+    try:
+        data = await request.json()
+        api_key = request.headers.get("x-api-key")
+        
+        if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
+            raise HTTPException(status_code=403, detail="Acceso denegado")
+
+        payload = data.get("query") if isinstance(data.get("query"), dict) else data
+        sender = payload.get("sender", "cliente_general")
+        mensaje_cliente = str(payload.get("message", ""))
+            
+        if not mensaje_cliente.strip():
+            return {"replies": []}
+
+        inventario = obtener_inventario()
+        
+        if sender not in memoria_conversaciones:
+            memoria_conversaciones[sender] = []
+        
+        prompt_sistema = f"""
+        Eres un Broker Inmobiliario de Mettryc Realty altamente eficiente.
+        
+        INVENTARIO DISPONIBLE:
+        {inventario}
+        
+        REGLAS DE ORO:
+        1. RESPUESTAS CORTAS Y PRECISAS. Máximo 3 opciones con enlace crudo.
+        2. RESTRICCIÓN DE ZONA ABSOLUTA.
+        3. CERO ALUCINACIONES.
+        
+        4. ESTRATEGIA DE CAPTURA DE LEADS (OBLIGATORIA):
+        Si el cliente demuestra interés en comprar/visitar/saber más de un inmueble, pausa la venta y pide amablemente sus datos de contacto UNO A UNO:
+        - Primero solicítale su Nombre Completo.
+        - Cuando te dé el nombre, solicítale su Correo Electrónico.
+        
+        En el mensaje exacto donde el cliente ya te haya entregado Nombre y Correo, OBLIGATORIAMENTE incluye esta etiqueta al final de tu texto:
+        ###LEAD_CAPTURED###Nombre: [Nombre del cliente] | Correo: [Correo] | Interés: [Lo que busca]###
+        """
+        
+        historial_api = [{"role": "system", "content": prompt_sistema}]
+        historial_api.extend(memoria_conversaciones[sender])
+        historial_api.append({"role": "user", "content": mensaje_cliente})
+        
+        respuesta_bot = consultar_ia(historial_api)
+        
+        if "###LEAD_CAPTURED###" in respuesta_bot:
+            try:
+                partes = respuesta_bot.split("###LEAD_CAPTURED###")
+                texto_cliente = partes[0].strip()
+                datos_lead_raw = partes[1].replace("###", "").strip()
+                
+                agente = asignar_agente_round_robin()
+                
+                if agente:
+                    enviar_notificacion_agente(agente, sender, datos_lead_raw)
+                    texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido notificado y se comunicará contigo de inmediato."
+                
+                respuesta_bot = texto_cliente
+            except Exception as e:
+                logger.error(f"Error procesando lead: {e}")
+        
+        memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
+        memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
+        
+        if len(memoria_conversaciones[sender]) > 20:
+            memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
+            
+        return {"replies": [{"message": respuesta_bot}]}
+    
+    except Exception as e:
+        logger.error(f"Error general: {e}")
+        return {"replies": [{"message": "Estamos procesando tu solicitud, por favor intenta nuevamente."}]}
