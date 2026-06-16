@@ -23,7 +23,7 @@ agentes_cache = {
 }
 
 memoria_conversaciones = {}
-clientes_procesados = set() # NUEVO: Candado para evitar doble asignación
+clientes_procesados = set() 
 MODELO_OPENROUTER = "deepseek/deepseek-chat"
 
 def obtener_inventario_desde_wasi():
@@ -49,7 +49,6 @@ def obtener_inventario_desde_wasi():
                     if isinstance(value, dict) and key.isdigit():
                         contador_pagina += 1
                         id_prop = value.get('id_property')
-                        # Mettryc correction rule applied: raw links only
                         enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
                         
                         prop = (
@@ -63,7 +62,6 @@ def obtener_inventario_desde_wasi():
                 
                 exito_pagina = True
                 if contador_pagina < take:
-                    logger.info("Se alcanzó el final del inventario de Wasi.")
                     return "\n".join(propiedades_limpias)
                 
                 skip += take
@@ -71,17 +69,13 @@ def obtener_inventario_desde_wasi():
                 
             except Exception as e:
                 intentos += 1
-                logger.warning(f"Intento {intentos} fallido en skip {skip}: {e}. Esperando 5 segundos...")
                 time.sleep(5)
         
         if not exito_pagina:
-            logger.error(f"Se agotaron los reintentos en skip {skip}. Continuando con lo obtenido.")
             break
-            
         if skip >= max_propiedades:
             break
             
-    logger.info(f"¡Éxito! Se almacenaron {len(propiedades_limpias)} propiedades.")
     return "\n".join(propiedades_limpias)
 
 def obtener_inventario():
@@ -95,19 +89,15 @@ def obtener_inventario():
 def obtener_agentes_desde_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
     if not script_url:
-        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
         return agentes_cache["lista"]
 
     if datetime.now() - agentes_cache["ultima_actualizacion"] > timedelta(hours=1) or not agentes_cache["lista"]:
         try:
-            logger.info("Conectando con Google Apps Script para actualizar agentes...")
             response = requests.get(script_url, timeout=15)
             lista_nueva = response.json()
-            
             if isinstance(lista_nueva, list) and len(lista_nueva) > 0:
                 agentes_cache["lista"] = lista_nueva
                 agentes_cache["ultima_actualizacion"] = datetime.now()
-                logger.info(f"✅ Sincronizados {len(lista_nueva)} agentes.")
         except Exception as e:
             logger.error(f"Error cargando agentes: {e}")
             
@@ -134,21 +124,17 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
-    # 1. Notificar al Agente
     if telegram_token and agente_id:
         try:
             msg_agente = f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}"
             requests.post(url_tg, json={"chat_id": agente_id, "text": msg_agente, "parse_mode": "Markdown"}, timeout=5)
-            logger.info(f"Notificación enviada al agente: {agente['nombre']}")
         except Exception as e:
             logger.error(f"Error enviando Telegram al agente: {e}")
             
-    # 2. Notificar al Admin
     if telegram_token and admin_id:
         try:
             msg_admin = f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}"
             requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=5)
-            logger.info("Notificación de copia enviada al administrador.")
         except Exception as e:
             logger.error(f"Error enviando Telegram al admin: {e}")
 
@@ -166,6 +152,9 @@ async def handle_request(request: Request):
         if not mensaje_cliente.strip():
             return {"replies": []}
 
+        # LÍNEA DE DIAGNÓSTICO: Veremos exactamente qué llega al servidor
+        logger.info(f"--- DIAGNÓSTICO WEBHOOK: Sender recibido = {sender} ---")
+
         inventario = obtener_inventario()
         
         if sender not in memoria_conversaciones:
@@ -177,28 +166,27 @@ async def handle_request(request: Request):
             requisitos_lead = "su Nombre Completo y su Correo Electrónico"
             etiqueta_lead = "###LEAD_CAPTURED###Nombre: [Valor real] | Correo: [Valor real] | Interés: [Inmueble buscado]###"
         else:
-            requisitos_lead = "su Nombre Completo, su Correo Electrónico y que te confirme su Número de WhatsApp (con su código de país, ej: +58...)"
+            requisitos_lead = "su Nombre Completo, su Correo Electrónico y que te confirme OBLIGATORIAMENTE su Número de WhatsApp (con su código de país, ej: +58...)"
             etiqueta_lead = "###LEAD_CAPTURED###Nombre: [Valor real] | Correo: [Valor real] | Telefono: [Número Confirmado] | Interés: [Inmueble buscado]###"
 
         prompt_sistema = f"""
         Eres un Broker Inmobiliario experto de Mettryc Realty.
-        
         INVENTARIO DISPONIBLE DE LA EMPRESA:
         {inventario}
         
         REGLAS DE ATENCIÓN:
-        1. Al inicio de la conversación y durante las consultas, sé amable, muestra las opciones y responde con textos cortos. Siempre proporciona el enlace crudo de la propiedad sin modificaciones. NO pidas ningún dato de entrada.
+        1. Al inicio de la conversación y durante las consultas, sé amable, muestra las opciones y responde de forma breve. Siempre proporciona el enlace crudo de la propiedad sin modificaciones. NO pidas ningún dato de entrada.
         2. Mantén un flujo de venta natural.
         
         ESTRATEGIA DE ASIGNACIÓN (SÚPER CRÍTICA):
-        Solo cuando el cliente decida avanzar (quiera agendar una visita o pedir más detalles específicos), dile que para asignarle un especialista requieres sus datos. En ese momento pídele: {requisitos_lead}.
+        Solo cuando el cliente decida avanzar (visita o detalles específicos), pídele: {requisitos_lead}.
         
-        ESPERA A QUE EL CLIENTE RESPONDA CON LOS DATOS.
+        ESPERA A QUE EL CLIENTE RESPONDA CON LOS DATOS REALES.
         
-        ÚNICAMENTE CUANDO EL CLIENTE YA TE HAYA DADO SUS DATOS REALES (NO ANTES), escribe OBLIGATORIAMENTE esta estructura exacta al final de tu mensaje usando la información que el cliente te acaba de dar:
+        ÚNICAMENTE CUANDO EL CLIENTE YA TE HAYA DADO SUS DATOS REALES (NO ANTES), escribe esta estructura exacta al final de tu mensaje:
         {etiqueta_lead}
         
-        REGLA ANTI-ERRORES: NUNCA uses la etiqueta ###LEAD_CAPTURED### para pedir los datos. No la imprimas usando corchetes o texto genérico.
+        REGLA ANTI-ERRORES: Si el remitente es un nombre guardado, NO puedes generar la etiqueta ###LEAD_CAPTURED### hasta que el cliente escriba explícitamente su número de teléfono con dígitos en el chat.
         """
         
         historial_api = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender] + [{"role": "user", "content": mensaje_cliente}]
@@ -209,12 +197,11 @@ async def handle_request(request: Request):
         respuesta_bot = response.json()['choices'][0]['message']['content']
         
         if "###LEAD_CAPTURED###" in respuesta_bot:
-            # 1er Escudo: Verificamos si la IA alucinó y mandó los corchetes literales en lugar de datos
+            # 1er Escudo: Evitar textos genéricos o corchetes alucinados
             if "[Valor real]" in respuesta_bot or "[Número Confirmado]" in respuesta_bot or "[Nombre]" in respuesta_bot:
-                logger.warning(f"La IA intentó disparar un falso positivo para {sender}. Ignorando etiqueta prematura.")
+                logger.warning(f"La IA intentó disparar un falso positivo para {sender}. Ignorando etiqueta.")
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
             
-            # 2do Escudo: Verificamos que este cliente no haya sido asignado ya en esta sesión
             elif sender not in clientes_procesados:
                 try:
                     partes = respuesta_bot.split("###LEAD_CAPTURED###")
@@ -222,30 +209,39 @@ async def handle_request(request: Request):
                     datos_lead_raw = partes[1].replace("###", "").strip()
                     
                     telefono_final = sender
-                    if not es_numero_puro and "Telefono:" in datos_lead_raw:
+                    numero_encontrado_en_texto = False
+                    
+                    # Intentamos extraer el número escrito por el cliente
+                    if "Telefono:" in datos_lead_raw:
                         try:
                             sub_partes = datos_lead_raw.split("|")
                             for parte in sub_partes:
                                 if "Telefono:" in parte:
                                     num_extraido = parte.split(":")[1].strip()
                                     num_limpio = "".join([c for c in num_extraido if c.isdigit() or c == "+"])
-                                    if num_limpio: telefono_final = num_limpio
-                        except Exception as e:
-                            logger.error(f"Error procesando número interno: {e}")
+                                    if any(c.isdigit() for c in num_limpio):
+                                        telefono_final = num_limpio
+                                        numero_encontrado_en_texto = True
+                        except Exception:
+                            pass
 
-                    agente = asignar_agente_round_robin()
-                    if agente:
-                        enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
-                        texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
+                    # CANDADO ESTRICTO: Si el contacto está guardado con nombre, OBLIGATORIAMENTE necesitamos haber extraído números reales
+                    if not es_numero_puro and not numero_encontrado_en_texto:
+                        logger.warning(f"La IA intentó cerrar el lead para el contacto guardado '{sender}', pero NO recolectó el número telefónico real. Forzando solicitud.")
+                        # Modificamos la respuesta de la IA y anulamos la asignación temporalmente
+                        respuesta_bot = "¡Excelente! Ya tengo tu nombre y correo registrados para asignarte un asesor inmobiliario. Solo me faltaría que me confirmes, por favor, tu número de WhatsApp actual (con el código de tu país) para que el especialista asignado pueda abrir tu ficha y escribirte de inmediato."
+                    else:
+                        # Si todo está en orden, asignamos agente
+                        agente = asignar_agente_round_robin()
+                        if agente:
+                            enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
+                            texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
+                            clientes_procesados.add(sender)
+                        respuesta_bot = texto_cliente
                         
-                        # CIERRE DEL CANDADO: Registramos al cliente para no volver a notificar
-                        clientes_procesados.add(sender)
-                    
-                    respuesta_bot = texto_cliente
                 except Exception as e:
                     logger.error(f"Error procesando captura: {e}")
             else:
-                # 3er Escudo: Si ya fue procesado, quitamos la etiqueta sobrante para que el cliente no la vea en pantalla
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
         
         memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
