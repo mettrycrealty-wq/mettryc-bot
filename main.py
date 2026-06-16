@@ -1,473 +1,129 @@
 import os
-
-import csv
-
 import requests
-
 import logging
-
 import time
-
 from datetime import datetime, timedelta
-
 from fastapi import FastAPI, Request, HTTPException
 
-
-
 logging.basicConfig(level=logging.INFO)
-
 logger = logging.getLogger(__name__)
-
-
 
 app = FastAPI()
 
-
-
 # Sistemas de Caché
-
-cache = {
-
-    "inventario_texto": "",
-
-    "ultima_actualizacion": datetime.min
-
-}
-
-
-
-agentes_cache = {
-
-    "lista": [],
-
-    "ultimo_indice": -1,
-
-    "ultima_actualizacion": datetime.min
-
-}
-
-
-
+cache = {"inventario_texto": "", "ultima_actualizacion": datetime.min}
+agentes_cache = {"lista": [], "ultimo_indice": -1, "ultima_actualizacion": datetime.min}
 memoria_conversaciones = {}
-
 MODELO_OPENROUTER = "deepseek/deepseek-chat"
 
-
-
 def obtener_inventario_desde_wasi():
-
     propiedades_limpias = []
-
     take = 100
-
     skip = 0
-
     max_propiedades = 2000
-
-    
-
-    logger.info("Iniciando descarga completa del inventario desde Wasi...")
-
-    
-
     while True:
-
         url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
-
-        exito_pagina = False
-
-        intentos = 0
-
-        
-
-        # Sistema de reintentos: Hasta 3 intentos por página
-
-        while intentos < 3 and not exito_pagina:
-
-            try:
-
-                logger.info(f"Consultando Wasi (Propiedad {skip} a {skip + take})...")
-
-                # Timeout aumentado a 30s para mayor estabilidad
-
-                response = requests.get(url, timeout=30)
-
-                data = response.json()
-
-                
-
-                contador_pagina = 0
-
-                for key, value in data.items():
-
-                    if isinstance(value, dict) and key.isdigit():
-
-                        contador_pagina += 1
-
-                        id_prop = value.get('id_property')
-
-                        enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
-
-                        
-
-                        prop = (
-
-                            f"-[ID: {id_prop}] {value.get('title')} | "
-
-                            f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
-
-                            f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
-
-                            f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
-
-                            f"Enlace: {enlace_web}"
-
-                        )
-
-                        propiedades_limpias.append(prop)
-
-                
-
-                exito_pagina = True
-
-                
-
-                # Si trajo menos de 100, terminamos
-
-                if contador_pagina < take:
-
-                    return "\n".join(propiedades_limpias)
-
-                
-
-                skip += take
-
-                # Pausa de cortesía de 2 segundos para evitar bloqueos
-
-                time.sleep(2)
-
-                
-
-            except Exception as e:
-
-                intentos += 1
-
-                logger.warning(f"Intento {intentos} fallido en skip {skip}: {e}. Esperando 5 segundos...")
-
-                time.sleep(5)
-
-        
-
-        if not exito_pagina:
-
-            logger.error(f"Se agotaron los reintentos en skip {skip}. Continuando con lo obtenido.")
-
-            break
-
-            
-
-        if skip >= max_propiedades:
-
-            break
-
-            
-
-    logger.info(f"¡Éxito! Se almacenaron {len(propiedades_limpias)} propiedades.")
-
+        try:
+            response = requests.get(url, timeout=30)
+            data = response.json()
+            contador_pagina = 0
+            for key, value in data.items():
+                if isinstance(value, dict) and key.isdigit():
+                    contador_pagina += 1
+                    id_prop = value.get('id_property')
+                    enlace = f"https://www.mettryc.com/inmueble/{id_prop}"
+                    prop = f"-[ID: {id_prop}] {value.get('title')} | Ciudad: {value.get('city_label')} | Enlace: {enlace}"
+                    propiedades_limpias.append(prop)
+            if contador_pagina < take: break
+            skip += take
+            if skip >= max_propiedades: break
+            time.sleep(2)
+        except Exception: break
     return "\n".join(propiedades_limpias)
 
-
-
-def obtener_inventario():
-
-    if datetime.now() - cache["ultima_actualizacion"] > timedelta(hours=24):
-
-        inventario_nuevo = obtener_inventario_desde_wasi()
-
-        if inventario_nuevo: 
-
-            cache["inventario_texto"] = inventario_nuevo
-
-            cache["ultima_actualizacion"] = datetime.now()
-
-    return cache["inventario_texto"]
-
-
-
 def obtener_agentes_desde_sheet():
-
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
-
-    if not script_url:
-
-        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
-
-        return agentes_cache["lista"]
-
-
-
+    if not script_url: return agentes_cache["lista"]
     if datetime.now() - agentes_cache["ultima_actualizacion"] > timedelta(hours=1) or not agentes_cache["lista"]:
-
         try:
-
-            logger.info("Conectando con Google Apps Script para actualizar agentes...")
-
             response = requests.get(script_url, timeout=15)
-
-            lista_nueva = response.json()
-
-            
-
-            if isinstance(lista_nueva, list) and len(lista_nueva) > 0:
-
-                agentes_cache["lista"] = lista_nueva
-
-                agentes_cache["ultima_actualizacion"] = datetime.now()
-
-                logger.info(f"✅ Sincronizados {len(lista_nueva)} agentes.")
-
-        except Exception as e:
-
-            logger.error(f"Error cargando agentes: {e}")
-
-            
-
+            agentes_cache["lista"] = response.json()
+            agentes_cache["ultima_actualizacion"] = datetime.now()
+        except Exception as e: logger.error(f"Error cargando agentes: {e}")
     return agentes_cache["lista"]
 
-
-
 def asignar_agente_round_robin():
-
-    lista_agentes = obtener_agentes_desde_sheet()
-
-    if not lista_agentes:
-
-        return None
-
-        
-
-    agentes_cache["ultimo_indice"] += 1
-
-    if agentes_cache["ultimo_indice"] >= len(lista_agentes):
-
-        agentes_cache["ultimo_indice"] = 0
-
-        
-
-    return lista_agentes[agentes_cache["ultimo_indice"]]
-
-
+    lista = obtener_agentes_desde_sheet()
+    if not lista: return None
+    agentes_cache["ultimo_indice"] = (agentes_cache["ultimo_indice"] + 1) % len(lista)
+    return lista[agentes_cache["ultimo_indice"]]
 
 def enviar_notificaciones_telegram(agente, whatsapp_cliente, datos_lead):
-
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-
     admin_id = os.getenv("TELEGRAM_ADMIN_ID")
-
     agente_id = agente.get("telegram_id")
-
     
-
-    mensaje_base = f"🚨 *NUEVO LEAD ASIGNADO* 🚨\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar ahora:*\n[Abrir WhatsApp](https://wa.me/{whatsapp_cliente})"
-
+    # Si el cliente es un contacto guardado, whatsapp_cliente trae un nombre, usamos un aviso
+    # Nota: Si capturamos el número en la conversación, deberías actualizar whatsapp_cliente
+    link_wa = f"https://wa.me/{whatsapp_cliente}"
+    info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar:* {link_wa}"
     
-
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-
     
-
-    # 1. Notificar al Agente
-
     if telegram_token and agente_id:
-
         try:
-
-            msg_agente = f"Hola {agente['nombre']},\n\n" + mensaje_base
-
-            requests.post(url_tg, json={"chat_id": agente_id, "text": msg_agente, "parse_mode": "Markdown"}, timeout=5)
-
-            logger.info(f"Notificación enviada al agente: {agente['nombre']}")
-
-        except Exception as e:
-
-            logger.error(f"Error enviando Telegram al agente: {e}")
-
+            requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente!* (Asignación Directa)\n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+        except Exception as e: logger.error(f"Error Telegram agente: {e}")
             
-
-    # 2. Notificar al Admin
-
     if telegram_token and admin_id:
-
         try:
-
-            msg_admin = f"👁️ *COPIA PARA ADMIN* 👁️\nAsignado a: {agente['nombre']}\n\n" + mensaje_base
-
+            # Notificación mejorada para el Admin incluyendo nombre del agente
+            msg_admin = f"👁️ *REPORTE ADMIN*\n👤 *Agente asignado:* {agente['nombre']}\n{info_cliente}"
             requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=5)
-
-            logger.info("Notificación enviada al administrador.")
-
-        except Exception as e:
-
-            logger.error(f"Error enviando Telegram al admin: {e}")
-
-
-
-def consultar_ia(mensajes):
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-
-    headers = {
-
-        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-
-        "Content-Type": "application/json"
-
-    }
-
-    try:
-
-        respuesta = requests.post(url, headers=headers, json={"model": MODELO_OPENROUTER, "messages": mensajes})
-
-        return respuesta.json()['choices'][0]['message']['content']
-
-    except Exception as e:
-
-        logger.error(f"Error OpenRouter: {e}")
-
-        return "Estamos experimentando alta demanda, intenta en un momento."
-
-
+        except Exception as e: logger.error(f"Error Telegram admin: {e}")
 
 @app.post("/webhook")
-
 async def handle_request(request: Request):
-
     try:
-
         data = await request.json()
-
-        api_key = request.headers.get("x-api-key")
-
-        
-
-        if api_key not in os.getenv("API_KEYS_AGENTES", "").split(","):
-
-            raise HTTPException(status_code=403, detail="Acceso denegado")
-
-
-
         payload = data.get("query") if isinstance(data.get("query"), dict) else data
-
-        sender = payload.get("sender", "cliente_general")
-
+        sender = str(payload.get("sender", ""))
         mensaje_cliente = str(payload.get("message", ""))
-
-            
-
-        if not mensaje_cliente.strip():
-
-            return {"replies": []}
-
-
+        
+        # Validación de Contacto Guardado (si sender tiene letras, es un nombre)
+        es_numero_valido = sender.replace("+", "").replace(" ", "").isdigit()
+        if not es_numero_valido and "###LEAD_CAPTURED###" not in mensaje_cliente:
+             # Si no es número y no estamos capturando lead, pedir número
+             if "confirmado" not in mensaje_cliente.lower():
+                return {"replies": [{"message": "¡Hola! Para poder asignarte un asesor y enviarte la información, por favor confírmame tu número de WhatsApp (ej: +58414...)"}]}
 
         inventario = obtener_inventario()
-
+        if sender not in memoria_conversaciones: memoria_conversaciones[sender] = []
         
-
-        if sender not in memoria_conversaciones:
-
-            memoria_conversaciones[sender] = []
-
+        prompt_sistema = f"""Eres Broker Inmobiliario. INVENTARIO: {inventario}. 
+        REGLAS: Si el cliente es un contacto guardado (enviaste un nombre), pídale primero su número de WhatsApp.
+        Una vez tengas Nombre, Correo y Número, termina con:
+        ###LEAD_CAPTURED###Nombre: [Nombre] | Correo: [Correo] | Telefono: [Numero] | Interés: [Lo que busca]###"""
         
-
-        prompt_sistema = f"""
-
-        Eres un Broker Inmobiliario de Mettryc Realty.
-
-        INVENTARIO DISPONIBLE:
-
-        {inventario}
-
+        historial = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender] + [{"role": "user", "content": mensaje_cliente}]
         
-
-        REGLAS:
-
-        1. RESPUESTAS CORTAS. Máximo 3 opciones con enlace crudo.
-
-        2. CAPTURA DE LEADS: Si hay interés, pide Nombre y Correo.
-
-        3. En el mensaje donde obtengas Nombre y Correo, incluye:
-
-        ###LEAD_CAPTURED###Nombre: [Nombre] | Correo: [Correo] | Interés: [Lo que busca]###
-
-        """
-
+        url_ia = "https://openrouter.ai/api/v1/chat/completions"
+        respuesta = requests.post(url_ia, headers={"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}, 
+                                  json={"model": MODELO_OPENROUTER, "messages": historial}).json()['choices'][0]['message']['content']
         
-
-        historial_api = [{"role": "system", "content": prompt_sistema}]
-
-        historial_api.extend(memoria_conversaciones[sender])
-
-        historial_api.append({"role": "user", "content": mensaje_cliente})
-
+        if "###LEAD_CAPTURED###" in respuesta:
+            partes = respuesta.split("###LEAD_CAPTURED###")
+            datos_lead = partes[1].replace("###", "").strip()
+            agente = asignar_agente_round_robin()
+            if agente:
+                enviar_notificaciones_telegram(agente, sender, datos_lead)
+                respuesta = partes[0].strip() + f"\n\n¡Perfecto! El asesor {agente['nombre']} te contactará."
         
-
-        respuesta_bot = consultar_ia(historial_api)
-
-        
-
-        if "###LEAD_CAPTURED###" in respuesta_bot:
-
-            try:
-
-                partes = respuesta_bot.split("###LEAD_CAPTURED###")
-
-                texto_cliente = partes[0].strip()
-
-                datos_lead_raw = partes[1].replace("###", "").strip()
-
-                
-
-                agente = asignar_agente_round_robin()
-
-                
-
-                if agente:
-
-                    enviar_notificaciones_telegram(agente, sender, datos_lead_raw)
-
-                    texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor, *{agente['nombre']}*, ha sido notificado y te contactará de inmediato."
-
-                
-
-                respuesta_bot = texto_cliente
-
-            except Exception as e:
-
-                logger.error(f"Error procesando lead: {e}")
-
-        
-
         memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
-
-        memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
-
-        
-
-        if len(memoria_conversaciones[sender]) > 20:
-
-            memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
-
-            
-
-        return {"replies": [{"message": respuesta_bot}]}
-
-    
-
+        memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta})
+        return {"replies": [{"message": respuesta}]}
     except Exception as e:
-
-        logger.error(f"Error general: {e}")
-
-        return {"replies": [{"message": "Estamos procesando tu solicitud, por favor intenta nuevamente."}]} 
+        logger.error(f"Error: {e}")
+        return {"replies": [{"message": "Por favor intenta de nuevo."}]}
 
 
