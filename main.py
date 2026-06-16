@@ -39,11 +39,9 @@ def obtener_inventario_desde_wasi():
         exito_pagina = False
         intentos = 0
         
-        # Sistema de reintentos: Hasta 3 intentos por página
         while intentos < 3 and not exito_pagina:
             try:
                 logger.info(f"Consultando Wasi (Propiedad {skip} a {skip + take})...")
-                # Timeout aumentado a 30s para mayor estabilidad
                 response = requests.get(url, timeout=30)
                 data = response.json()
                 
@@ -65,12 +63,10 @@ def obtener_inventario_desde_wasi():
                 
                 exito_pagina = True
                 
-                # Si trajo menos de 100, terminamos
                 if contador_pagina < take:
                     return "\n".join(propiedades_limpias)
                 
                 skip += take
-                # Pausa de cortesía de 2 segundos para evitar bloqueos
                 time.sleep(2)
                 
             except Exception as e:
@@ -122,10 +118,7 @@ def asignar_agente_round_robin():
     if not lista_agentes:
         return None
         
-    agentes_cache["ultimo_indice"] += 1
-    if agentes_cache["ultimo_indice"] >= len(lista_agentes):
-        agentes_cache["ultimo_indice"] = 0
-        
+    agentes_cache["ultimo_indice"] = (agentes_cache["ultimo_indice"] + 1) % len(lista_agentes)
     return lista_agentes[agentes_cache["ultimo_indice"]]
 
 def enviar_notificaciones_telegram(agente, whatsapp_cliente, datos_lead):
@@ -146,10 +139,10 @@ def enviar_notificaciones_telegram(agente, whatsapp_cliente, datos_lead):
         except Exception as e:
             logger.error(f"Error enviando Telegram al agente: {e}")
             
-    # 2. Notificar al Admin
+    # 2. Notificar al Admin con el nombre del agente asignado
     if telegram_token and admin_id:
         try:
-            msg_admin = f"👁️ *COPIA PARA ADMIN* 👁️\nAsignado a: {agente['nombre']}\n\n" + mensaje_base
+            msg_admin = f"👁️ *COPIA PARA ADMIN*\n👤 *Agente asignado:* {agente['nombre']}\n\n" + mensaje_base
             requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=5)
             logger.info("Notificación enviada al administrador.")
         except Exception as e:
