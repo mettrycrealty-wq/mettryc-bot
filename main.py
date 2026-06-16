@@ -236,4 +236,26 @@ async def handle_request(request: Request):
                     agente = asignar_agente_round_robin()
                     if agente:
                         enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
-                        texto_cliente += f"\n\n¡Perfecto! He registrado
+                        texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
+                        
+                        # CIERRE DEL CANDADO: Registramos al cliente para no volver a notificar
+                        clientes_procesados.add(sender)
+                    
+                    respuesta_bot = texto_cliente
+                except Exception as e:
+                    logger.error(f"Error procesando captura: {e}")
+            else:
+                # 3er Escudo: Si ya fue procesado, quitamos la etiqueta sobrante para que el cliente no la vea en pantalla
+                respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
+        
+        memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
+        memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
+        
+        if len(memoria_conversaciones[sender]) > 20:
+            memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
+            
+        return {"replies": [{"message": respuesta_bot}]}
+    
+    except Exception as e:
+        logger.error(f"Error general en el webhook: {e}")
+        return {"replies": [{"message": "Estamos procesando tu solicitud, por favor escribe de nuevo."}]}
