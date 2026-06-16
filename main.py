@@ -2,9 +2,7 @@ import os
 import csv
 import requests
 import logging
-import smtplib
 import time
-from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 
@@ -64,15 +62,12 @@ def obtener_inventario_desde_wasi():
             skip += take
             if skip >= max_propiedades:
                 break
-            
-            # Pausa para no saturar a Wasi
             time.sleep(1.5)
-            
         except Exception as e:
             logger.error(f"Error paginando Wasi en skip {skip}: {e}")
             break
             
-    logger.info(f"¡Éxito! Se almacenaron {len(propiedades_limpias)} propiedades en el servidor.")
+    logger.info(f"¡Éxito! Se almacenaron {len(propiedades_limpias)} propiedades.")
     return "\n".join(propiedades_limpias)
 
 def obtener_inventario():
@@ -86,23 +81,19 @@ def obtener_inventario():
 def obtener_agentes_desde_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
     if not script_url:
-        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada. Omitiendo descarga de agentes.")
+        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
         return agentes_cache["lista"]
 
     if datetime.now() - agentes_cache["ultima_actualizacion"] > timedelta(hours=1) or not agentes_cache["lista"]:
         try:
-            logger.info("Conectando con Google Apps Script para actualizar agentes...")
             response = requests.get(script_url, timeout=15)
             lista_nueva = response.json()
-            
             if isinstance(lista_nueva, list) and len(lista_nueva) > 0:
                 agentes_cache["lista"] = lista_nueva
                 agentes_cache["ultima_actualizacion"] = datetime.now()
-                logger.info(f"✅ ¡Éxito! Sincronizados {len(lista_nueva)} agentes reales desde Apps Script.")
-            else:
-                logger.warning("El Google Sheet está vacío o el formato es incorrecto.")
+                logger.info(f"✅ Sincronizados {len(lista_nueva)} agentes.")
         except Exception as e:
-            logger.error(f"Error cargando lista de turnos desde Apps Script: {e}")
+            logger.error(f"Error cargando agentes: {e}")
             
     return agentes_cache["lista"]
 
@@ -117,44 +108,32 @@ def asignar_agente_round_robin():
         
     return lista_agentes[agentes_cache["ultimo_indice"]]
 
-def enviar_notificacion_agente(agente, whatsapp_cliente, datos_lead):
-    # Enviar Email
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASSWORD")
-    if smtp_user and smtp_pass:
-        try:
-            asunto = f"🔥 NUEVO CLIENTE ASIGNADO - Mettryc Realty"
-            cuerpo = f"Hola {agente['nombre']},\n\nSe te ha asignado un nuevo lead:\n\n{datos_lead}\n\nWHATSAPP:\nhttps://wa.me/{whatsapp_cliente}"
-            msg = MIMEText(cuerpo)
-            msg['Subject'] = asunto
-            msg['From'] = smtp_user
-            msg['To'] = agente['correo']
-            
-            server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, [agente['correo']], msg.as_string())
-            server.quit()
-        except Exception as e:
-            logger.error(f"Error correo: {e}")
-
-    # Enviar Telegram
+def enviar_notificaciones_telegram(agente, whatsapp_cliente, datos_lead):
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    telegram_id = agente.get("telegram_id")
+    admin_id = os.getenv("TELEGRAM_ADMIN_ID")
+    agente_id = agente.get("telegram_id")
     
-    if telegram_token and telegram_id:
+    mensaje_base = f"🚨 *NUEVO LEAD ASIGNADO* 🚨\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar ahora:*\n[Abrir WhatsApp](https://wa.me/{whatsapp_cliente})"
+    
+    url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+    
+    # Notificar al Agente
+    if telegram_token and agente_id:
         try:
-            mensaje_tg = f"🚨 *NUEVO LEAD ASIGNADO* 🚨\n\nHola {agente['nombre']},\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar ahora:*\n[Abrir WhatsApp](https://wa.me/{whatsapp_cliente})"
-            url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-            payload = {
-                "chat_id": telegram_id,
-                "text": mensaje_tg,
-                "parse_mode": "Markdown"
-            }
-            requests.post(url_tg, json=payload, timeout=5)
-            logger.info(f"Notificación Telegram enviada a {agente['nombre']}.")
+            msg_agente = f"Hola {agente['nombre']},\n\n" + mensaje_base
+            requests.post(url_tg, json={"chat_id": agente_id, "text": msg_agente, "parse_mode": "Markdown"}, timeout=5)
+            logger.info(f"Notificación enviada al agente: {agente['nombre']}")
         except Exception as e:
-            logger.error(f"Error enviando Telegram: {e}")
+            logger.error(f"Error enviando Telegram al agente: {e}")
+            
+    # Notificar al Administrador
+    if telegram_token and admin_id:
+        try:
+            msg_admin = f"👁️ *COPIA PARA ADMIN* 👁️\nAsignado a: {agente['nombre']}\n\n" + mensaje_base
+            requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=5)
+            logger.info("Notificación enviada al administrador.")
+        except Exception as e:
+            logger.error(f"Error enviando Telegram al admin: {e}")
 
 def consultar_ia(mensajes):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -191,23 +170,15 @@ async def handle_request(request: Request):
             memoria_conversaciones[sender] = []
         
         prompt_sistema = f"""
-        Eres un Broker Inmobiliario de Mettryc Realty altamente eficiente.
-        
+        Eres un Broker Inmobiliario de Mettryc Realty.
         INVENTARIO DISPONIBLE:
         {inventario}
         
         REGLAS DE ORO:
-        1. RESPUESTAS CORTAS Y PRECISAS. Máximo 3 opciones con enlace crudo.
-        2. RESTRICCIÓN DE ZONA ABSOLUTA.
-        3. CERO ALUCINACIONES.
-        
-        4. ESTRATEGIA DE CAPTURA DE LEADS (OBLIGATORIA):
-        Si el cliente demuestra interés en comprar/visitar/saber más de un inmueble, pausa la venta y pide amablemente sus datos de contacto UNO A UNO:
-        - Primero solicítale su Nombre Completo.
-        - Cuando te dé el nombre, solicítale su Correo Electrónico.
-        
-        En el mensaje exacto donde el cliente ya te haya entregado Nombre y Correo, OBLIGATORIAMENTE incluye esta etiqueta al final de tu texto:
-        ###LEAD_CAPTURED###Nombre: [Nombre del cliente] | Correo: [Correo] | Interés: [Lo que busca]###
+        1. RESPUESTAS CORTAS. Máximo 3 opciones con enlace crudo.
+        2. CAPTURA DE LEADS (OBLIGATORIA): Si el cliente demuestra interés, pausa la venta y pide: Nombre Completo y Correo.
+        3. En el mensaje exacto donde el cliente te dé Nombre y Correo, incluye:
+        ###LEAD_CAPTURED###Nombre: [Nombre] | Correo: [Correo] | Interés: [Lo que busca]###
         """
         
         historial_api = [{"role": "system", "content": prompt_sistema}]
@@ -225,8 +196,8 @@ async def handle_request(request: Request):
                 agente = asignar_agente_round_robin()
                 
                 if agente:
-                    enviar_notificacion_agente(agente, sender, datos_lead_raw)
-                    texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido notificado y se comunicará contigo de inmediato."
+                    enviar_notificaciones_telegram(agente, sender, datos_lead_raw)
+                    texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor, *{agente['nombre']}*, ha sido notificado y te contactará de inmediato."
                 
                 respuesta_bot = texto_cliente
             except Exception as e:
