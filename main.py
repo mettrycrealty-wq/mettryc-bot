@@ -36,35 +36,53 @@ def obtener_inventario_desde_wasi():
     
     while True:
         url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
-        try:
-            logger.info(f"Consultando Wasi (Propiedad {skip} a {skip + take})...")
-            response = requests.get(url, timeout=15)
-            data = response.json()
-            contador_pagina = 0
+        exito_pagina = False
+        intentos = 0
+        
+        # Sistema de reintentos: Hasta 3 intentos por página
+        while intentos < 3 and not exito_pagina:
+            try:
+                logger.info(f"Consultando Wasi (Propiedad {skip} a {skip + take})...")
+                # Timeout aumentado a 30s para mayor estabilidad
+                response = requests.get(url, timeout=30)
+                data = response.json()
+                
+                contador_pagina = 0
+                for key, value in data.items():
+                    if isinstance(value, dict) and key.isdigit():
+                        contador_pagina += 1
+                        id_prop = value.get('id_property')
+                        enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
+                        
+                        prop = (
+                            f"-[ID: {id_prop}] {value.get('title')} | "
+                            f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
+                            f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
+                            f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                            f"Enlace: {enlace_web}"
+                        )
+                        propiedades_limpias.append(prop)
+                
+                exito_pagina = True
+                
+                # Si trajo menos de 100, terminamos
+                if contador_pagina < take:
+                    return "\n".join(propiedades_limpias)
+                
+                skip += take
+                # Pausa de cortesía de 2 segundos para evitar bloqueos
+                time.sleep(2)
+                
+            except Exception as e:
+                intentos += 1
+                logger.warning(f"Intento {intentos} fallido en skip {skip}: {e}. Esperando 5 segundos...")
+                time.sleep(5)
+        
+        if not exito_pagina:
+            logger.error(f"Se agotaron los reintentos en skip {skip}. Continuando con lo obtenido.")
+            break
             
-            for key, value in data.items():
-                if isinstance(value, dict) and key.isdigit():
-                    contador_pagina += 1
-                    id_prop = value.get('id_property')
-                    enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
-                    
-                    prop = (
-                        f"-[ID: {id_prop}] {value.get('title')} | "
-                        f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
-                        f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
-                        f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
-                        f"Enlace: {enlace_web}"
-                    )
-                    propiedades_limpias.append(prop)
-            
-            if contador_pagina < take:
-                break
-            skip += take
-            if skip >= max_propiedades:
-                break
-            time.sleep(1.5)
-        except Exception as e:
-            logger.error(f"Error paginando Wasi en skip {skip}: {e}")
+        if skip >= max_propiedades:
             break
             
     logger.info(f"¡Éxito! Se almacenaron {len(propiedades_limpias)} propiedades.")
@@ -86,8 +104,10 @@ def obtener_agentes_desde_sheet():
 
     if datetime.now() - agentes_cache["ultima_actualizacion"] > timedelta(hours=1) or not agentes_cache["lista"]:
         try:
+            logger.info("Conectando con Google Apps Script para actualizar agentes...")
             response = requests.get(script_url, timeout=15)
             lista_nueva = response.json()
+            
             if isinstance(lista_nueva, list) and len(lista_nueva) > 0:
                 agentes_cache["lista"] = lista_nueva
                 agentes_cache["ultima_actualizacion"] = datetime.now()
@@ -117,7 +137,7 @@ def enviar_notificaciones_telegram(agente, whatsapp_cliente, datos_lead):
     
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
-    # Notificar al Agente
+    # 1. Notificar al Agente
     if telegram_token and agente_id:
         try:
             msg_agente = f"Hola {agente['nombre']},\n\n" + mensaje_base
@@ -126,7 +146,7 @@ def enviar_notificaciones_telegram(agente, whatsapp_cliente, datos_lead):
         except Exception as e:
             logger.error(f"Error enviando Telegram al agente: {e}")
             
-    # Notificar al Administrador
+    # 2. Notificar al Admin
     if telegram_token and admin_id:
         try:
             msg_admin = f"👁️ *COPIA PARA ADMIN* 👁️\nAsignado a: {agente['nombre']}\n\n" + mensaje_base
@@ -174,10 +194,10 @@ async def handle_request(request: Request):
         INVENTARIO DISPONIBLE:
         {inventario}
         
-        REGLAS DE ORO:
+        REGLAS:
         1. RESPUESTAS CORTAS. Máximo 3 opciones con enlace crudo.
-        2. CAPTURA DE LEADS (OBLIGATORIA): Si el cliente demuestra interés, pausa la venta y pide: Nombre Completo y Correo.
-        3. En el mensaje exacto donde el cliente te dé Nombre y Correo, incluye:
+        2. CAPTURA DE LEADS: Si hay interés, pide Nombre y Correo.
+        3. En el mensaje donde obtengas Nombre y Correo, incluye:
         ###LEAD_CAPTURED###Nombre: [Nombre] | Correo: [Correo] | Interés: [Lo que busca]###
         """
         
