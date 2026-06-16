@@ -3,6 +3,7 @@ import csv
 import requests
 import logging
 import smtplib
+import time
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
@@ -63,6 +64,10 @@ def obtener_inventario_desde_wasi():
             skip += take
             if skip >= max_propiedades:
                 break
+            
+            # Pausa para no saturar a Wasi
+            time.sleep(1.5)
+            
         except Exception as e:
             logger.error(f"Error paginando Wasi en skip {skip}: {e}")
             break
@@ -79,7 +84,6 @@ def obtener_inventario():
     return cache["inventario_texto"]
 
 def obtener_agentes_desde_sheet():
-    # Ahora usaremos la URL completa del Script de Google
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
     if not script_url:
         logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada. Omitiendo descarga de agentes.")
@@ -89,8 +93,6 @@ def obtener_agentes_desde_sheet():
         try:
             logger.info("Conectando con Google Apps Script para actualizar agentes...")
             response = requests.get(script_url, timeout=15)
-            
-            # El script nos devuelve un JSON puro y perfecto
             lista_nueva = response.json()
             
             if isinstance(lista_nueva, list) and len(lista_nueva) > 0:
@@ -99,7 +101,6 @@ def obtener_agentes_desde_sheet():
                 logger.info(f"✅ ¡Éxito! Sincronizados {len(lista_nueva)} agentes reales desde Apps Script.")
             else:
                 logger.warning("El Google Sheet está vacío o el formato es incorrecto.")
-                
         except Exception as e:
             logger.error(f"Error cargando lista de turnos desde Apps Script: {e}")
             
