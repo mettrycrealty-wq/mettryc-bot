@@ -28,7 +28,7 @@ clientes_procesados = set()
 
 # Configuración de Modelos (Principal y Respaldo)
 MODELO_PRINCIPAL = "deepseek/deepseek-chat"
-MODELO_RESPALDO = "google/gemini-flash-1.5" # Respaldo ultra-confiable si DeepSeek falla
+MODELO_RESPALDO = "google/gemini-2.5-flash-lite" # Respaldo ultra-confiable si DeepSeek falla
 
 def obtener_inventario_desde_wasi():
     propiedades_limpias = []
