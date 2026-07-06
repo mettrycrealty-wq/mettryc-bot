@@ -47,6 +47,13 @@ def obtener_inventario_desde_wasi():
                 contador_pagina = 0
                 for key, value in data.items():
                     if isinstance(value, dict) and key.isdigit():
+                        
+                        # --- INICIO DEL DIAGNÓSTICO ---
+                        if contador_pagina == 0 and skip == 0:
+                            logger.info("🚨 RADIOGRAFÍA DE WASI (1ra Propiedad) 🚨")
+                            logger.info(value)
+                        # --- FIN DEL DIAGNÓSTICO ---
+
                         contador_pagina += 1
                         id_prop = value.get('id_property')
                         enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
