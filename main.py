@@ -29,7 +29,7 @@ clientes_procesados = set()
 
 # Configuración de Modelos (Principal y Respaldo Anti-Caídas)
 MODELO_PRINCIPAL = "deepseek/deepseek-chat"
-MODELO_RESPALDO = "google/gemini-flash-1.5"
+MODELO_RESPALDO = "google/gemini-2.5-flash-lite"
 
 def obtener_inventario_desde_wasi():
     propiedades_limpias = []
