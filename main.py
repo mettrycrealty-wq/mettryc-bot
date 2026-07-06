@@ -16,6 +16,7 @@ cache = {
     "ultima_actualizacion": datetime.min
 }
 
+# Estructura corregida para procesar el nuevo JSON de Google Sheets
 sheets_cache = {
     "agentes": [],
     "captadores": {},
@@ -26,9 +27,9 @@ sheets_cache = {
 memoria_conversaciones = {}
 clientes_procesados = set() 
 
-# Configuración de Modelos (Principal y Respaldo)
+# Configuración de Modelos (Principal y Respaldo Anti-Caídas)
 MODELO_PRINCIPAL = "deepseek/deepseek-chat"
-MODELO_RESPALDO = "google/gemini-2.5-flash-lite" # Respaldo ultra-confiable si DeepSeek falla
+MODELO_RESPALDO = "google/gemini-flash-1.5"
 
 def obtener_inventario_desde_wasi():
     propiedades_limpias = []
@@ -96,27 +97,34 @@ def obtener_inventario():
             cache["ultima_actualizacion"] = datetime.now()
     return cache["inventario_texto"]
 
+# Función de sincronización corregida para mapear el objeto unificado de Google Sheets
 def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
     if not script_url:
+        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
         return
 
     if datetime.now() - sheets_cache["ultima_actualizacion"] > timedelta(hours=1) or not sheets_cache["agentes"]:
         try:
+            logger.info("Conectando con la API de Google Sheets unificada...")
             response = requests.get(script_url, timeout=15)
             payload_sheet = response.json()
+            
             if isinstance(payload_sheet, dict):
                 sheets_cache["agentes"] = payload_sheet.get("agentes", [])
                 sheets_cache["captadores"] = payload_sheet.get("captadores", {})
                 sheets_cache["ultima_actualizacion"] = datetime.now()
-                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes de turno y {len(sheets_cache['captadores'])} captadores.")
+                logger.info(f"✅ ÉXITO: Sincronizados {len(sheets_cache['agentes'])} agentes de turno y {len(sheets_cache['captadores'])} teléfonos de captadores.")
+            else:
+                logger.error("🔴 ERROR: El formato devuelto por Google Sheets no es un diccionario/objeto.")
         except Exception as e:
-            logger.error(f"Error sincronizando Google Sheets: {e}")
+            logger.error(f"🔴 Error crítico sincronizando Google Sheets: {e}")
 
 def asignar_agente_round_robin():
     sincronizar_google_sheet()
     lista_agentes = sheets_cache["agentes"]
     if not lista_agentes:
+        logger.error("🔴 ERROR INTERNO: La lista de agentes de turno está vacía en la memoria caché.")
         return None
         
     sheets_cache["ultimo_indice"] += 1
@@ -136,47 +144,45 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     
     if telegram_token and agente_id:
         try:
-            msg_agente = f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}"
-            r = requests.post(url_tg, json={"chat_id": agente_id, "text": msg_agente, "parse_mode": "Markdown"}, timeout=10)
-            logger.info(f"Respuesta TG Agente ({agente['nombre']}): {r.status_code} - {r.text}")
+            r = requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=10)
+            logger.info(f"Notificación enviada al Agente {agente['nombre']}. Estatus HTTP: {r.status_code}")
         except Exception as e: 
-            logger.error(f"🔴 Error crítico enviando Telegram al agente {agente['nombre']}: {e}")
+            logger.error(f"🔴 Error enviando Telegram al agente {agente['nombre']}: {e}")
             
     if telegram_token and admin_id:
         try:
-            msg_admin = f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}"
-            r = requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=10)
+            requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=10)
+            logger.info("Notificación de respaldo enviada al Administrador.")
         except Exception as e: 
-            logger.error(f"🔴 Error crítico enviando Telegram al administrador: {e}")
+            logger.error(f"🔴 Error enviando Telegram al administrador: {e}")
 
-# NUEVA FUNCIÓN BLINDADA PARA INTERACTUAR CON OPENROUTER (CON REINTENTOS Y FALLBACK)
+# Manejador robusto para OpenRouter con reintentos y salto automático de modelo
 def consultar_openrouter_con_fallback(historial_mensajes):
     url_ia = "https://openrouter.ai/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
     
-    # Intento 1 y 2 con el modelo principal (DeepSeek)
+    # Intentos 1 y 2 con DeepSeek
     for intento in range(2):
         try:
-            logger.info(f"Intentando conectar con OpenRouter (Modelo: {MODELO_PRINCIPAL}, Intento {intento + 1})...")
+            logger.info(f"Conectando con OpenRouter (Modelo: {MODELO_PRINCIPAL}, Intento {intento + 1})...")
             response = requests.post(url_ia, headers=headers, json={"model": MODELO_PRINCIPAL, "messages": historial_mensajes}, timeout=15)
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content']
-            else:
-                logger.warning(f"OpenRouter devolvió código {response.status_code}. Reintentando...")
+            logger.warning(f"OpenRouter respondió con código {response.status_code}, reintentando flujo...")
         except Exception as e:
-            logger.warning(f"Timeout o error de conexión en intento {intento + 1}: {e}")
+            logger.warning(f"Timeout o micro-caída en intento {intento + 1}: {e}")
         time.sleep(1.5)
         
-    # Intento de Fallback con el modelo de respaldo (Gemini / Llama) si DeepSeek está colapsado
+    # Salto automático a Gemini si DeepSeek falla o tarda más de la cuenta
     try:
-        logger.info(f"🚨 ACTIVANDO MODELO DE RESPALDO: Cambiando a {MODELO_RESPALDO} debido a saturación...")
+        logger.info(f"🚨 ALERT: Activando modelo de respaldo inmediato ({MODELO_RESPALDO}) por saturación de red...")
         response = requests.post(url_ia, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial_mensajes}, timeout=15)
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
     except Exception as e:
-        logger.error(f"🔴 El modelo de respaldo también falló: {e}")
+        logger.error(f"🔴 Falla crítica masiva: El modelo de respaldo también cayó: {e}")
         
-    raise Exception("Todos los proveedores de Inteligencia Artificial están fuera de servicio momentáneamente.")
+    raise Exception("Proveedores de Inteligencia Artificial desconectados momentáneamente.")
 
 @app.post("/webhook")
 async def handle_request(request: Request):
@@ -237,7 +243,7 @@ async def handle_request(request: Request):
         
         historial_api = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender] + [{"role": "user", "content": mensaje_cliente}]
         
-        # Llamada con el nuevo sistema blindado de reintentos
+        # Consumo blindado con reintentos automáticos
         respuesta_bot = consultar_openrouter_con_fallback(historial_api)
         
         if "###LEAD_CAPTURED###" in respuesta_bot:
@@ -272,15 +278,15 @@ async def handle_request(request: Request):
                     else:
                         agente = asignar_agente_round_robin()
                         if agente:
-                            logger.info(f"Asignando lead a: {agente['nombre']} - Enviando Telegram...")
+                            logger.info(f"Asignando lead exitosamente a: {agente['nombre']} - Despachando notificaciones...")
                             enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
                             texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
                             clientes_procesados.add(sender)
                         else:
-                            logger.error("🔴 No se pudo asignar agente: La lista de agentes de Google Sheet está vacía.")
+                            logger.error("🔴 Error insalvable: Round Robin cancelado porque la lista de Sheets sigue vacía.")
                         respuesta_bot = texto_cliente
                 except Exception as e: 
-                    logger.error(f"🔴 Error procesando la captura del lead: {e}", exc_info=True)
+                    logger.error(f"🔴 Error interno procesando el cierre de la captura: {e}")
             else:
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
         
@@ -292,5 +298,5 @@ async def handle_request(request: Request):
             
         return {"replies": [{"message": respuesta_bot}]}
     except Exception as e:
-        logger.error(f"🔴 ERROR GENERAL EN WEBHOOK: {e}", exc_info=True)
+        logger.error(f"🔴 CRÍTICO: Error general atrapado en la raíz del webhook: {e}", exc_info=True)
         return {"replies": [{"message": "Estamos procesando tu solicitud, por favor escribe de nuevo."}]}
