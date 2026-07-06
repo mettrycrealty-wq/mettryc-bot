@@ -16,8 +16,10 @@ cache = {
     "ultima_actualizacion": datetime.min
 }
 
-agentes_cache = {
-    "lista": [],
+# Almacenamiento optimizado para el JSON unificado de Sheets
+sheets_cache = {
+    "agentes": [],
+    "captadores": {},
     "ultimo_indice": -1,
     "ultima_actualizacion": datetime.min
 }
@@ -51,14 +53,13 @@ def obtener_inventario_desde_wasi():
                         id_prop = value.get('id_property')
                         enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
                         
-                        # --- EXTRACCIÓN DEL ENCARGADO ---
+                        # Extracción automática del asesor encargado desde Wasi
                         user_data = value.get('user_data', {})
                         nombre_asesor = user_data.get('first_name', '')
                         apellido_asesor = user_data.get('last_name', '')
                         asesor_encargado = f"{nombre_asesor} {apellido_asesor}".strip()
                         if not asesor_encargado:
                             asesor_encargado = "Asesor Mettryc"
-                        # --------------------------------
                         
                         prop = (
                             f"-[ID: {id_prop}] {value.get('title')} | "
@@ -81,9 +82,7 @@ def obtener_inventario_desde_wasi():
                 intentos += 1
                 time.sleep(5)
         
-        if not exito_pagina:
-            break
-        if skip >= max_propiedades:
+        if not exito_pagina or skip >= max_propiedades:
             break
             
     return "\n".join(propiedades_limpias)
@@ -96,33 +95,38 @@ def obtener_inventario():
             cache["ultima_actualizacion"] = datetime.now()
     return cache["inventario_texto"]
 
-def obtener_agentes_desde_sheet():
+# Sincronización limpia de la estructura unificada de Google Sheets
+def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
     if not script_url:
-        return agentes_cache["lista"]
+        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
+        return
 
-    if datetime.now() - agentes_cache["ultima_actualizacion"] > timedelta(hours=1) or not agentes_cache["lista"]:
+    if datetime.now() - sheets_cache["ultima_actualizacion"] > timedelta(hours=1) or not sheets_cache["agentes"]:
         try:
+            logger.info("Conectando con Google Apps Script para actualizar Turnos y Captadores...")
             response = requests.get(script_url, timeout=15)
-            lista_nueva = response.json()
-            if isinstance(lista_nueva, list) and len(lista_nueva) > 0:
-                agentes_cache["lista"] = lista_nueva
-                agentes_cache["ultima_actualizacion"] = datetime.now()
-        except Exception as e:
-            logger.error(f"Error cargando agentes: {e}")
+            payload_sheet = response.json()
             
-    return agentes_cache["lista"]
+            if isinstance(payload_sheet, dict):
+                sheets_cache["agentes"] = payload_sheet.get("agentes", [])
+                sheets_cache["captadores"] = payload_sheet.get("captadores", {})
+                sheets_cache["ultima_actualizacion"] = datetime.now()
+                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes de turno y {len(sheets_cache['captadores'])} teléfonos de captadores.")
+        except Exception as e:
+            logger.error(f"Error sincronizando Google Sheets unificado: {e}")
 
 def asignar_agente_round_robin():
-    lista_agentes = obtener_agentes_desde_sheet()
+    sincronizar_google_sheet()
+    lista_agentes = sheets_cache["agentes"]
     if not lista_agentes:
         return None
         
-    agentes_cache["ultimo_indice"] += 1
-    if agentes_cache["ultimo_indice"] >= len(lista_agentes):
-        agentes_cache["ultimo_indice"] = 0
+    sheets_cache["ultimo_indice"] += 1
+    if sheets_cache["ultimo_indice"] >= len(lista_agentes):
+        sheets_cache["ultimo_indice"] = 0
         
-    return lista_agentes[agentes_cache["ultimo_indice"]]
+    return lista_agentes[sheets_cache["ultimo_indice"]]
 
 def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -131,22 +135,17 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     
     link_wa = f"https://wa.me/{telefono_destino}"
     info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar de inmediato:* {link_wa}"
-    
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
     if telegram_token and agente_id:
         try:
-            msg_agente = f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}"
-            requests.post(url_tg, json={"chat_id": agente_id, "text": msg_agente, "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e:
-            logger.error(f"Error enviando Telegram al agente: {e}")
+            requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+        except Exception as e: logger.error(f"Error notificar agente: {e}")
             
     if telegram_token and admin_id:
         try:
-            msg_admin = f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}"
-            requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e:
-            logger.error(f"Error enviando Telegram al admin: {e}")
+            requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+        except Exception as e: logger.error(f"Error notificar admin: {e}")
 
 @app.post("/webhook")
 async def handle_request(request: Request):
@@ -163,6 +162,7 @@ async def handle_request(request: Request):
             return {"replies": []}
 
         inventario = obtener_inventario()
+        sincronizar_google_sheet()
         
         if sender not in memoria_conversaciones:
             memoria_conversaciones[sender] = []
@@ -176,20 +176,28 @@ async def handle_request(request: Request):
             requisitos_lead = "su Nombre Completo, su Correo Electrónico y que te confirme OBLIGATORIAMENTE su Número de WhatsApp (con su código de país, ej: +58...)"
             etiqueta_lead = "###LEAD_CAPTURED###Nombre: [Valor real] | Correo: [Valor real] | Telefono: [Número Confirmado] | Interés: [Inmueble buscado]###"
 
+        # Cruzamos el diccionario en texto plano para el contexto de la IA
+        directorio_telefonic_str = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
+
         prompt_sistema = f"""
         Eres un Broker Inmobiliario experto de Mettryc Realty.
         INVENTARIO DISPONIBLE DE LA EMPRESA:
         {inventario}
         
+        DIRECTORIO INTERNO DE TELÉFONOS DE CAPTADORES (CONFIDENCIAL):
+        {directorio_telefonic_str}
+        
         REGLAS DE ATENCIÓN:
         1. Al inicio de la conversación y durante las consultas, sé amable, muestra las opciones y responde de forma breve. Siempre proporciona el enlace crudo de la propiedad sin modificaciones. NO pidas ningún dato de entrada.
         2. Mantén un flujo de venta natural.
-        3. REGLA DEL ENCARGADO (PRIVACIDAD): En el inventario verás a un "Encargado" por propiedad. ESTA INFORMACIÓN ES CONFIDENCIAL. Solo puedes revelar quién es el encargado si el usuario se identifica explícitamente como OTRO AGENTE INMOBILIARIO o COLEGA. Si es un cliente regular, NUNCA menciones al encargado.
         
-        ESTRATEGIA DE ASIGNACIÓN PARA CLIENTES (SÚPER CRÍTICA):
-        Solo cuando un CLIENTE REGULAR decida avanzar (visita o detalles específicos), pídele: {requisitos_lead}. Si estás hablando con un colega agente inmobiliario, simplemente bríndale la ayuda y NO apliques esta captura estricta.
+        3. REGLA DE COLEGAS / AGENTES INMOBILIARIOS EXTERNOS (MÁXIMA PRIVACIDAD): 
+        En el inventario verás a un "Encargado" por propiedad. El nombre y el número telefónico de WhatsApp de ese encargado (que se encuentran en tu Directorio Interno) son INFORMACIÓN SECRETA.
+        - Si detectas que el usuario que escribe se identifica explícitamente como OTRO AGENTE INMOBILIARIO o COLEGA de otra inmobiliaria, puedes y debes revelarle amigablemente el Nombre del Encargado y su número de WhatsApp directo para que puedan coordinar la operación compartida de inmediato. A los colegas NO les pidas datos de cierre ni generes etiquetas de lead captured.
+        - Si es un cliente regular, NUNCA reveles el nombre del encargado y mucho menos su número de teléfono.
         
-        ESPERA A QUE EL CLIENTE RESPONDA CON LOS DATOS REALES.
+        ESTRATEGIA DE ASIGNACIÓN PARA CLIENTES REGULARES (SÚPER CRÍTICA):
+        Solo cuando un CLIENTE REGULAR decida avanzar (visita o detalles específicos), pídele: {requisitos_lead}. ESPERA A QUE EL CLIENTE RESPONDA CON LOS DATOS REALES.
         
         ÚNICAMENTE CUANDO EL CLIENTE YA TE HAYA DADO SUS DATOS REALES (NO ANTES), escribe esta estructura exacta al final de tu mensaje:
         {etiqueta_lead}
@@ -205,7 +213,6 @@ async def handle_request(request: Request):
         respuesta_bot = response.json()['choices'][0]['message']['content']
         
         if "###LEAD_CAPTURED###" in respuesta_bot:
-            # 1er Escudo: Evitar textos genéricos o corchetes alucinados
             if "[Valor real]" in respuesta_bot or "[Número Confirmado]" in respuesta_bot or "[Nombre]" in respuesta_bot:
                 logger.warning(f"La IA intentó disparar un falso positivo para {sender}. Ignorando etiqueta.")
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
@@ -219,7 +226,6 @@ async def handle_request(request: Request):
                     telefono_final = sender
                     numero_encontrado_en_texto = False
                     
-                    # Intentamos extraer el número escrito por el cliente
                     if "Telefono:" in datos_lead_raw:
                         try:
                             sub_partes = datos_lead_raw.split("|")
@@ -230,24 +236,19 @@ async def handle_request(request: Request):
                                     if any(c.isdigit() for c in num_limpio):
                                         telefono_final = num_limpio
                                         numero_encontrado_en_texto = True
-                        except Exception:
-                            pass
+                        except Exception: pass
 
-                    # CANDADO ESTRICTO: Si el contacto está guardado con nombre, OBLIGATORIAMENTE necesitamos haber extraído números reales
                     if not es_numero_puro and not numero_encontrado_en_texto:
-                        logger.warning(f"La IA intentó cerrar el lead para el contacto guardado '{sender}', pero NO recolectó el número telefónico real. Forzando solicitud.")
+                        logger.warning(f"La IA intentó cerrar el lead para '{sender}' sin recolectar el teléfono real. Forzando solicitud.")
                         respuesta_bot = "¡Excelente! Ya tengo tu nombre y correo registrados para asignarte un asesor inmobiliario. Solo me faltaría que me confirmes, por favor, tu número de WhatsApp actual (con el código de tu país) para que el especialista asignado pueda abrir tu ficha y escribirte de inmediato."
                     else:
-                        # Si todo está en orden, asignamos agente
                         agente = asignar_agente_round_robin()
                         if agente:
                             enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
                             texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
                             clientes_procesados.add(sender)
                         respuesta_bot = texto_cliente
-                        
-                except Exception as e:
-                    logger.error(f"Error procesando captura: {e}")
+                except Exception as e: logger.error(f"Error procesando captura: {e}")
             else:
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
         
@@ -258,7 +259,6 @@ async def handle_request(request: Request):
             memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
             
         return {"replies": [{"message": respuesta_bot}]}
-    
     except Exception as e:
         logger.error(f"Error general en el webhook: {e}")
         return {"replies": [{"message": "Estamos procesando tu solicitud, por favor escribe de nuevo."}]}
