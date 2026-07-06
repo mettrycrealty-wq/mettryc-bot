@@ -47,22 +47,25 @@ def obtener_inventario_desde_wasi():
                 contador_pagina = 0
                 for key, value in data.items():
                     if isinstance(value, dict) and key.isdigit():
-                        
-                        # --- INICIO DEL DIAGNÓSTICO ---
-                        if contador_pagina == 0 and skip == 0:
-                            logger.info("🚨 RADIOGRAFÍA DE WASI (1ra Propiedad) 🚨")
-                            logger.info(value)
-                        # --- FIN DEL DIAGNÓSTICO ---
-
                         contador_pagina += 1
                         id_prop = value.get('id_property')
                         enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
+                        
+                        # --- EXTRACCIÓN DEL ENCARGADO ---
+                        user_data = value.get('user_data', {})
+                        nombre_asesor = user_data.get('first_name', '')
+                        apellido_asesor = user_data.get('last_name', '')
+                        asesor_encargado = f"{nombre_asesor} {apellido_asesor}".strip()
+                        if not asesor_encargado:
+                            asesor_encargado = "Asesor Mettryc"
+                        # --------------------------------
                         
                         prop = (
                             f"-[ID: {id_prop}] {value.get('title')} | "
                             f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
                             f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
                             f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                            f"Encargado: {asesor_encargado} | "
                             f"Enlace: {enlace_web}"
                         )
                         propiedades_limpias.append(prop)
@@ -181,9 +184,10 @@ async def handle_request(request: Request):
         REGLAS DE ATENCIÓN:
         1. Al inicio de la conversación y durante las consultas, sé amable, muestra las opciones y responde de forma breve. Siempre proporciona el enlace crudo de la propiedad sin modificaciones. NO pidas ningún dato de entrada.
         2. Mantén un flujo de venta natural.
+        3. REGLA DEL ENCARGADO (PRIVACIDAD): En el inventario verás a un "Encargado" por propiedad. ESTA INFORMACIÓN ES CONFIDENCIAL. Solo puedes revelar quién es el encargado si el usuario se identifica explícitamente como OTRO AGENTE INMOBILIARIO o COLEGA. Si es un cliente regular, NUNCA menciones al encargado.
         
-        ESTRATEGIA DE ASIGNACIÓN (SÚPER CRÍTICA):
-        Solo cuando el cliente decida avanzar (visita o detalles específicos), pídele: {requisitos_lead}.
+        ESTRATEGIA DE ASIGNACIÓN PARA CLIENTES (SÚPER CRÍTICA):
+        Solo cuando un CLIENTE REGULAR decida avanzar (visita o detalles específicos), pídele: {requisitos_lead}. Si estás hablando con un colega agente inmobiliario, simplemente bríndale la ayuda y NO apliques esta captura estricta.
         
         ESPERA A QUE EL CLIENTE RESPONDA CON LOS DATOS REALES.
         
