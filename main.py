@@ -28,8 +28,8 @@ memoria_conversaciones = {}
 clientes_procesados = set() 
 
 # --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS ---
-MODELO_PRINCIPAL = "google/gemini-1.5-flash"
-MODELO_RESPALDO = "anthropic/claude-3-5-haiku" 
+MODELO_PRINCIPAL = "google/gemini-2.5-flash-lite"
+MODELO_RESPALDO = "anthropic/claude-3.5-haiku" 
 
 # --- FUNCIONES DE SOPORTE ---
 
