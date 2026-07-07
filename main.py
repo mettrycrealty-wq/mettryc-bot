@@ -28,9 +28,7 @@ memoria_conversaciones = {}
 clientes_procesados = set() 
 
 # --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS ---
-# Principal: Alta capacidad (1M tokens) para procesar todo el inventario a bajo costo
-MODELO_PRINCIPAL = "google/gemini-2.5-flash-lite"
-# Plan B: Alta empatía y fidelidad conversacional en caso de caída del principal
+MODELO_PRINCIPAL = "google/gemini-1.5-flash"
 MODELO_RESPALDO = "anthropic/claude-3-5-haiku" 
 
 # --- FUNCIONES DE SOPORTE ---
@@ -40,7 +38,7 @@ def obtener_inventario_desde_wasi():
     take = 100
     skip = 0
     
-    logger.info("Iniciando descarga completa de propiedades ACTIVAS desde Wasi (lotes de 100)...")
+    logger.info("Iniciando descarga completa de propiedades ACTIVAS desde Wasi...")
     
     while True:
         url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}&status=1"
@@ -71,21 +69,17 @@ def obtener_inventario_desde_wasi():
                         propiedades_limpias.append(prop)
                 
                 exito_pagina = True
-                logger.info(f"Descargadas {len(propiedades_limpias)} propiedades activas hasta ahora...")
                 
                 if contador_pagina < take: 
-                    logger.info(f"Descarga finalizada. Total activas: {len(propiedades_limpias)}")
                     return "\n".join(propiedades_limpias)
                 
                 skip += take
                 time.sleep(2)
             except Exception:
                 intentos += 1
-                logger.warning(f"Reintentando conexión con Wasi... (Intento {intentos})")
                 time.sleep(5)
                 
         if not exito_pagina: 
-            logger.error("Se agotaron los reintentos de conexión con Wasi en esta página.")
             break
             
     return "\n".join(propiedades_limpias)
@@ -109,7 +103,6 @@ def sincronizar_google_sheet():
                 sheets_cache["agentes"] = payload_sheet.get("agentes", [])
                 sheets_cache["captadores"] = payload_sheet.get("captadores", {})
                 sheets_cache["ultima_actualizacion"] = datetime.now()
-                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes y {len(sheets_cache['captadores'])} captadores.")
         except Exception as e: logger.error(f"Error sincronizando Google Sheets: {e}")
 
 def asignar_agente_round_robin():
@@ -143,16 +136,13 @@ def consultar_ia(historial):
         response = requests.post(url_ia, headers=headers, json={"model": MODELO_PRINCIPAL, "messages": historial}, timeout=30)
         data = response.json()
         if 'choices' in data: return data['choices'][0]['message']['content']
-        else: logger.warning(f"Respuesta sin 'choices' del modelo principal: {data}")
-    except Exception as e: logger.warning(f"Error con modelo principal: {e}")
+    except Exception as e: logger.warning(f"Error principal: {e}")
 
-    # Fallback (Plan B) si falla el principal o da error 'choices'
     try:
-        logger.info("Activando modelo de respaldo (Plan B - Claude 3.5 Haiku)...")
         response = requests.post(url_ia, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial}, timeout=30)
         data = response.json()
         if 'choices' in data: return data['choices'][0]['message']['content']
-    except Exception as e: logger.error(f"Falla total en IA: {e}")
+    except Exception as e: logger.error(f"Falla total: {e}")
     
     return "Lo siento, mi sistema está experimentando una breve pausa. ¿Podrías escribirme de nuevo en un minuto? 🙏"
 
@@ -174,95 +164,75 @@ async def handle_request(request: Request):
         sincronizar_google_sheet()
         directorio = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
 
-        # EL PROMPT DE PATY
+        # Verificamos si el sender de WhatsApp es un número real o un nombre (Ej: MiguelangelSalazar)
+        sender_limpio = sender.replace("+", "").replace(" ", "")
+        es_numero_puro = sender_limpio.isdigit()
+
         prompt_sistema = f"""
-        Eres Paty, la asistente virtual y especialista en atención al público de Mettryc Realty (la primera Tecnoinmobiliaria de Venezuela, ubicada en Valencia, Carabobo, CC Patio Trigal).
-        Tu objetivo principal es dar una atención de primera, filtrar necesidades conversacionalmente y capturar leads o atender a colegas.
-
-        REGLAS DE PERSONALIDAD (SÚPER HUMANIZADA):
-        1. Eres útil, inteligente y MUY amigable. Usa emojis con naturalidad.
-        2. TUS RESPUESTAS DEBEN SER CORTAS (máximo 30 palabras en conversaciones normales). Escribe como chatearía una persona real por WhatsApp.
-        3. REGLA DE ORO CONVERSACIONAL: NUNCA hagas múltiples preguntas en un solo mensaje. Pregunta UNA SOLA COSA a la vez y espera la respuesta del usuario.
-        4. JAMÁS digas que eres una inteligencia artificial o un bot. Tú eres Paty.
-        5. Si te preguntan por detalles que no tienes: "No tengo esa info a la mano en este instante, pero ya mismo te asigno a uno de nuestros asesores para que te dé todos los detalles."
-
-        BASE DE DATOS EN TIEMPO REAL:
-        <INVENTARIO>
-        {inventario}
-        </INVENTARIO>
+        Eres Paty, la asistente virtual de Mettryc Realty. Eres muy amigable y das respuestas cortas.
         
-        <DIRECTORIO_CONFIDENCIAL>
-        {directorio}
-        </DIRECTORIO_CONFIDENCIAL>
+        INVENTARIO: {inventario}
+        DIRECTORIO: {directorio}
 
-        INSTRUCCIONES DE OPERACIÓN (ESTRICTO CUMPLIMIENTO):
-
-        ▶ CASO A: MENSAJES DE MERCADOLIBRE
-        - Si el usuario dice "mercadolibre.com.ve/mlv", responde EXACTAMENTE: "¡Hola! 👋 Esta propiedad se encuentra disponible en el precio publicado. ¿Quieres agendar una visita?". Si piden más info, diles que un agente les contactará.
-
-        ▶ CASO B: RECLUTAMIENTO
-        - Para trabajar/ser agente: envía https://mettryc.com/blog/unete-al-mettryc-team-y-gana-desde-el-80-al-100-de-comision/18270?page=1
-        - Precio del curso: "Debes aprobar nuestro curso inicial que tiene un valor de $60. Dura 5 días, de 9 am a 12 pm."
-
-        ▶ CASO C: COLEGAS INMOBILIARIOS
-        - Si es "colega" o "agente", busca en el <DIRECTORIO_CONFIDENCIAL> el captador de la propiedad y dale su Nombre y WhatsApp. NO PIDES DATOS AL COLEGA.
-
-        ▶ CASO D: CLIENTES BUSCANDO INMUEBLES (EL FLUJO PASO A PASO)
-        Para que la conversación sea natural, recaba los requisitos PASO A PASO. (Un mensaje por paso):
-        - Paso 1: Saluda y pregunta ÚNICAMENTE en qué zona o ciudad está buscando. (Espera su respuesta).
-        - Paso 2: Cuando te diga la zona, pregúntale ÚNICAMENTE cuál es su presupuesto aproximado. (Espera su respuesta).
-        - Paso 3: Cuando te diga el presupuesto, pregúntale ÚNICAMENTE si busca alguna característica especial como número de habitaciones. (Espera su respuesta).
-        - Paso 4 (La Recomendación): SOLO cuando tengas esos 3 datos, busca en el <INVENTARIO> las 3 propiedades que más se ajusten. 
+        FLUJO PASO A PASO PARA CLIENTES:
+        Paso 1: Pregunta SOLO la zona.
+        Paso 2: Pregunta SOLO el presupuesto.
+        Paso 3: Pregunta SOLO por detalles (habs/baños).
+        Paso 4: Muestra 3 propiedades que encajen.
+        Paso 5: Si le gusta alguna, dile: "¡Excelente! Para que un asesor te contacte de inmediato, confírmame por favor tu Nombre, Apellido, Correo y número de WhatsApp."
         
-        REGLA DE FORMATO VISUAL PARA PROPIEDADES: Muestra las propiedades usando EXACTAMENTE esta plantilla. Tienes ESTRICTAMENTE PROHIBIDO usar asteriscos (*), numerales (###) o formato de enlaces ocultos. Los enlaces deben ser crudos (raw).
-
-        1. [Título de la propiedad]
-        📍 Zona: [Zona o Ciudad]
-        💰 Precio: [Precio]
-        📐 Área: [M2] | 🛏️ Habs: [Habitaciones] | 🛁 Baños: [Baños]
-        🔗 Ver más: [URL Cruda sin corchetes ni paréntesis, ej: https://www.mettryc.com/inmueble/12345]
-
-        - Paso 5 (Captura del Lead): Si el cliente dice que le gusta alguna opción, dile: "¡Excelente! Para que uno de nuestros asesores especializados te contacte de inmediato y abra tu ficha, confírmame por favor tu Nombre, Apellido y Correo electrónico."
-
-        ⚡ DISPARADOR DE ASIGNACIÓN (SÚPER CRÍTICO) ⚡
-        Única y exclusivamente cuando ya tengas el Nombre y Correo del cliente interesado, añadirás esta etiqueta EXACTA al final de tu mensaje:
-        ###LEAD_CAPTURED###Nombre: [Su Nombre] | Correo: [Su Correo] | Telefono: [Su WhatsApp]###
+        ⚠️ REGLA CRÍTICA PARA EL PASO 5: Cuando pidas los datos, DETENTE. NO ESCRIBAS NADA MÁS. Espera a que el usuario te responda en su próximo mensaje con sus datos. NUNCA inventes los datos ni uses corchetes.
+        
+        ⚡ DISPARADOR DE ASIGNACIÓN ⚡
+        Única y exclusivamente en un NUEVO mensaje, cuando ya hayas leído los datos reales que el usuario te dio, escribe al final:
+        ###LEAD_CAPTURED###Nombre: [Dato Real] | Correo: [Dato Real] | Telefono: [Numero Real]###
         """
+        
         if sender not in memoria_conversaciones: memoria_conversaciones[sender] = []
         historial_api = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender] + [{"role": "user", "content": mensaje_cliente}]
         
-        # Llamada a la IA a través de nuestra función blindada
         respuesta_bot = consultar_ia(historial_api)
         
-        # Procesamiento de la captura del lead
+        # --- BLOQUE DE SEGURIDAD EXTREMA ---
         if "###LEAD_CAPTURED###" in respuesta_bot:
-            # Seguro contra falsos positivos
-            if "[Su Nombre real]" in respuesta_bot or "[Nombre]" in respuesta_bot or "[Correo]" in respuesta_bot:
-                logger.warning(f"La IA intentó disparar un falso positivo para {sender}. Ignorando etiqueta.")
-                respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
+            partes = respuesta_bot.split("###LEAD_CAPTURED###")
+            texto_cliente = partes[0].strip()
+            datos_lead_raw = partes[1].replace("###", "").strip()
+            
+            # 1. Filtro Anti-Alucinaciones (Rechaza plantillas literales)
+            palabras_prohibidas = ["[", "]", "Su Nombre", "Su Correo", "Su WhatsApp", "Dato Real", "Numero Real"]
+            
+            if any(palabra in datos_lead_raw for palabra in palabras_prohibidas):
+                logger.warning(f"Falso positivo bloqueado para {sender}: IA usó plantillas.")
+                # Le devolvemos solo el texto donde pide los datos, borrando la etiqueta falsa
+                respuesta_bot = texto_cliente
+                
             elif sender not in clientes_procesados:
-                try:
-                    partes = respuesta_bot.split("###LEAD_CAPTURED###")
-                    texto_cliente = partes[0].strip()
-                    datos_lead_raw = partes[1].replace("###", "").strip()
-                    
-                    telefono_final = sender
-                    nums = re.findall(r'\+?\d{8,15}', datos_lead_raw)
-                    if nums: telefono_final = nums[0]
-
+                # 2. Extracción segura de números
+                nums = re.findall(r'\+?\d{8,15}', datos_lead_raw)
+                telefono_final = nums[0] if nums else None
+                
+                # 3. Validación de enlace roto (Si no hay número en los datos Y el sender es un nombre)
+                if not telefono_final and not es_numero_puro:
+                    logger.warning(f"Enlace roto evitado. Solicitando WhatsApp real a: {sender}")
+                    respuesta_bot = texto_cliente + "\n\n(Nota de sistema: Como no puedo ver tu número de teléfono automáticamente, por favor escríbelo aquí con tu código de país para poder asignarte al asesor)."
+                else:
+                    if not telefono_final:
+                        telefono_final = sender # Si no dio número pero el sender sí lo es, lo usamos.
+                        
                     agente = asignar_agente_round_robin()
                     if agente:
                         enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
                         texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
                         clientes_procesados.add(sender)
                     respuesta_bot = texto_cliente
-                except Exception as e: logger.error(f"Error procesando captura: {e}")
             else:
-                respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
+                respuesta_bot = texto_cliente
         
         memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
         memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
         
+        # Limitar memoria para no exceder tokens
         if len(memoria_conversaciones[sender]) > 20:
             memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
             
