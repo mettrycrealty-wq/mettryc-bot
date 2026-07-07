@@ -135,17 +135,26 @@ def consultar_ia(historial):
     try:
         response = requests.post(url_ia, headers=headers, json={"model": MODELO_PRINCIPAL, "messages": historial}, timeout=30)
         data = response.json()
-        if 'choices' in data: return data['choices'][0]['message']['content']
-    except Exception as e: logger.warning(f"Error principal: {e}")
+        if 'choices' in data: 
+            return data['choices'][0]['message']['content']
+        else: 
+            logger.error(f"🔴 Error OpenRouter (Principal): {data}")
+    except Exception as e: 
+        logger.warning(f"Error de conexión con modelo principal: {e}")
 
+    # Fallback (Plan B)
     try:
+        logger.info("Activando modelo de respaldo (Plan B - Claude)...")
         response = requests.post(url_ia, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial}, timeout=30)
         data = response.json()
-        if 'choices' in data: return data['choices'][0]['message']['content']
-    except Exception as e: logger.error(f"Falla total: {e}")
+        if 'choices' in data: 
+            return data['choices'][0]['message']['content']
+        else: 
+            logger.error(f"🔴 Error OpenRouter (Respaldo): {data}")
+    except Exception as e: 
+        logger.error(f"Falla total en IA: {e}")
     
     return "Lo siento, mi sistema está experimentando una breve pausa. ¿Podrías escribirme de nuevo en un minuto? 🙏"
-
 # --- WEBHOOK ---
 @app.post("/webhook")
 async def handle_request(request: Request):
