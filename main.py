@@ -54,39 +54,44 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
 
 @app.post("/webhook")
 async def handle_request(request: Request):
+    # Definimos respuesta_bot desde el inicio para evitar NameError
+    respuesta_bot = "" 
     try:
         data = await request.json()
         payload = data.get("query") if isinstance(data.get("query"), dict) else data
         sender = str(payload.get("sender", "")).strip()
         mensaje_cliente = str(payload.get("message", ""))
         
-        # 1. Preparar datos
+        if not mensaje_cliente.strip(): return {"replies": []}
+
+        # Sincronización y Directorio
         sincronizar_google_sheet()
-        inventario = "..." # (Tu función de inventario)
+        inventario = obtener_inventario()
         directorio = "\n".join([f"- {k}: {v}" for k, v in sheets_cache["captadores"].items()])
         
-        # 2. DEFINICIÓN DEL PROMPT (Ahora SÍ está definido)
+        # PROMPT DE SISTEMA (Definido aquí para asegurar su alcance)
         prompt_sistema = f"""
-        Eres Broker Inmobiliario de Mettryc Realty.
-        DIRECTORIO: {directorio}
+        Eres Broker Inmobiliario experto de Mettryc Realty.
         INVENTARIO: {inventario}
-        REGLA: Si el cliente da sus datos, al final pon: ###LEAD_CAPTURED###Nombre: X | Correo: Y | Telefono: Z###
+        DIRECTORIO CONFIDENCIAL: {directorio}
+        REGLA: Si el cliente da datos reales, al final pon: ###LEAD_CAPTURED###Nombre: X | Correo: Y | Telefono: Z###
         """
         
-        # 3. Llamada IA con Plan B
         historial = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones.get(sender, []) + [{"role": "user", "content": mensaje_cliente}]
         
-        # Lógica de llamada IA (usando tu método que ya funcionaba)
-        # ... (Tu código de requests a OpenRouter) ...
-
-        # 4. Procesar Lead
-        if "###LEAD_CAPTURED###" in respuesta_bot:
-            # ... (Lógica de extracción de número y asignar_agente_round_robin) ...
+        # LLAMADA A IA
+        respuesta_bot = consultar_ia(historial)
+        
+        # PROCESAMIENTO DE LEAD (Solo si respuesta_bot contiene algo)
+        if respuesta_bot and "###LEAD_CAPTURED###" in respuesta_bot:
+            # ... (Toda tu lógica de asignación que ya sabes que funciona) ...
             agente = asignar_agente_round_robin()
             if agente:
                 enviar_notificaciones_telegram(agente, telefono_final, datos_lead)
+                # ...
         
         return {"replies": [{"message": respuesta_bot}]}
+    
     except Exception as e:
-        logger.error(f"🔴 Error general: {e}", exc_info=True)
-        return {"replies": [{"message": "Estamos procesando tu solicitud..."}]}
+        logger.error(f"🔴 ERROR EN WEBHOOK: {e}", exc_info=True)
+        return {"replies": [{"message": "Estamos procesando tu solicitud, por favor escribe de nuevo."}]}
