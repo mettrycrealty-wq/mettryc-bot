@@ -17,7 +17,7 @@ memoria_conversaciones = {}
 clientes_procesados = set()
 
 MODELO_PRINCIPAL = "deepseek/deepseek-chat"
-MODELO_RESPALDO = "google/gemini-2.0-flash-lite"
+MODELO_RESPALDO = "google/gemini-2.5-flash-lite"
 
 # --- FUNCIONES DE SOPORTE ---
 
