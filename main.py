@@ -133,20 +133,34 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     admin_id = os.getenv("TELEGRAM_ADMIN_ID")
     agente_id = agente.get("telegram_id")
     
+    # IMPORTANTE: Aseguramos que el ID sea string y quitamos espacios
+    agente_id = str(agente_id).strip()
+    
     link_wa = f"https://wa.me/{telefono_destino}"
-    info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar de inmediato:* {link_wa}"
+    info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar:* {link_wa}"
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
-    if telegram_token and agente_id:
+    # 1. Notificación al Agente
+    if telegram_token and agente_id and agente_id != "None":
         try:
-            requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e: logger.error(f"Error notificar agente: {e}")
+            payload = {"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo lead!* \n{info_cliente}", "parse_mode": "Markdown"}
+            r = requests.post(url_tg, json=payload, timeout=10)
             
+            # LOG DE SEGURIDAD: Esto nos dirá qué está pasando realmente
+            logger.info(f"Intento de envío a Agente {agente['nombre']} (ID: {agente_id}). Respuesta: {r.status_code} - {r.text}")
+            
+            if r.status_code != 200:
+                logger.error(f"🔴 Error enviando a agente {agente['nombre']}: {r.text}")
+        except Exception as e:
+            logger.error(f"🔴 Error crítico de conexión enviando al agente: {e}")
+            
+    # 2. Notificación al Admin
     if telegram_token and admin_id:
         try:
-            requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e: logger.error(f"Error notificar admin: {e}")
-
+            msg_admin = f"👁️ *REPORTE ADMIN*\n👤 *Agente asignado:* {agente.get('nombre')}\n{info_cliente}"
+            requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=10)
+        except Exception as e:
+            logger.error(f"Error enviando Telegram al admin: {e}")
 @app.post("/webhook")
 async def handle_request(request: Request):
     try:
