@@ -163,6 +163,29 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
             logger.error(f"Error enviando Telegram al admin: {e}")
 
 @app.post("/webhook")
+@app.get("/test-telegram")
+async def test_telegram():
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    admin_id = os.getenv("TELEGRAM_ADMIN_ID")
+    
+    if not telegram_token or not admin_id:
+        return {"error": "Faltan credenciales en variables de entorno"}
+        
+    url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+    payload = {
+        "chat_id": admin_id,
+        "text": "🚀 TEST DE CONEXIÓN: Si lees esto, Telegram está funcionando correctamente.",
+        "parse_mode": "Markdown"
+    }
+    
+    try:
+        response = requests.post(url_tg, json=payload, timeout=10)
+        return {
+            "status_code": response.status_code,
+            "response": response.json()
+        }
+    except Exception as e:
+        return {"error": str(e)}
 async def handle_request(request: Request):
     try:
         data = await request.json()
