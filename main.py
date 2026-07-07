@@ -16,7 +16,6 @@ cache = {
     "ultima_actualizacion": datetime.min
 }
 
-# Almacenamiento optimizado para el JSON unificado de Sheets
 sheets_cache = {
     "agentes": [],
     "captadores": {},
@@ -26,15 +25,17 @@ sheets_cache = {
 
 memoria_conversaciones = {}
 clientes_procesados = set() 
-MODELO_OPENROUTER = "deepseek/deepseek-chat"
+MODELO_PRINCIPAL = "deepseek/deepseek-chat"
+# Plan B en caso de que DeepSeek u OpenRouter fallen
+MODELO_RESPALDO = "google/gemini-2.0-flash-lite-preview-02-05:free" 
+
+# --- FUNCIONES DE SOPORTE ---
 
 def obtener_inventario_desde_wasi():
     propiedades_limpias = []
     take = 100
     skip = 0
     max_propiedades = 2000
-    
-    logger.info("Iniciando descarga completa del inventario desde Wasi...")
     
     while True:
         url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
@@ -45,7 +46,6 @@ def obtener_inventario_desde_wasi():
             try:
                 response = requests.get(url, timeout=30)
                 data = response.json()
-                
                 contador_pagina = 0
                 for key, value in data.items():
                     if isinstance(value, dict) and key.isdigit():
@@ -53,38 +53,25 @@ def obtener_inventario_desde_wasi():
                         id_prop = value.get('id_property')
                         enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
                         
-                        # Extracción automática del asesor encargado desde Wasi
                         user_data = value.get('user_data', {})
-                        nombre_asesor = user_data.get('first_name', '')
-                        apellido_asesor = user_data.get('last_name', '')
-                        asesor_encargado = f"{nombre_asesor} {apellido_asesor}".strip()
-                        if not asesor_encargado:
-                            asesor_encargado = "Asesor Mettryc"
+                        asesor_encargado = f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip() or "Asesor Mettryc"
                         
                         prop = (
                             f"-[ID: {id_prop}] {value.get('title')} | "
                             f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
                             f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
                             f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
-                            f"Encargado: {asesor_encargado} | "
                             f"Enlace: {enlace_web}"
                         )
                         propiedades_limpias.append(prop)
-                
                 exito_pagina = True
-                if contador_pagina < take:
-                    return "\n".join(propiedades_limpias)
-                
+                if contador_pagina < take: return "\n".join(propiedades_limpias)
                 skip += take
                 time.sleep(2)
-                
-            except Exception as e:
+            except Exception:
                 intentos += 1
                 time.sleep(5)
-        
-        if not exito_pagina or skip >= max_propiedades:
-            break
-            
+        if not exito_pagina or skip >= max_propiedades: break
     return "\n".join(propiedades_limpias)
 
 def obtener_inventario():
@@ -95,58 +82,65 @@ def obtener_inventario():
             cache["ultima_actualizacion"] = datetime.now()
     return cache["inventario_texto"]
 
-# Sincronización limpia de la estructura unificada de Google Sheets
 def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
-    if not script_url:
-        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
-        return
-
+    if not script_url: return
     if datetime.now() - sheets_cache["ultima_actualizacion"] > timedelta(hours=1) or not sheets_cache["agentes"]:
         try:
-            logger.info("Conectando con Google Apps Script para actualizar Turnos y Captadores...")
             response = requests.get(script_url, timeout=15)
             payload_sheet = response.json()
-            
             if isinstance(payload_sheet, dict):
                 sheets_cache["agentes"] = payload_sheet.get("agentes", [])
                 sheets_cache["captadores"] = payload_sheet.get("captadores", {})
                 sheets_cache["ultima_actualizacion"] = datetime.now()
-                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes de turno y {len(sheets_cache['captadores'])} teléfonos de captadores.")
-        except Exception as e:
-            logger.error(f"Error sincronizando Google Sheets unificado: {e}")
+                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes y {len(sheets_cache['captadores'])} captadores.")
+        except Exception as e: logger.error(f"Error sincronizando Google Sheets: {e}")
 
 def asignar_agente_round_robin():
     sincronizar_google_sheet()
     lista_agentes = sheets_cache["agentes"]
-    if not lista_agentes:
-        return None
-        
-    sheets_cache["ultimo_indice"] += 1
-    if sheets_cache["ultimo_indice"] >= len(lista_agentes):
-        sheets_cache["ultimo_indice"] = 0
-        
+    if not lista_agentes: return None
+    sheets_cache["ultimo_indice"] = (sheets_cache["ultimo_indice"] + 1) % len(lista_agentes)
     return lista_agentes[sheets_cache["ultimo_indice"]]
 
 def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     admin_id = os.getenv("TELEGRAM_ADMIN_ID")
-    agente_id = agente.get("telegram_id")
-    
-    link_wa = f"https://wa.me/{telefono_destino}"
+    agente_id = str(agente.get("telegram_id", "")).strip()
+    link_wa = f"https://wa.me/{telefono_destino.replace('+', '').replace(' ', '')}"
     info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar de inmediato:* {link_wa}"
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
-    if telegram_token and agente_id:
-        try:
-            requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+    if telegram_token and agente_id and agente_id != "None":
+        try: requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
         except Exception as e: logger.error(f"Error notificar agente: {e}")
-            
     if telegram_token and admin_id:
-        try:
-            requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+        try: requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE ADMIN*\n👤 *Agente a cargo:* {agente.get('nombre')}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
         except Exception as e: logger.error(f"Error notificar admin: {e}")
 
+# --- FUNCIÓN IA BLINDADA ---
+def consultar_ia(historial):
+    url_ia = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
+    
+    try:
+        response = requests.post(url_ia, headers=headers, json={"model": MODELO_PRINCIPAL, "messages": historial}, timeout=30)
+        data = response.json()
+        if 'choices' in data: return data['choices'][0]['message']['content']
+        else: logger.warning(f"Respuesta sin 'choices' del modelo principal: {data}")
+    except Exception as e: logger.warning(f"Error con modelo principal: {e}")
+
+    # Fallback (Plan B) si falla el principal o da error 'choices'
+    try:
+        logger.info("Activando modelo de respaldo (Plan B)...")
+        response = requests.post(url_ia, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial}, timeout=30)
+        data = response.json()
+        if 'choices' in data: return data['choices'][0]['message']['content']
+    except Exception as e: logger.error(f"Falla total en IA: {e}")
+    
+    return "Lo siento, mi sistema está experimentando una breve pausa. ¿Podrías escribirme de nuevo en un minuto? 🙏"
+
+# --- WEBHOOK ---
 @app.post("/webhook")
 async def handle_request(request: Request):
     try:
@@ -157,21 +151,14 @@ async def handle_request(request: Request):
         payload = data.get("query") if isinstance(data.get("query"), dict) else data
         sender = str(payload.get("sender", "")).strip()
         mensaje_cliente = str(payload.get("message", ""))
-            
-        if not mensaje_cliente.strip():
-            return {"replies": []}
+        
+        if not mensaje_cliente.strip(): return {"replies": []}
 
         inventario = obtener_inventario()
         sincronizar_google_sheet()
-        
-        if sender not in memoria_conversaciones:
-            memoria_conversaciones[sender] = []
-        
-        es_numero_puro = sender.replace("+", "").replace(" ", "").isdigit()
-        
-        # CORRECCIÓN DE LA VARIABLE: Ahora se llama 'directorio'
         directorio = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
 
+        # EL PROMPT DE PATY
         prompt_sistema = f"""
         Eres Paty, la asistente virtual y especialista en atención al público de Mettryc Realty (la primera Tecnoinmobiliaria de Venezuela, ubicada en Valencia, Carabobo, CC Patio Trigal).
         Tu objetivo principal es dar una atención de primera, filtrar necesidades y capturar leads o atender a colegas.
@@ -214,22 +201,22 @@ async def handle_request(request: Request):
         - FASE 3 (Captura del Lead): SOLO cuando el cliente diga "Me interesa la opción 1", "Quiero visitar", o muestre intención de compra/alquiler, dile con naturalidad: "¡Excelente! Para que uno de nuestros asesores especializados te contacte de inmediato y abra tu ficha, confírmame por favor tu Nombre, Apellido y Correo electrónico." (Asume que el WhatsApp es el número desde el que escribe).
 
         ⚡ DISPARADOR DE ASIGNACIÓN (SÚPER CRÍTICO) ⚡
-        Única y exclusivamente cuando ya tengas el Nombre y el Correo del cliente interesado, añadirás esta etiqueta EXACTA al final de tu mensaje para que el sistema asigne el asesor:
-        ###LEAD_CAPTURED###Nombre: [Nombre] | Correo: [Correo] | Telefono: [Su WhatsApp]###
+        Única y exclusivamente cuando ya tengas el Nombre y el Correo real del cliente interesado, añadirás esta etiqueta EXACTA al final de tu mensaje para que el sistema asigne el asesor:
+        ###LEAD_CAPTURED###Nombre: [Su Nombre real] | Correo: [Su Correo real] | Telefono: [Su WhatsApp]###
         """
         
+        if sender not in memoria_conversaciones: memoria_conversaciones[sender] = []
         historial_api = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender] + [{"role": "user", "content": mensaje_cliente}]
         
-        url_ia = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
-        response = requests.post(url_ia, headers=headers, json={"model": MODELO_OPENROUTER, "messages": historial_api}, timeout=30)
-        respuesta_bot = response.json()['choices'][0]['message']['content']
+        # Llamada a la IA a través de nuestra función blindada
+        respuesta_bot = consultar_ia(historial_api)
         
+        # Procesamiento de la captura del lead
         if "###LEAD_CAPTURED###" in respuesta_bot:
-            if "[Valor real]" in respuesta_bot or "[Número Confirmado]" in respuesta_bot or "[Nombre]" in respuesta_bot:
+            # Seguro contra falsos positivos
+            if "[Su Nombre real]" in respuesta_bot or "[Nombre]" in respuesta_bot or "[Correo]" in respuesta_bot:
                 logger.warning(f"La IA intentó disparar un falso positivo para {sender}. Ignorando etiqueta.")
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
-            
             elif sender not in clientes_procesados:
                 try:
                     partes = respuesta_bot.split("###LEAD_CAPTURED###")
@@ -237,30 +224,15 @@ async def handle_request(request: Request):
                     datos_lead_raw = partes[1].replace("###", "").strip()
                     
                     telefono_final = sender
-                    numero_encontrado_en_texto = False
-                    
-                    if "Telefono:" in datos_lead_raw:
-                        try:
-                            sub_partes = datos_lead_raw.split("|")
-                            for parte in sub_partes:
-                                if "Telefono:" in parte:
-                                    num_extraido = parte.split(":")[1].strip()
-                                    num_limpio = "".join([c for c in num_extraido if c.isdigit() or c == "+"])
-                                    if any(c.isdigit() for c in num_limpio):
-                                        telefono_final = num_limpio
-                                        numero_encontrado_en_texto = True
-                        except Exception: pass
+                    nums = re.findall(r'\+?\d{8,15}', datos_lead_raw)
+                    if nums: telefono_final = nums[0]
 
-                    if not es_numero_puro and not numero_encontrado_en_texto:
-                        logger.warning(f"La IA intentó cerrar el lead para '{sender}' sin recolectar el teléfono real. Forzando solicitud.")
-                        respuesta_bot = "¡Excelente! Ya tengo tu nombre y correo registrados para asignarte un asesor inmobiliario. Solo me faltaría que me confirmes, por favor, tu número de WhatsApp actual (con el código de tu país) para que el especialista asignado pueda abrir tu ficha y escribirte de inmediato."
-                    else:
-                        agente = asignar_agente_round_robin()
-                        if agente:
-                            enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
-                            texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
-                            clientes_procesados.add(sender)
-                        respuesta_bot = texto_cliente
+                    agente = asignar_agente_round_robin()
+                    if agente:
+                        enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
+                        texto_cliente += f"\n\n¡Perfecto! He registrado tus datos. Nuestro asesor especializado, *{agente['nombre']}*, ha sido asignado a tu caso y te contactará directamente a tu WhatsApp de inmediato."
+                        clientes_procesados.add(sender)
+                    respuesta_bot = texto_cliente
                 except Exception as e: logger.error(f"Error procesando captura: {e}")
             else:
                 respuesta_bot = respuesta_bot.split("###LEAD_CAPTURED###")[0].strip()
@@ -273,5 +245,5 @@ async def handle_request(request: Request):
             
         return {"replies": [{"message": respuesta_bot}]}
     except Exception as e:
-        logger.error(f"Error general en el webhook: {e}")
-        return {"replies": [{"message": "Estamos procesando tu solicitud, por favor escribe de nuevo."}]}
+        logger.error(f"Error crítico general: {e}", exc_info=True)
+        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud. Por favor, escribe de nuevo."}]}
