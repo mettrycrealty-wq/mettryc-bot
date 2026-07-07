@@ -98,45 +98,39 @@ def obtener_inventario():
             cache["ultima_actualizacion"] = datetime.now()
     return cache["inventario_texto"]
 
-def obtener_agentes_desde_sheet():
-    script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
-    if not script_url:
-        return agentes_cache["lista"]
+# --- REEMPLAZA ESTO EN TU main.py ---
 
-    if datetime.now() - agentes_cache["ultima_actualizacion"] > timedelta(hours=1) or not agentes_cache["lista"]:
+def sincronizar_google_sheet():
+    script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
+    if not script_url: return
+
+    if datetime.now() - sheets_cache["ultima_actualizacion"] > timedelta(hours=1) or not sheets_cache["agentes"]:
         try:
             response = requests.get(script_url, timeout=15)
             data = response.json()
             
-            # --- CORRECCIÓN CRÍTICA PARA EL NUEVO FORMATO DE GOOGLE SHEETS ---
-            if isinstance(data, dict) and "agentes" in data:
-                lista_nueva = data.get("agentes", [])
-                agentes_cache["captadores"] = data.get("captadores", {})
-            elif isinstance(data, list):
-                lista_nueva = data
-            else:
-                lista_nueva = []
-            # ------------------------------------------------------------------
-
-            if len(lista_nueva) > 0:
-                agentes_cache["lista"] = lista_nueva
-                agentes_cache["ultima_actualizacion"] = datetime.now()
-        except Exception as e:
-            logger.error(f"Error cargando agentes: {e}")
+            # Mapeo limpio: extraemos agentes y captadores por separado
+            if isinstance(data, dict):
+                sheets_cache["agentes"] = data.get("agentes", [])
+                sheets_cache["captadores"] = data.get("captadores", {})
+                sheets_cache["ultima_actualizacion"] = datetime.now()
+                logger.info(f"✅ Agentes: {len(sheets_cache['agentes'])}, Captadores: {len(sheets_cache['captadores'])}")
             
-    return agentes_cache["lista"]
+        except Exception as e:
+            logger.error(f"🔴 Error sincronizando Sheets: {e}")
 
 def asignar_agente_round_robin():
-    lista_agentes = obtener_agentes_desde_sheet()
-    if not lista_agentes:
-        logger.error("No hay agentes en la lista de turnos.")
+    sincronizar_google_sheet()
+    # FORZAMOS LA REVISIÓN: Si la lista está vacía, logueamos el error
+    if not sheets_cache["agentes"]:
+        logger.error("🔴 ¡FALLO CRÍTICO! La lista de agentes para Round Robin está vacía. Revisa el JSON de tu Apps Script.")
         return None
         
-    agentes_cache["ultimo_indice"] += 1
-    if agentes_cache["ultimo_indice"] >= len(lista_agentes):
-        agentes_cache["ultimo_indice"] = 0
+    sheets_cache["ultimo_indice"] += 1
+    if sheets_cache["ultimo_indice"] >= len(sheets_cache["agentes"]):
+        sheets_cache["ultimo_indice"] = 0
         
-    return lista_agentes[agentes_cache["ultimo_indice"]]
+    return sheets_cache["agentes"][sheets_cache["ultimo_indice"]]
 
 def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
