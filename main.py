@@ -21,13 +21,72 @@ MODELO_RESPALDO = "google/gemini-2.5-flash-lite"
 
 # --- FUNCIONES DE SOPORTE ---
 
+def obtener_inventario_desde_wasi():
+    propiedades_limpias = []
+    take = 100
+    skip = 0
+    max_propiedades = 2000
+    
+    logger.info("Iniciando descarga completa del inventario desde Wasi...")
+    
+    while True:
+        url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
+        exito_pagina = False
+        intentos = 0
+        
+        while intentos < 3 and not exito_pagina:
+            try:
+                response = requests.get(url, timeout=30)
+                data = response.json()
+                
+                contador_pagina = 0
+                for key, value in data.items():
+                    if isinstance(value, dict) and key.isdigit():
+                        contador_pagina += 1
+                        id_prop = value.get('id_property')
+                        enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
+                        
+                        # Extracción automática del asesor encargado desde Wasi
+                        user_data = value.get('user_data', {})
+                        nombre_asesor = user_data.get('first_name', '')
+                        apellido_asesor = user_data.get('last_name', '')
+                        asesor_encargado = f"{nombre_asesor} {apellido_asesor}".strip()
+                        if not asesor_encargado:
+                            asesor_encargado = "Asesor Mettryc"
+                        
+                        prop = (
+                            f"-[ID: {id_prop}] {value.get('title')} | "
+                            f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
+                            f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
+                            f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                            f"Encargado: {asesor_encargado} | "
+                            f"Enlace: {enlace_web}"
+                        )
+                        propiedades_limpias.append(prop)
+                
+                exito_pagina = True
+                if contador_pagina < take:
+                    return "\n".join(propiedades_limpias)
+                
+                skip += take
+                time.sleep(2)
+                
+            except Exception as e:
+                intentos += 1
+                time.sleep(5)
+        
+        if not exito_pagina or skip >= max_propiedades:
+            break
+            
+    return "\n".join(propiedades_limpias)
+
 def obtener_inventario():
-    if datetime.now() - inventario_cache["ultima_actualizacion"] > timedelta(hours=12) or not inventario_cache["texto"]:
-        logger.info("Actualizando inventario desde Wasi...")
-        # AQUI DEBES PONER TU LÓGICA REAL DE WASI
-        inventario_cache["texto"] = "ID:123 - Apartamento en Valencia, 100m2, $50k" 
-        inventario_cache["ultima_actualizacion"] = datetime.now()
-    return inventario_cache["texto"]
+    if datetime.now() - cache["ultima_actualizacion"] > timedelta(hours=24) or not cache["inventario_texto"]:
+        inventario_nuevo = obtener_inventario_desde_wasi()
+        if inventario_nuevo: 
+            cache["inventario_texto"] = inventario_nuevo
+            cache["ultima_actualizacion"] = datetime.now()
+    return cache["inventario_texto"]
 
 def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL")
