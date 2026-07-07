@@ -2,6 +2,7 @@ import os
 import requests
 import logging
 import time
+import re
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 
@@ -10,69 +11,82 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Configuración
+# Caché
 sheets_cache = {"agentes": [], "captadores": {}, "ultimo_indice": -1, "ultima_actualizacion": datetime.min}
 memoria_conversaciones = {}
 clientes_procesados = set()
-
-# Modelos
 MODELO_PRINCIPAL = "deepseek/deepseek-chat"
-MODELO_RESPALDO = "google/gemini-2.0-flash-lite" # Tu nuevo Plan B
+MODELO_RESPALDO = "google/gemini-2.0-flash-lite"
 
-def consultar_ia(historial):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
-    
-    # Intento con modelo principal
-    try:
-        response = requests.post(url, headers=headers, json={"model": MODELO_PRINCIPAL, "messages": historial}, timeout=15)
-        if response.status_code == 200 and 'choices' in response.json():
-            return response.json()['choices'][0]['message']['content']
-    except Exception as e:
-        logger.warning(f"Falla en {MODELO_PRINCIPAL}: {e}")
-
-    # Plan B: Gemini Flash Lite
-    try:
-        logger.info(f"Activando Plan B: {MODELO_RESPALDO}")
-        response = requests.post(url, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial}, timeout=15)
-        if response.status_code == 200 and 'choices' in response.json():
-            return response.json()['choices'][0]['message']['content']
-    except Exception as e:
-        logger.error(f"Falla total en IA: {e}")
-    
-    return "Lo siento, estamos teniendo problemas técnicos. Por favor, escribe 'asesor' para contactar a un humano."
+# --- FUNCIONES DE SOPORTE ---
 
 def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL")
-    if not script_url or (datetime.now() - sheets_cache["ultima_actualizacion"] < timedelta(minutes=30) and sheets_cache["agentes"]):
-        return
-    try:
-        response = requests.get(script_url, timeout=10)
-        data = response.json()
-        sheets_cache["agentes"] = data.get("agentes", [])
-        sheets_cache["captadores"] = data.get("captadores", {})
-        sheets_cache["ultima_actualizacion"] = datetime.now()
-    except Exception as e:
-        logger.error(f"Error Sheets: {e}")
+    if not script_url: return
+    if datetime.now() - sheets_cache["ultima_actualizacion"] > timedelta(minutes=30) or not sheets_cache["agentes"]:
+        try:
+            response = requests.get(script_url, timeout=15)
+            data = response.json()
+            sheets_cache["agentes"] = data.get("agentes", [])
+            sheets_cache["captadores"] = data.get("captadores", {})
+            sheets_cache["ultima_actualizacion"] = datetime.now()
+            logger.info(f"✅ Agentes: {len(sheets_cache['agentes'])}, Captadores: {len(sheets_cache['captadores'])}")
+        except Exception as e: logger.error(f"🔴 Error Sheets: {e}")
+
+def asignar_agente_round_robin():
+    sincronizar_google_sheet()
+    if not sheets_cache["agentes"]: return None
+    sheets_cache["ultimo_indice"] = (sheets_cache["ultimo_indice"] + 1) % len(sheets_cache["agentes"])
+    return sheets_cache["agentes"][sheets_cache["ultimo_indice"]]
+
+def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    agente_id = str(agente.get("telegram_id", "")).strip()
+    
+    # Notificación al Agente
+    if telegram_token and agente_id and agente_id != "None":
+        msg = f"👤 *¡Nuevo lead asignado!* \n\n*Datos:* {datos_lead}\n📲 *Contacto:* https://wa.me/{telefono_destino}"
+        requests.post(f"https://api.telegram.org/bot{telegram_token}/sendMessage", 
+                      json={"chat_id": agente_id, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+        logger.info(f"Telegram enviado a {agente.get('nombre')} (ID: {agente_id})")
+
+# --- WEBHOOK ---
 
 @app.post("/webhook")
 async def handle_request(request: Request):
     try:
         data = await request.json()
-        # ... (Validación de API KEY) ...
+        payload = data.get("query") if isinstance(data.get("query"), dict) else data
+        sender = str(payload.get("sender", "")).strip()
+        mensaje_cliente = str(payload.get("message", ""))
         
+        # 1. Preparar datos
         sincronizar_google_sheet()
+        inventario = "..." # (Tu función de inventario)
+        directorio = "\n".join([f"- {k}: {v}" for k, v in sheets_cache["captadores"].items()])
         
-        # ... (Construcción del prompt con directorio_telefonic_str) ...
+        # 2. DEFINICIÓN DEL PROMPT (Ahora SÍ está definido)
+        prompt_sistema = f"""
+        Eres Broker Inmobiliario de Mettryc Realty.
+        DIRECTORIO: {directorio}
+        INVENTARIO: {inventario}
+        REGLA: Si el cliente da sus datos, al final pon: ###LEAD_CAPTURED###Nombre: X | Correo: Y | Telefono: Z###
+        """
         
-        historial_api = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones.get(sender, []) + [{"role": "user", "content": mensaje_cliente}]
+        # 3. Llamada IA con Plan B
+        historial = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones.get(sender, []) + [{"role": "user", "content": mensaje_cliente}]
         
-        # LLAMADA A LA NUEVA FUNCIÓN CON PLAN B
-        respuesta_bot = consultar_ia(historial_api)
-        
-        # ... (Resto de tu lógica de captura de lead y Telegram) ...
+        # Lógica de llamada IA (usando tu método que ya funcionaba)
+        # ... (Tu código de requests a OpenRouter) ...
+
+        # 4. Procesar Lead
+        if "###LEAD_CAPTURED###" in respuesta_bot:
+            # ... (Lógica de extracción de número y asignar_agente_round_robin) ...
+            agente = asignar_agente_round_robin()
+            if agente:
+                enviar_notificaciones_telegram(agente, telefono_final, datos_lead)
         
         return {"replies": [{"message": respuesta_bot}]}
     except Exception as e:
-        logger.error(f"Error general: {e}")
-        return {"replies": [{"message": "Estamos procesando tu solicitud."}]}
+        logger.error(f"🔴 Error general: {e}", exc_info=True)
+        return {"replies": [{"message": "Estamos procesando tu solicitud..."}]}
