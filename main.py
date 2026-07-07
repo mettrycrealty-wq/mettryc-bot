@@ -169,15 +169,8 @@ async def handle_request(request: Request):
         
         es_numero_puro = sender.replace("+", "").replace(" ", "").isdigit()
         
-        if es_numero_puro:
-            requisitos_lead = "su Nombre Completo y su Correo Electrónico"
-            etiqueta_lead = "###LEAD_CAPTURED###Nombre: [Valor real] | Correo: [Valor real] | Interés: [Inmueble buscado]###"
-        else:
-            requisitos_lead = "su Nombre Completo, su Correo Electrónico y que te confirme OBLIGATORIAMENTE su Número de WhatsApp (con su código de país, ej: +58...)"
-            etiqueta_lead = "###LEAD_CAPTURED###Nombre: [Valor real] | Correo: [Valor real] | Telefono: [Número Confirmado] | Interés: [Inmueble buscado]###"
-
-        # Cruzamos el diccionario en texto plano para el contexto de la IA
-        directorio_telefonic_str = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
+        # CORRECCIÓN DE LA VARIABLE: Ahora se llama 'directorio'
+        directorio = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
 
         prompt_sistema = f"""
         Eres Paty, la asistente virtual y especialista en atención al público de Mettryc Realty (la primera Tecnoinmobiliaria de Venezuela, ubicada en Valencia, Carabobo, CC Patio Trigal).
