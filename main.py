@@ -22,11 +22,9 @@ MODELO_RESPALDO = "google/gemini-2.0-flash-lite"
 # --- FUNCIONES DE SOPORTE ---
 
 def obtener_inventario():
-    # Si la caché tiene más de 12 horas, actualizamos desde Wasi
     if datetime.now() - inventario_cache["ultima_actualizacion"] > timedelta(hours=12) or not inventario_cache["texto"]:
         logger.info("Actualizando inventario desde Wasi...")
-        # Aquí debes colocar tu lógica de scraping o API de Wasi que ya tenías
-        # Por ahora lo dejamos como una variable para que no dé error
+        # AQUI DEBES PONER TU LÓGICA REAL DE WASI
         inventario_cache["texto"] = "ID:123 - Apartamento en Valencia, 100m2, $50k" 
         inventario_cache["ultima_actualizacion"] = datetime.now()
     return inventario_cache["texto"]
@@ -41,7 +39,6 @@ def sincronizar_google_sheet():
             sheets_cache["agentes"] = data.get("agentes", [])
             sheets_cache["captadores"] = data.get("captadores", {})
             sheets_cache["ultima_actualizacion"] = datetime.now()
-            logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes.")
         except Exception as e: logger.error(f"🔴 Error Sheets: {e}")
 
 def asignar_agente_round_robin():
@@ -54,7 +51,9 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     admin_id = os.getenv("TELEGRAM_ADMIN_ID")
     agente_id = str(agente.get("telegram_id", "")).strip()
-    msg = f"👤 *¡Nuevo lead asignado!* \n\n*Datos:* {datos_lead}\n📲 *Contacto:* https://wa.me/{telefono_destino}"
+    # Link de WhatsApp con formato correcto
+    link_wa = f"https://wa.me/{telefono_destino.replace('+', '').replace(' ', '')}"
+    msg = f"👤 *¡Nuevo lead asignado!* \n\n*Datos:* {datos_lead}\n📲 *Contacto:* {link_wa}"
     
     for chat_id in [agente_id, admin_id]:
         if chat_id and chat_id != "None":
@@ -63,7 +62,7 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
 
 def consultar_ia(historial):
     headers = {"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
-    payload = {"messages": historial, "temperature": 0.3}
+    payload = {"messages": historial, "temperature": 0.2} # Temperatura baja para mayor precisión
     try:
         payload["model"] = MODELO_PRINCIPAL
         resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=20)
@@ -85,22 +84,31 @@ async def handle_request(request: Request):
         
         if not mensaje.strip(): return {"replies": []}
 
-        # Sincronización
         sincronizar_google_sheet()
         inventario = obtener_inventario()
-        directorio = "\n".join([f"- {k}: {v}" for k, v in sheets_cache["captadores"].items()])
+        # Creamos una lista limpia para la IA
+        directorio = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
         
-        prompt_sistema = f"""Eres Broker Inmobiliario de Mettryc Realty. 
+        # PROMPT ESTRUCTURADO EN FASES
+        prompt_sistema = f"""
+        Eres un Broker Inmobiliario experto de Mettryc Realty. 
         INVENTARIO: {inventario}
-        DIRECTORIO (Solo para colegas): {directorio}
-        FLUJO: Si es cliente, recomienda propiedades y SOLO al final pide datos. Si es colega, da info del captador.
-        Si tienes los datos del cliente, escribe: ###LEAD_CAPTURED###Nombre: X | Correo: Y | Telefono: Z###"""
+        DIRECTORIO (Confidencial - Solo colegas): {directorio}
+
+        FASE 1: Identificación. Detecta si es cliente o colega inmobiliario.
+        FASE 2: Si es COLEGA, dale el contacto del captador del DIRECTORIO. Si es CLIENTE, busca en el INVENTARIO las 3 opciones más similares, muestra: Título, ubicación, precio, carac, m2 y link.
+        FASE 3: Solo si el cliente muestra interés real, pide Nombre, Correo y WhatsApp.
+        
+        REGLA CRÍTICA: NO asignes asesor ni pidas datos a clientes hasta cumplir FASE 2. Si es colega, NO asignes asesor.
+        Si el cliente da sus datos, finaliza tu respuesta con: ###LEAD_CAPTURED###Nombre: X | Correo: Y | Telefono: Z###
+        """
         
         if sender not in memoria_conversaciones: memoria_conversaciones[sender] = []
         historial = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender][-10:] + [{"role": "user", "content": mensaje}]
         
         respuesta_bot = consultar_ia(historial)
         
+        # Procesamiento de Lead
         if "###LEAD_CAPTURED###" in respuesta_bot and sender not in clientes_procesados:
             datos = respuesta_bot.split("###LEAD_CAPTURED###")[1].replace("###", "")
             nums = re.findall(r'\+?\d{8,15}', datos)
@@ -108,7 +116,7 @@ async def handle_request(request: Request):
             agente = asignar_agente_round_robin()
             if agente:
                 enviar_notificaciones_telegram(agente, telefono, datos)
-                respuesta_bot += "\n\n¡Un asesor te contactará pronto!"
+                respuesta_bot += f"\n\n¡Perfecto! Tu caso ha sido asignado al asesor *{agente['nombre']}*."
                 clientes_procesados.add(sender)
         
         memoria_conversaciones[sender].append({"role": "user", "content": mensaje})
