@@ -29,7 +29,7 @@ clientes_procesados = set()
 
 # --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS ---
 # Principal: Alta capacidad (1M tokens) para procesar todo el inventario a bajo costo
-MODELO_PRINCIPAL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+MODELO_PRINCIPAL = "google/gemini-2.5-flash-lite"
 # Plan B: Alta empatía y fidelidad conversacional en caso de caída del principal
 MODELO_RESPALDO = "anthropic/claude-3-5-haiku" 
 
