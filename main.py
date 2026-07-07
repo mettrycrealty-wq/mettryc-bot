@@ -27,7 +27,7 @@ memoria_conversaciones = {}
 clientes_procesados = set() 
 MODELO_PRINCIPAL = "deepseek/deepseek-chat"
 # Plan B en caso de que DeepSeek u OpenRouter fallen
-MODELO_RESPALDO = "google/gemini-2.0-flash-lite-preview-02-05:free" 
+MODELO_RESPALDO = "google/gemini-2.5-flash-lite-preview-02-05:free" 
 
 # --- FUNCIONES DE SOPORTE ---
 
