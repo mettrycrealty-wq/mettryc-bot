@@ -2,6 +2,7 @@ import os
 import requests
 import logging
 import time
+import re
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 
@@ -25,9 +26,12 @@ sheets_cache = {
 
 memoria_conversaciones = {}
 clientes_procesados = set() 
-MODELO_PRINCIPAL = "deepseek/deepseek-chat"
-# Plan B en caso de que DeepSeek u OpenRouter fallen
-MODELO_RESPALDO = "google/gemini-2.5-flash-lite-preview-02-05:free" 
+
+# --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS ---
+# Principal: Alta capacidad (1M tokens) para procesar todo el inventario a bajo costo
+MODELO_PRINCIPAL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+# Plan B: Alta empatía y fidelidad conversacional en caso de caída del principal
+MODELO_RESPALDO = "anthropic/claude-3-5-haiku" 
 
 # --- FUNCIONES DE SOPORTE ---
 
@@ -35,10 +39,11 @@ def obtener_inventario_desde_wasi():
     propiedades_limpias = []
     take = 100
     skip = 0
-    max_propiedades = 2000
+    
+    logger.info("Iniciando descarga completa de propiedades ACTIVAS desde Wasi (lotes de 100)...")
     
     while True:
-        url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}"
+        url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}&status=1"
         exito_pagina = False
         intentos = 0
         
@@ -64,14 +69,25 @@ def obtener_inventario_desde_wasi():
                             f"Enlace: {enlace_web}"
                         )
                         propiedades_limpias.append(prop)
+                
                 exito_pagina = True
-                if contador_pagina < take: return "\n".join(propiedades_limpias)
+                logger.info(f"Descargadas {len(propiedades_limpias)} propiedades activas hasta ahora...")
+                
+                if contador_pagina < take: 
+                    logger.info(f"Descarga finalizada. Total activas: {len(propiedades_limpias)}")
+                    return "\n".join(propiedades_limpias)
+                
                 skip += take
                 time.sleep(2)
             except Exception:
                 intentos += 1
+                logger.warning(f"Reintentando conexión con Wasi... (Intento {intentos})")
                 time.sleep(5)
-        if not exito_pagina or skip >= max_propiedades: break
+                
+        if not exito_pagina: 
+            logger.error("Se agotaron los reintentos de conexión con Wasi en esta página.")
+            break
+            
     return "\n".join(propiedades_limpias)
 
 def obtener_inventario():
@@ -132,7 +148,7 @@ def consultar_ia(historial):
 
     # Fallback (Plan B) si falla el principal o da error 'choices'
     try:
-        logger.info("Activando modelo de respaldo (Plan B)...")
+        logger.info("Activando modelo de respaldo (Plan B - Claude 3.5 Haiku)...")
         response = requests.post(url_ia, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial}, timeout=30)
         data = response.json()
         if 'choices' in data: return data['choices'][0]['message']['content']
