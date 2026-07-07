@@ -144,21 +144,22 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     agente_id = agente.get("telegram_id")
     
     link_wa = f"https://wa.me/{telefono_destino}"
-    info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar de inmediato:* {link_wa}"
-    
+    info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar:* {link_wa}"
     url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
+    # Notificación al Agente
     if telegram_token and agente_id:
         try:
-            msg_agente = f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}"
-            requests.post(url_tg, json={"chat_id": agente_id, "text": msg_agente, "parse_mode": "Markdown"}, timeout=5)
+            r = requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Nuevo lead!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=10)
+            if r.status_code != 200:
+                logger.error(f"🔴 Falló Telegram para {agente.get('nombre')} (ID: {agente_id}). Respuesta: {r.text}")
         except Exception as e:
-            logger.error(f"Error enviando Telegram al agente: {e}")
+            logger.error(f"Error técnico enviando Telegram: {e}")
             
+    # Notificación al Admin (para que no pierdas ningún lead)
     if telegram_token and admin_id:
         try:
-            msg_admin = f"👁️ *REPORTE DE SEGUIMIENTO ADMIN*\n👤 *Agente a cargo:* {agente['nombre']}\n{info_cliente}"
-            requests.post(url_tg, json={"chat_id": admin_id, "text": msg_admin, "parse_mode": "Markdown"}, timeout=5)
+            requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE ADMIN*\n👤 *Asignado a:* {agente.get('nombre')}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=10)
         except Exception as e:
             logger.error(f"Error enviando Telegram al admin: {e}")
 
