@@ -36,7 +36,7 @@ clientes_procesados = set() # Para evitar re-asignar leads que ya se han procesa
 
 # --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS ---
 MODELO_PRINCIPAL = "google/gemini-2.5-flash-lite"
-MODELO_RESPALDO = "anthropic/claude-3.5-haiku" # Puede tener problemas temporales de acceso
+MODELO_RESPALDO = "anthropic/claude-3.5-haiku" 
 
 # --- FUNCIONES DE SOPORTE ---
 
@@ -552,7 +552,7 @@ async def handle_request(request: Request):
         if sender not in memoria_conversaciones:
             memoria_conversaciones[sender] = []
         
-        # LLAMADA A IA PARA DETECCIÓN DE ROL E INTENCIÓN
+        # LLAMADA A IA PARA DETECCIÓN DE ROL E INTENCIÓN (SIEMPRE SE HACE)
         deteccion = detectar_rol_y_intencion(mensaje_usuario_raw, memoria_conversaciones[sender])
         rol_usuario = deteccion.get("rol", "cliente") # Por defecto, cliente
         intencion_usuario = deteccion.get("intencion", "info_general") # Por defecto, información general
@@ -564,44 +564,41 @@ async def handle_request(request: Request):
 
         # --- Lógica de Respuesta según Rol y Flujo de Conversación ---
         
-        # PRIORIDAD: Si el rol detectado es 'cliente' Y la intención es CLARAMENTE 'buscar_propiedad'
-        # Este es el primer punto de entrada para un cliente que busca algo.
-        if rol_usuario == "cliente" and intencion_usuario == "buscar_propiedad":
-            # PASO 1: Siempre intentamos encontrar propiedades primero.
-            propiedades_seleccionadas = elegir_top_n_propiedades(inventario_disponible, deteccion, n=3)
-            
-            if not propiedades_seleccionadas:
-                # Si no hay propiedades, se responde amigablemente y se pide reintentar criterios.
-                respuesta_final_chatbot = f"¡Hola! 👋 Gracias por tu interés en propiedades en {filtros_busqueda.get('zona', 'la zona que mencionaste')}. Lamentablemente, no encontré propiedades que coincidan exactamente ahora. ¿Probamos con otros criterios o zonas?"
-            else:
-                # Si encontramos propiedades, las presentamos primero, ¡con mensaje persuasivo!
-                fichas_formateadas = [formatear_ficha_propiedad(p, es_colega=False) for p in propiedades_seleccionadas]
-                # Mensaje introductorio persuasivo + propiedades
-                respuesta_final_chatbot = (
-                    f"¡Hola! 👋 ¡Qué gusto atenderte! Soy Paty, tu asistente VIP de Mettryc Realty. ✨ Analicé tu búsqueda y encontré estas 3 opciones geniales que creo que te encantarán. ¡Échales un vistazo!\n\n" 
-                    + "\n\n".join(fichas_formateadas) +
-                    "\n\n¿Qué te parecen? 🤔 Si te gustan, podemos pasar a darte una atención más personalizada con uno de nuestros expertos. ¡Tú me dices!"
-                )
-                # NOTA: La lógica de captura de datos (pedir nombre/correo) se activará DESPUÉS,
-                # solo si el cliente responde de forma que indique interés en avanzar (ej. "sí, me gusta", "quiero más detalles", etc.)
-                # O si el cliente directamente provee datos en SU SIGUIENTE mensaje.
-
-        # Siguientes casos de rol 'cliente': Si la intención NO es 'buscar_propiedad' o si no se detectó nada específico.
-        elif rol_usuario == "cliente":
-            if intencion_usuario == "info_general":
+        # 1. TRATAMIENTO CUALIFICADO PARA CLIENTES
+        if rol_usuario == "cliente":
+            # CASO A: Cliente busca propiedad
+            if intencion_usuario == "buscar_propiedad":
+                # PASO 1: SIEMPRE mostrar propiedades primero.
+                propiedades_seleccionadas = elegir_top_n_propiedades(inventario_disponible, deteccion, n=3)
+                
+                if not propiedades_seleccionadas:
+                    # Si no hay propiedades, respuesta amigable y sugerir otros criterios.
+                    respuesta_final_chatbot = f"¡Hola! 👋 Gracias por tu interés en propiedades en {filtros_busqueda.get('zona', 'la zona que mencionaste')}. Lamentablemente, no encontré propiedades que coincidan exactamente ahora. ¿Probamos con otros criterios o zonas?"
+                else:
+                    # Si encontramos propiedades, las presentamos primero.
+                    fichas_formateadas = [formatear_ficha_propiedad(p, es_colega=False) for p in propiedades_seleccionadas]
+                    respuesta_final_chatbot = (
+                        f"¡Hola! 👋 ¡Qué gusto atenderte! Soy Paty, tu asistente VIP de Mettryc Realty. ✨ Analicé tu búsqueda y encontré estas 3 opciones geniales que creo que te encantarán. ¡Échales un vistazo!\n\n" 
+                        + "\n\n".join(fichas_formateadas) +
+                        "\n\n¿Qué te parecen? 🤔 Si te gustan, podemos pasar a darte una atención más personalizada con uno de nuestros expertos. ¡Tú me dices!"
+                    )
+                    # La LÓGICA DE CAPTURA DE DATOS se activará DESPUÉS, si el cliente responde positivamente a ESTA PREGUNTA FINAL O da datos.
+                    
+            # CASO B: Cliente con intención general (saludo, consulta no específica)
+            elif intencion_usuario == "info_general":
                 # Usar IA para una respuesta amigable y que invite a la conversación.
                 prompt_respuesta_cliente = f"""
                 Eres Paty, tu asistente VIP de Mettryc Realty. Responde de forma cálida y amigablemente, máximo 30 palabras.
                 Sé útil y haz una pregunta abierta para continuar la charla y ENTENDER MEJOR LA NECESIDAD INMOBILIARIA DEL PROSPECTO.
                 Evita pedir datos personales directamente. Genera una conexión emocional.
-                Contexto: El usuario es un CLIENTE que busca iniciar la conversación. Su última interacción fue: "{mensaje_usuario_raw}".
+                Contexto: El usuario es un CLIENTE. Su última interacción fue: "{mensaje_usuario_raw}".
                 """
                 historial_para_ia = [{"role": "system", "content": prompt_respuesta_cliente}] + memoria_conversaciones[sender][-4:] 
                 respuesta_final_chatbot = consultar_ia(historial_para_ia, max_tokens_respuesta=60)
             else: # Otro tipo de intención de cliente no manejada explícitamente
                 respuesta_final_chatbot = "¡Hola! Gracias por contactarnos. Soy Paty, tu asistente VIP en Mettryc Realty. ¿En qué puedo ayudarte hoy con tus sueños inmobiliarios? ✨"
 
-        # --- Lógica para 'colega_inmobiliario' (ya probada y parece funcionar) ---
+        # --- 2. LÓGICA PARA 'colega_inmobiliario' ---
         elif rol_usuario == "colega_inmobiliario":
             if intencion_usuario == "buscar_propiedad" or intencion_usuario == "pedir_ficha_completa": 
                 propiedades_seleccionadas = elegir_top_n_propiedades(inventario_disponible, deteccion, n=3)
@@ -620,26 +617,15 @@ async def handle_request(request: Request):
                 historial_para_ia = [{"role": "system", "content": prompt_respuesta_colega}] + memoria_conversaciones[sender][-4:]
                 respuesta_final_chatbot = consultar_ia(historial_para_ia, max_tokens_respuesta=60)
 
-        # --- LÓGICA DE CAPTURA DE LEAD PARA CLIENTES ----
-        # **NUEVO FLUJO:** Esta sección se activa DESPUÉS de presentar propiedades (o si la intención era pedir datos)
-        # y SOLO si el cliente responde de una manera que indica INTERÉS en avanzar y cerrar el trato.
-        # La bandera `clientes_procesados` sigue siendo clave para evitar re-procesamiento.
+        # --- LÓGICA DE CAPTURA DE LEAD PARA CLIENTES (SOLO SI ES CLIENTE Y MUESTRA INTERÉS EXPLÍCITO) ----
+        # Esta sección se activa ÚNICAMENTE si se cumplen las condiciones de rol=cliente Y
+        # si el cliente responde de una manera que indica INTERÉS en avanzar (o provee datos).
+        # NO se activa si el rol es 'colega_inmobiliario'.
         
-        # Condición para iniciar la captura:
-        # 1. Rol 'cliente'
-        # 2. Intención 'buscar_propiedad' (probablemente ya vio opciones)
-        # 3. NO ha sido procesado aún.
-        # 4. Y en su ÚLTIMO mensaje hay indicios de querer avanzar O está proveyendo datos DIRECTAMENTE.
-        
-        # Si el chatbot acaba de presentar propiedades (respuesta_final_chatbot empieza con "¡Hola! 👋 ¡Qué gusto atenderte!...")
-        # y el cliente responde con algo que NO es una reconfirmación de la búsqueda original,
-        # ES PROBABLE QUE ESTÉ INTERESADO EN AVANZAR.
-        
-        # Si la intencion es CLARAMENTE de cliente buscando, y el cliente responde con DATOS.
         if rol_usuario == "cliente" and intencion_usuario == "buscar_propiedad" and sender not in clientes_procesados:
             
             datos_lead_extraccion = {}
-            # Extracción de datos más robusta
+            # Extracción de datos clave
             nombre_match = re.search(r"(?:mi? nombre es|soy|me llamo|me llamo soy)\s+([A-Za-zÀ-ÖØ-ÿ'-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'-]+){1,})", mensaje_usuario_raw, re.IGNORECASE) # Busca Nombre Apellido
             correo_match = re.search(r"([\w\.-]+@[\w\.-]+\.[\w]+)", mensaje_usuario_raw, re.IGNORECASE) # Patrón básico de email
             telefono_match = re.search(r"(?:mi? teléfono es|mi? celular es|mi? wsp es|tel:|cel:)\s*([\+?\d\s()-]{7,})", mensaje_usuario_raw, re.IGNORECASE) # Patrón básico de teléfono
@@ -647,17 +633,19 @@ async def handle_request(request: Request):
             if nombre_match: datos_lead_extraccion["nombre"] = nombre_match.group(1).strip()
             if correo_match: datos_lead_extraccion["correo"] = correo_match.group(1).strip()
             if telefono_match: datos_lead_extraccion["telefono"] = telefono_match.group(1).strip()
-            elif sender.isdigit() and len(sender) > 5: # Si el sender es un número de teléfono válido
+            elif sender.isdigit() and len(sender) > 5: # Usa el número del sender como fallback si es válido
                  datos_lead_extraccion["telefono"] = sender 
             
-            # CONDICIÓN PARA PROCEDER CON CAPTURA: Nombre COMPLETO (mín 2 palabras) Y Correo.
+            # CONDICIÓN MÍNIMA PARA PROCEDER CON CAPTURA: Nombre COMPLETO Y Correo.
+            # Esto se activa si el cliente responde con estos datos DESPUÉS de ver las propiedades o si lo proporciona directamente.
             if "nombre" in datos_lead_extraccion and "correo" in datos_lead_extraccion:
                 
-                if len(datos_lead_extraccion["nombre"].split()) < 2: # Re-validar si el nombre tiene al menos dos partes
+                # VALIDACIÓN ADICIONAL: Asegurar que el nombre tenga al menos dos partes (Nombre y Apellido).
+                if len(datos_lead_extraccion["nombre"].split()) < 2: 
                     logger.warning(f"Nombre incompleto detectado de {sender}: '{datos_lead_extraccion['nombre']}'. Pidiendo apellidos.")
                     respuesta_final_chatbot = f"¡Excelente! Para poder registrar tu ficha VIP y asignarte el asesor especialista, por favor, confírmame tu Apellido. 😊"
                 else:
-                    # Tenemos Nombre completo y Correo: Asignar agente y notificar
+                    # Si tenemos Nombre completo y Correo: ¡Procedemos a asignar agente y notificar!
                     agente_asignado = asignar_agente_round_robin()
                     if agente_asignado:
                         telefono_a_notificar = datos_lead_extraccion.get("telefono", sender) # Usar teléfono capturado o sender como fallback
@@ -681,10 +669,9 @@ async def handle_request(request: Request):
                         # Si no se pudo asignar agente (ej. lista vacía)
                         respuesta_final_chatbot = "¡Genial! Hemos registrado tu interés y estamos asignando un asesor de inmediato. Por favor, espera un momento mientras te conectamos. Gracias."
             
-            # Si faltan datos cruciales (Nombre o Correo) Y NO hemos activado la respuesta de captación aún.
-            # Esto asegura que el cliente vea las propiedades primero.
-            # Solo pedimos datos si la respuesta aún no ha sido la de mostrar propiedades.
-            elif not respuesta_final_chatbot.startswith("¡Hola! 👋 ¡Qué gusto atenderte! Analicé tu búsqueda y encontré estas 3 opciones"):
+            # Si faltan datos cruciales (Nombre o Correo) Y el chatbot aún NO ha respondido con las propiedades
+            # (esto evita pedir datos si el cliente acaba de preguntar algo general y aún no ha visto opciones).
+            elif not respuesta_final_chatbot.startswith("¡Hola! 👋 ¡Qué gusto atenderte! Soy Paty, tu asistente VIP de Mettryc Realty."):
                  if not "nombre" in datos_lead_extraccion: # Si falta Nombre
                      respuesta_final_chatbot = "¡Me alegra tu interés! Para registrar tu ficha VIP y asignar un asesor, confírmame tu Nombre Completo (Nombre y Apellido). 😊"
                  elif "correo" not in datos_lead_extraccion: # Si falta Correo (y ya tenemos nombre)
