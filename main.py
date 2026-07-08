@@ -107,19 +107,46 @@ def zona_coincide(zona_buscada: str, zona_propiedad: str, ciudad_propiedad: str 
     if not buscada_norm:
         return True
 
-    texto_propiedad = f"{zona_norm} {ciudad_norm}".strip()
-
-    if buscada_norm in texto_propiedad:
-        return True
-
     tokens_busqueda = tokens_relevantes(buscada_norm)
-    tokens_propiedad = tokens_relevantes(texto_propiedad)
+    tokens_propiedad = tokens_relevantes(f"{zona_norm} {ciudad_norm}")
 
     if not tokens_busqueda:
         return True
 
-    coincidencias = tokens_busqueda.intersection(tokens_propiedad)
-    return len(coincidencias) >= min(len(tokens_busqueda), 2)
+    return tokens_busqueda.issubset(tokens_propiedad)
+
+
+def tipo_propiedad_coincide(tipo_buscado: str, propiedad: dict) -> bool:
+    buscado = normalizar_texto(tipo_buscado)
+    titulo = normalizar_texto(propiedad.get("titulo", ""))
+    tipo_inventario = normalizar_texto(propiedad.get("tipo_propiedad_wasi", ""))
+
+    if buscado in {"townhouse", "townhouses"}:
+        return "townhouse" in titulo or "townhouse" in tipo_inventario
+
+    if buscado in {"apartoquita", "apartoquitas"}:
+        return "apartoquita" in titulo or "apartoquita" in tipo_inventario
+
+    if buscado in {"penthouse", "penthouses"}:
+        return "penthouse" in titulo or "penthouse" in tipo_inventario
+
+    if buscado in {"apartamento", "apartamentos"}:
+        return (
+            "apartamento" in titulo
+            or "apartamento" in tipo_inventario
+            or "penthouse" in titulo
+            or "penthouse" in tipo_inventario
+        )
+
+    if buscado in {"casa", "casas"}:
+        return (
+            "casa" in titulo
+            or "casa" in tipo_inventario
+            or "townhouse" in titulo
+            or "apartoquita" in titulo
+        )
+
+    return buscado in titulo or buscado in tipo_inventario
 
 
 def convertir_entero_seguro(valor) -> int:
@@ -619,7 +646,7 @@ def extraer_filtros_regex(mensaje_usuario: str, filtros: dict) -> dict:
     tipos = [
         "casa", "apartamento", "local", "terreno", "oficina",
         "galpon", "galpón", "townhouse", "penthouse", "quinta",
-        "anexo", "consultorio"
+        "anexo", "consultorio", "apartoquita", "apartoquitas"
     ]
 
     for tipo in tipos:
@@ -911,8 +938,7 @@ def elegir_top_n_propiedades(inventario, filtros, n=3, excluir_ids=None):
     if tipo_prop:
         propiedades = [
             p for p in propiedades
-            if tipo_prop in normalizar_texto(p.get("tipo_propiedad_wasi", ""))
-            or tipo_prop in normalizar_texto(p.get("titulo", ""))
+            if tipo_propiedad_coincide(tipo_prop, p)
         ]
 
     if zona:
@@ -949,10 +975,7 @@ def elegir_top_n_propiedades(inventario, filtros, n=3, excluir_ids=None):
         puntos = 0
         if zona and zona_coincide(zona, p.get("zona", ""), p.get("ciudad", "")):
             puntos += 5
-        if tipo_prop and (
-            tipo_prop in normalizar_texto(p.get("tipo_propiedad_wasi", ""))
-            or tipo_prop in normalizar_texto(p.get("titulo", ""))
-        ):
+        if tipo_prop and tipo_propiedad_coincide(tipo_prop, p):
             puntos += 4
         precio = (
             p.get("precio_venta_float", 0)
@@ -1049,8 +1072,8 @@ PALABRAS_INVALIDAS_NOMBRE = {
     "me", "interesa", "quiero", "verla", "visitar", "cita",
     "agendar", "asesor", "hola", "buenas", "gracias",
     "opcion", "opción", "primera", "segunda", "tercera",
-    "lista", "lista", "ultima", "última", "segunda", "tercera",
-    "casa", "casas", "venta", "alquiler", "propiedad", "mas", "más", "lista"
+    "lista", "ultima", "última", "segunda", "tercera",
+    "casa", "casas", "venta", "alquiler", "propiedad", "mas", "más"
 }
 
 
