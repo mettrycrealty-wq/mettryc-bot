@@ -211,7 +211,7 @@ def obtener_estado_usuario(sender: str) -> dict:
                 "whatsapp": ""
             },
             "ultimo_pedido_dato": None,
-            "ultimo_mensaje_usuario": "",
+            "mensaje_previo": "",
             "ultima_respuesta": ""
         }
     return estado_usuarios[sender]
@@ -1053,22 +1053,7 @@ def extraer_datos_lead(mensaje: str, lead_actual: dict, sender: str = "") -> dic
     )
     if nombre_match:
         lead["nombre"] = nombre_match.group(1).strip()
-    elif not lead.get("nombre"):
-        texto_sin_email = re.sub(r"[\w\.-]+@[\w\.-]+\.\w+", "", mensaje)
-        texto_sin_tel = re.sub(r"\+?\d[\d\s\-\(\)]{7,}\d", "", texto_sin_email)
-        palabras = re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", texto_sin_tel)
-        palabras_invalidas = {
-            "me", "interesa", "quiero", "verla", "visitar", "cita",
-            "agendar", "asesor", "hola", "buenas", "gracias",
-            "opcion", "opción", "primera", "segunda", "tercera"
-        }
-        palabras_limpias = [
-            p for p in palabras
-            if normalizar_texto(p) not in palabras_invalidas
-        ]
-        if len(palabras_limpias) >= 2:
-            posible_nombre = " ".join(palabras_limpias[:4])
-            lead["nombre"] = posible_nombre.strip()
+
     return lead
 
 
@@ -1260,7 +1245,17 @@ async def handle_request(request: Request):
             return {"replies": []}
 
         estado = obtener_estado_usuario(sender)
-        estado["ultimo_mensaje_usuario"] = mensaje_cliente
+
+        mensaje_previo = estado.get("mensaje_previo", "")
+        if mensaje_cliente == mensaje_previo and estado.get("ultima_respuesta"):
+            return {
+                "replies": [
+                    {
+                        "message": estado["ultima_respuesta"].replace("**", "*")
+                    }
+                ]
+            }
+        estado["mensaje_previo"] = mensaje_cliente
 
         if "mercadolibre.com.ve/mlv" in mensaje_cliente.lower():
             respuesta = (
@@ -1356,6 +1351,7 @@ async def handle_request(request: Request):
                 )
                 clientes_procesados.add(sender)
                 estado["estado"] = ESTADO_LEAD_COMPLETO
+                estado["ultimo_pedido_dato"] = None
                 respuesta = (
                     f"¡Perfecto, {estado['lead']['nombre'].split()[0]}! ✨ "
                     f"He registrado tus datos y asigné tu solicitud a *{agente.get('nombre', 'uno de nuestros asesores')}*. "
