@@ -211,7 +211,7 @@ def obtener_estado_usuario(sender: str) -> dict:
                 "whatsapp": ""
             },
             "ultimo_pedido_dato": None,
-            "mensaje_previo": "",
+            "mensaje_previo": {"texto": "", "timestamp": datetime.min},
             "ultima_respuesta": ""
         }
     return estado_usuarios[sender]
@@ -1221,10 +1221,7 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
         try:
             response = requests.post(
                 url_tg,
-                json={
-                    "chat_id": chat_id,
-                    "text": mensaje
-                },
+                json={"chat_id": chat_id, "text": mensaje},
                 timeout=8
             )
             response.raise_for_status()
@@ -1298,16 +1295,18 @@ async def handle_request(request: Request):
 
         estado = obtener_estado_usuario(sender)
 
-        mensaje_previo = estado.get("mensaje_previo", "")
-        if mensaje_cliente == mensaje_previo and estado.get("ultima_respuesta"):
-            return {
-                "replies": [
-                    {
-                        "message": estado["ultima_respuesta"].replace("**", "*")
-                    }
-                ]
-            }
-        estado["mensaje_previo"] = mensaje_cliente
+        ahora = datetime.now()
+        mensaje_previo = estado.get("mensaje_previo", {})
+        if (
+            mensaje_cliente == mensaje_previo.get("texto")
+            and (ahora - mensaje_previo.get("timestamp", datetime.min)).total_seconds() < 5
+        ):
+            return {"replies": []}
+
+        estado["mensaje_previo"] = {
+            "texto": mensaje_cliente,
+            "timestamp": ahora
+        }
 
         if "mercadolibre.com.ve/mlv" in mensaje_cliente.lower():
             respuesta = (
