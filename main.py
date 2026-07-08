@@ -23,7 +23,7 @@ app = FastAPI()
 
 HORARIOS_ACTUALIZACION_INVENTARIO = [0, 12]
 
-# Prioriza latencia rápida
+# Baja latencia
 MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite")
 MODELO_RESPALDO = os.getenv("MODELO_RESPALDO", "openai/gpt-4o-mini")
 MAX_TOKENS_IA = int(os.getenv("MAX_TOKENS_IA", "260"))
@@ -95,7 +95,21 @@ PALABRAS_INVALIDAS_NOMBRE = {
     "asesor", "hola", "buenas", "gracias", "opcion", "opción", "primera",
     "segunda", "tercera", "lista", "ultima", "última", "casa", "casas",
     "venta", "alquiler", "propiedad", "mas", "más", "correo", "email",
-    "gmail", "hotmail", "outlook", "yahoo", "com", "net", "org", "cual", "cuál"
+    "gmail", "hotmail", "outlook", "yahoo", "com", "net", "org", "cual", "cuál",
+    "la", "el", "que", "enviaste", "enviada"
+}
+
+FRASES_NO_NOMBRE = {
+    "la que enviaste",
+    "la ultima", "la última",
+    "la primera", "la segunda", "la tercera",
+    "la opcion", "la opción",
+    "me interesa", "quiero esa", "quiero la ultima", "quiero la última"
+}
+
+STOPWORDS_NOMBRE_EXTRA = {
+    "la", "el", "que", "enviaste", "ultima", "última", "primera", "segunda", "tercera",
+    "opcion", "opción", "interesa", "quiero", "esa", "esta"
 }
 
 
@@ -156,18 +170,66 @@ def normalizar_operacion(op: str) -> str:
     return ""
 
 
+def mensaje_parece_contacto(mensaje: str) -> bool:
+    if not mensaje:
+        return False
+    tiene_correo = bool(re.search(r"[\w\.-]+@[\w\.-]+\.\w+", mensaje, re.IGNORECASE))
+    tiene_tel = bool(re.search(r"\+?\d[\d\s\-\(\)]{7,}\d", mensaje))
+    return tiene_correo or tiene_tel
+
+
+def es_nombre_persona_valido(nombre: str) -> bool:
+    if not nombre:
+        return False
+    n = normalizar_texto(nombre)
+
+    if n in FRASES_NO_NOMBRE:
+        return False
+    if any(f in n for f in FRASES_NO_NOMBRE):
+        return False
+    if re.search(r"@|\d", nombre):
+        return False
+
+    palabras = [p for p in re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", nombre)]
+    palabras = [p for p in palabras if normalizar_texto(p) not in STOPWORDS_NOMBRE_EXTRA and len(p) >= 2]
+
+    # Nombre completo obligatorio
+    if len(palabras) < 2 or len(palabras) > 4:
+        return False
+
+    return True
+
+
+def primer_nombre_seguro(lead: dict) -> str:
+    nombre = (lead or {}).get("nombre", "") or ""
+    if es_nombre_persona_valido(nombre):
+        return capitalizar_nombre(nombre).split()[0]
+    return ""
+
+
 def parsear_presupuesto_texto(texto: str):
+    """
+    Evita confundir teléfonos con presupuesto.
+    """
     if not texto:
         return None
+
     t = normalizar_texto(texto)
+
+    # teléfono largo sin contexto de dinero => ignorar
+    if re.search(r"\+?\d[\d\s\-\(\)]{9,}\d", texto):
+        if not any(k in t for k in ["presupuesto", "maximo", "máximo", "hasta", "usd", "dolar", "dolares", "$", "mil", "millon", "millones", "k", "mm"]):
+            return None
 
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*(mil|k)\b", t)
     if m:
-        return float(m.group(1).replace(",", ".")) * 1000
+        val = float(m.group(1).replace(",", ".")) * 1000
+        return val if 1000 <= val <= 20_000_000 else None
 
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*(millon|millones|mm)\b", t)
     if m:
-        return float(m.group(1).replace(",", ".")) * 1_000_000
+        val = float(m.group(1).replace(",", ".")) * 1_000_000
+        return val if 1000 <= val <= 20_000_000 else None
 
     candidatos = re.findall(r"(?:usd|us|dolares|dolar|\$)?\s*([0-9][0-9\.,]{3,})", t)
     for c in candidatos:
@@ -187,12 +249,14 @@ def parsear_presupuesto_texto(texto: str):
                 limpio = limpio.replace(",", "")
             else:
                 limpio = limpio.replace(",", ".")
+
         try:
             val = float(limpio)
-            if val >= 1000:
+            if 1000 <= val <= 20_000_000:
                 return val
         except Exception:
             continue
+
     return None
 
 
@@ -310,7 +374,7 @@ def enviar_respuesta(sender: str, mensaje_cliente: str, respuesta: str, estado: 
     if estado is not None:
         estado["ultima_respuesta"] = respuesta
     actualizar_memoria(sender, mensaje_cliente, respuesta)
-    return {"replies": [{"message": respuesta.replace("**", "*")}]}  # WhatsApp-style
+    return {"replies": [{"message": respuesta.replace("**", "*")}]}
 
 
 # ============================================================
@@ -415,12 +479,6 @@ async def garantizar_inventario_actualizado(force: bool = False):
     await asyncio.to_thread(actualizar_cache_inventario, force)
 
 
-@app.on_event("startup")
-async def startup():
-    await garantizar_inventario_actualizado(force=True)
-    await asyncio.to_thread(sincronizar_google_sheet)
-
-
 # ============================================================
 # GOOGLE SHEETS (TURNOS + CAPTADORES)
 # ============================================================
@@ -479,7 +537,9 @@ def asignar_agente_round_robin():
     if not agentes:
         return None
     sheets_cache["ultimo_indice"] = (sheets_cache["ultimo_indice"] + 1) % len(agentes)
-    return agentes[sheets_cache["ultimo_indice"]]
+    agente = agentes[sheets_cache["ultimo_indice"]]
+    logger.info(f"Agente asignado: {agente.get('nombre', 'Sin nombre')}")
+    return agente
 
 
 def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
@@ -503,6 +563,7 @@ def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
             best_phone = telefono
     if best_score >= 2:
         return best_phone
+
     return "N/D"
 
 
@@ -513,6 +574,7 @@ def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
 def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str = "") -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
+        logger.warning("OPENROUTER_API_KEY no configurada.")
         return fallback
 
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -545,6 +607,7 @@ def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str 
                     return c.strip()
         except Exception as e:
             logger.warning(f"IA error con {modelo}: {e}")
+
     return fallback
 
 
@@ -555,6 +618,7 @@ def extraer_json_de_texto(texto: str) -> dict:
         return json.loads(texto)
     except Exception:
         pass
+
     ini = texto.find("{")
     fin = texto.rfind("}")
     if ini != -1 and fin != -1 and fin > ini:
@@ -567,7 +631,7 @@ def extraer_json_de_texto(texto: str) -> dict:
 
 
 # ============================================================
-# EXTRACCIÓN IA + FALLBACK LOCAL
+# EXTRACCIÓN IA + FALLBACK
 # ============================================================
 
 def fallback_regex_filtros(mensaje: str, filtros: dict) -> dict:
@@ -592,9 +656,13 @@ def fallback_regex_filtros(mensaje: str, filtros: dict) -> dict:
     elif any(k in txt for k in ["alquiler", "alquilar", "renta", "arrendar"]):
         out["tipo_operacion"] = "alquiler"
 
-    # zona
+    # zona (si no existe)
     if not out.get("zona"):
-        m = re.search(r"(?:en|zona|urbanizacion|urbanización|sector|ciudad)\s+(.+?)(?:\s+(?:con|hasta|de\s+\d|presupuesto|para)\b|$)", mensaje, re.IGNORECASE)
+        m = re.search(
+            r"(?:en|zona|urbanizacion|urbanización|sector|ciudad)\s+(.+?)(?:\s+(?:con|hasta|de\s+\d|presupuesto|para)\b|$)",
+            mensaje,
+            re.IGNORECASE
+        )
         if m:
             cand = re.sub(r"\s+", " ", m.group(1)).strip()
             if 1 <= len(cand.split()) <= 8:
@@ -609,6 +677,7 @@ def fallback_regex_filtros(mensaje: str, filtros: dict) -> dict:
     mh = re.search(r"(\d+)\s*(hab|habitacion|habitaciones|cuarto|cuartos)", txt)
     if mh:
         out["habitaciones_min"] = int(mh.group(1))
+
     mb = re.search(r"(\d+)\s*(bano|banos|baño|baños)", txt)
     if mb:
         out["banos_min"] = int(mb.group(1))
@@ -641,19 +710,24 @@ def fallback_regex_lead(mensaje: str, lead: dict, sender: str) -> dict:
             out["whatsapp"] = sender_tel
 
     # nombre explícito
-    m_nom = re.search(r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÀ-ÖØ-ÿ'´-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'´-]+){0,4})", texto, re.IGNORECASE)
+    m_nom = re.search(
+        r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÀ-ÖØ-ÿ'´-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'´-]+){0,4})",
+        texto,
+        re.IGNORECASE
+    )
     if m_nom:
-        cand = m_nom.group(1).strip()
-        palabras = [p for p in re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", cand) if normalizar_texto(p) not in PALABRAS_INVALIDAS_NOMBRE]
-        if palabras:
-            out["nombre"] = capitalizar_nombre(" ".join(palabras[:4]))
+        cand = capitalizar_nombre(m_nom.group(1).strip())
+        if es_nombre_persona_valido(cand):
+            out["nombre"] = cand
     else:
-        # si mensaje parece solo nombre
+        # nombre directo: mensaje corto, no contacto, 2-4 palabras válidas
         if not m_mail and not m_tel and len(texto.strip()) <= 60:
             palabras = re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", texto)
             limpias = [p for p in palabras if normalizar_texto(p) not in PALABRAS_INVALIDAS_NOMBRE and len(p) > 1]
-            if 1 <= len(limpias) <= 4:
-                out["nombre"] = capitalizar_nombre(" ".join(limpias[:4]))
+            if 2 <= len(limpias) <= 4:
+                cand = capitalizar_nombre(" ".join(limpias[:4]))
+                if es_nombre_persona_valido(cand):
+                    out["nombre"] = cand
 
     return out
 
@@ -671,18 +745,16 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     system = (
         "Eres un analista de mensajes para chatbot inmobiliario. "
         "Responde SOLO JSON válido, sin texto adicional. "
-        "Objetivo: interpretar intención, corregir errores ortográficos y extraer datos estructurados."
+        "Objetivo: interpretar intención, corregir typos y extraer datos estructurados."
     )
 
     user_prompt = f"""
-Reglas de negocio:
-1) "townhouse" y "apartoquinta" pueden venir como tipo "casa" en inventario; aun así se deben detectar exactamente si usuario lo pide.
-2) Si usuario pide "casas", también acepta townhouse/apartoquinta como estilos de casa.
-3) "penthouse" es estilo de apartamento.
-4) Zonas con dirección son estrictas: "Trigal Norte" NO es "Trigal Sur/Centro".
-5) Interpretar typos: towhouse/towhouse => townhouse; apartoquita => apartoquinta.
-6) Operación: comprar/compra/adquirir => venta. alquilar/renta => alquiler.
-7) Rol: si detectas broker/realtor/colega/asesor/comision/mls => colega_inmobiliario. De lo contrario cliente.
+Reglas:
+1) typos: towhouse/towhouse=>townhouse, apartoquita=>apartoquinta.
+2) comprar/compra/adquirir => venta. alquilar/renta => alquiler.
+3) zonas direccionales estrictas: Trigal Norte != Trigal Sur/Centro.
+4) rol colega si detectas broker/realtor/colega/asesor/comision/mls.
+5) En lead, SOLO colocar nombre si realmente parece nombre de persona (no frases como "la que enviaste").
 
 Estado actual:
 {json.dumps({"filtros": filtros, "lead": lead, "rol": rol_actual, "estado": estado.get("estado")}, ensure_ascii=False)}
@@ -690,7 +762,7 @@ Estado actual:
 Mensaje usuario:
 "{mensaje_usuario}"
 
-Devuelve exactamente este schema JSON:
+Devuelve exacto este schema:
 {{
   "intencion": "saludo|buscar|mas_opciones|ajustar_busqueda|interes_propiedad|enviar_datos|otro",
   "rol": "cliente|colega_inmobiliario|desconocido",
@@ -708,7 +780,6 @@ Devuelve exactamente este schema JSON:
     "correo": "",
     "whatsapp": ""
   }},
-  "faltantes_prioritarios": [],
   "pregunta_siguiente": ""
 }}
 """
@@ -729,10 +800,12 @@ def fusionar_filtros(base: dict, nuevos: dict, mensaje_usuario: str) -> dict:
 
     if nuevos.get("tipo_propiedad"):
         out["tipo_propiedad"] = normalizar_tipo_propiedad(nuevos["tipo_propiedad"])
+
     if nuevos.get("tipo_operacion"):
         op = normalizar_operacion(nuevos["tipo_operacion"])
         if op:
             out["tipo_operacion"] = op
+
     if nuevos.get("zona"):
         out["zona"] = str(nuevos["zona"]).strip()
 
@@ -746,9 +819,11 @@ def fusionar_filtros(base: dict, nuevos: dict, mensaje_usuario: str) -> dict:
 
     if isinstance(nuevos.get("caracteristicas"), list) and nuevos.get("caracteristicas"):
         actuales = out.get("caracteristicas", []) or []
-        out["caracteristicas"] = list(dict.fromkeys(actuales + [str(c).strip() for c in nuevos["caracteristicas"] if str(c).strip()]))
+        out["caracteristicas"] = list(
+            dict.fromkeys(actuales + [str(c).strip() for c in nuevos["caracteristicas"] if str(c).strip()])
+        )
 
-    # fallback regex complementario
+    # fallback local
     out = fallback_regex_filtros(mensaje_usuario, out)
 
     # normalizaciones finales
@@ -779,9 +854,9 @@ def fusionar_lead(base: dict, nuevos: dict, mensaje: str, sender: str) -> dict:
     nuevos = nuevos or {}
 
     if nuevos.get("nombre"):
-        nom = capitalizar_nombre(str(nuevos["nombre"]).strip())
-        if nom and normalizar_texto(nom) not in PALABRAS_INVALIDAS_NOMBRE:
-            out["nombre"] = nom
+        cand = capitalizar_nombre(str(nuevos["nombre"]).strip())
+        if es_nombre_persona_valido(cand):
+            out["nombre"] = cand
 
     if nuevos.get("correo"):
         correo = str(nuevos["correo"]).strip().lower()
@@ -789,10 +864,16 @@ def fusionar_lead(base: dict, nuevos: dict, mensaje: str, sender: str) -> dict:
             out["correo"] = correo
 
     if nuevos.get("whatsapp"):
-        out["whatsapp"] = limpiar_telefono(str(nuevos["whatsapp"]))
+        w = limpiar_telefono(str(nuevos["whatsapp"]))
+        if len(w) >= 10:
+            out["whatsapp"] = w
 
     # fallback robusto
     out = fallback_regex_lead(mensaje, out, sender)
+
+    # validación final de nombre
+    if out.get("nombre") and not es_nombre_persona_valido(out["nombre"]):
+        out["nombre"] = ""
 
     return out
 
@@ -814,11 +895,10 @@ def pregunta_clara_por_campo(campo: str, sugerida_ia: str = "") -> str:
         return sugerida_ia.strip()
 
     preguntas = {
-        "tipo_propiedad": "Para continuar, indícame el tipo de propiedad que buscas (casa, apartamento, townhouse, apartoquinta, local, oficina, etc.).",
+        "tipo_propiedad": "Para continuar, indícame el tipo de propiedad (casa, apartamento, townhouse, apartoquinta, local, oficina, etc.).",
         "zona": "Para continuar, ¿en qué zona exacta deseas buscar? (Ejemplo: Trigal Norte, Valencia).",
         "tipo_operacion": "Para seguir, ¿la deseas para *venta* o *alquiler*?",
-        "presupuesto": "Para afinar resultados, compárteme tu presupuesto máximo aproximado.",
-        "caracteristicas": "¿Qué característica es indispensable para ti? (patio, terraza, vigilancia, etc.)"
+        "presupuesto": "Para afinar resultados, compárteme tu presupuesto máximo aproximado."
     }
     return preguntas.get(campo, "Para continuar, compárteme ese dato de tu búsqueda por favor.")
 
@@ -897,6 +977,7 @@ def elegir_top_n_propiedades(inventario: list, filtros: dict, n=3, excluir_ids=N
 
     if hab_min is not None:
         props = [p for p in props if convertir_entero_seguro(p.get("habitaciones")) >= int(hab_min)]
+
     if ban_min is not None:
         props = [p for p in props if convertir_entero_seguro(p.get("banos")) >= int(ban_min)]
 
@@ -975,38 +1056,46 @@ def usuario_pide_mas_opciones(m: str) -> bool:
     return any(p in t for p in patrones)
 
 
+def usuario_solicita_ajuste(m: str) -> bool:
+    t = normalizar_texto(m)
+    patrones = [
+        "no me gustan", "no me gustaron", "no me gusta", "ninguna me gusta",
+        "no me sirven", "no me convence", "no me convencen", "otra zona", "sube el presupuesto"
+    ]
+    return any(p in t for p in patrones)
+
+
 def usuario_muestra_interes(m: str) -> bool:
     t = normalizar_texto(m)
     patrones = [
         "me interesa", "quiero verla", "quiero ver la", "quiero ver el", "quiero visitar",
         "agendar", "cita", "quiero avanzar", "contactar asesor", "hablar con asesor",
-        "opcion 1", "opcion 2", "opcion 3", "la primera", "la segunda", "la tercera"
+        "opcion 1", "opcion 2", "opcion 3", "la primera", "la segunda", "la tercera", "la ultima", "la última"
     ]
     return any(p in t for p in patrones)
 
 
 def usuario_envia_datos_contacto(m: str) -> bool:
-    tiene_correo = bool(re.search(r"[\w\.-]+@[\w\.-]+\.\w+", m, re.IGNORECASE))
-    tiene_tel = bool(re.search(r"\+?\d[\d\s\-\(\)]{7,}\d", m))
-    return tiene_correo or tiene_tel
+    return mensaje_parece_contacto(m)
 
 
 def proximo_dato_lead(lead: dict) -> Optional[str]:
-    # Nombre al menos 1 palabra para no trancar flujo
-    if not lead.get("nombre"):
+    nombre = (lead or {}).get("nombre", "")
+    if not es_nombre_persona_valido(nombre):
         return "nombre"
-    if not lead.get("correo"):
+    if not (lead or {}).get("correo"):
         return "correo"
-    if not lead.get("whatsapp"):
+    if not (lead or {}).get("whatsapp"):
         return "whatsapp"
     return None
 
 
 def construir_pedido_dato_lead(campo: str, nombre: str = "") -> str:
-    saludo = capitalizar_nombre(nombre).split()[0] if nombre else "gracias"
+    pnombre = primer_nombre_seguro({"nombre": nombre})
     mensajes = {
-        "nombre": "¡Excelente! Para asignarte un asesor, compárteme tu *nombre y apellido* por favor.",
-        "correo": f"Perfecto, {saludo} 🙌 Ahora indícame tu *correo electrónico*.",
+        "nombre": "¡Excelente! Para asignarte un asesor, compárteme tu *nombre completo* (nombre y apellido), por favor.",
+        "correo": (f"Perfecto, {pnombre} 🙌 Ahora indícame tu *correo electrónico*."
+                   if pnombre else "Perfecto 🙌 Ahora indícame tu *correo electrónico*."),
         "whatsapp": "Genial. Por favor compárteme tu *número de WhatsApp* con código de país."
     }
     return mensajes.get(campo, "Compárteme ese dato para continuar por favor.")
@@ -1014,7 +1103,7 @@ def construir_pedido_dato_lead(campo: str, nombre: str = "") -> str:
 
 def construir_recordatorio_dato(campo: str) -> str:
     mensajes = {
-        "nombre": "Aún me falta tu *nombre* para continuar. ¿Me lo compartes ahora?",
+        "nombre": "Aún me falta tu *nombre completo* (nombre y apellido) para continuar. ¿Me lo compartes ahora?",
         "correo": "Aún me falta tu *correo electrónico* para continuar. ¿Me lo compartes ahora?",
         "whatsapp": "Aún me falta tu *número de WhatsApp* para continuar. ¿Me lo compartes ahora?"
     }
@@ -1056,7 +1145,10 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
         if x.strip()
     ]
 
-    nombre_cliente = capitalizar_nombre(lead.get("nombre", "")) or "Cliente sin nombre"
+    nombre_cliente = capitalizar_nombre(lead.get("nombre", ""))
+    if not es_nombre_persona_valido(nombre_cliente):
+        nombre_cliente = "Cliente sin nombre"
+
     correo = lead.get("correo", "N/D")
     whatsapp = limpiar_telefono(lead.get("whatsapp", ""))
     link_wa = f"https://wa.me/{whatsapp}" if whatsapp else "N/D"
@@ -1121,6 +1213,16 @@ def respuesta_reclutamiento() -> str:
 
 
 # ============================================================
+# STARTUP
+# ============================================================
+
+@app.on_event("startup")
+async def startup():
+    await garantizar_inventario_actualizado(force=True)
+    await asyncio.to_thread(sincronizar_google_sheet)
+
+
+# ============================================================
 # WEBHOOK
 # ============================================================
 
@@ -1168,7 +1270,7 @@ async def handle_request(request: Request):
             if es_consulta_reclutamiento(mensaje_cliente):
                 return enviar_respuesta(sender, mensaje_cliente, respuesta_reclutamiento(), estado)
 
-            # refresco inventario sin bloquear demasiado
+            # inventario
             if not cache["inventario"]:
                 await garantizar_inventario_actualizado(force=True)
             elif necesita_actualizar_inventario():
@@ -1183,7 +1285,7 @@ async def handle_request(request: Request):
                     estado
                 )
 
-            # análisis IA único por turno
+            # análisis IA
             analisis = await asyncio.to_thread(
                 analizar_mensaje_ia,
                 mensaje_cliente,
@@ -1193,11 +1295,9 @@ async def handle_request(request: Request):
             if not isinstance(analisis, dict):
                 analisis = {}
 
-            # merge filtros/lead
-            estado["filtros"] = fusionar_filtros(estado["filtros"], analisis.get("filtros", {}), mensaje_cliente)
-            estado["lead"] = fusionar_lead(estado["lead"], analisis.get("lead", {}), mensaje_cliente, sender)
+            intencion = analisis.get("intencion", "otro")
 
-            # rol (si IA no detecta, se asume cliente por defecto para no frenar)
+            # Rol
             rol_ia = analisis.get("rol", "desconocido")
             if rol_ia in {"cliente", "colega_inmobiliario"}:
                 estado["rol"] = rol_ia
@@ -1208,31 +1308,39 @@ async def handle_request(request: Request):
                 else:
                     estado["rol"] = "cliente"
 
-            intencion = analisis.get("intencion", "")
+            # Lead SIEMPRE
+            estado["lead"] = fusionar_lead(estado["lead"], analisis.get("lead", {}), mensaje_cliente, sender)
 
-            # Más opciones
-            if estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES and (
-                intencion == "mas_opciones" or usuario_pide_mas_opciones(mensaje_cliente)
-            ):
-                props = elegir_top_n_propiedades(
-                    inventario, estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"]
-                )
-                if not props:
-                    return enviar_respuesta(
-                        sender, mensaje_cliente,
-                        "Por ahora no encontré más opciones exactas con esos criterios. ¿Quieres ampliar zona o ajustar presupuesto?",
-                        estado
+            # Filtros SOLO si no estamos en captura lead y mensaje no parece contacto
+            if estado["estado"] != ESTADO_CAPTURANDO_LEAD and not mensaje_parece_contacto(mensaje_cliente):
+                estado["filtros"] = fusionar_filtros(estado["filtros"], analisis.get("filtros", {}), mensaje_cliente)
+
+            # ------------------------------------------------------------
+            # SI YA ESTÁ MOSTRANDO PROPIEDADES
+            # ------------------------------------------------------------
+            if estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES:
+                if intencion == "mas_opciones" or usuario_pide_mas_opciones(mensaje_cliente) or usuario_solicita_ajuste(mensaje_cliente):
+                    props = elegir_top_n_propiedades(
+                        inventario, estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"]
                     )
+                    if not props:
+                        return enviar_respuesta(
+                            sender, mensaje_cliente,
+                            "Por ahora no encontré más opciones exactas con esos criterios. ¿Quieres ampliar zona o ajustar presupuesto?",
+                            estado
+                        )
 
-                estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
-                es_colega = estado["rol"] == "colega_inmobiliario"
-                fichas = [formatear_ficha_propiedad(p, es_colega) for p in props]
-                texto = "Claro, te comparto 3 opciones adicionales:\n\n" + "\n\n".join(fichas)
-                if not es_colega:
-                    texto += "\n\n¿Alguna te interesa para coordinar visita o asignarte un asesor? 😊"
-                return enviar_respuesta(sender, mensaje_cliente, texto, estado)
+                    estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
+                    es_colega = estado["rol"] == "colega_inmobiliario"
+                    fichas = [formatear_ficha_propiedad(p, es_colega) for p in props]
+                    texto = "Perfecto, te comparto más opciones:\n\n" + "\n\n".join(fichas)
+                    if not es_colega:
+                        texto += "\n\n¿Alguna te interesa para coordinar visita o asignarte un asesor? 😊"
+                    return enviar_respuesta(sender, mensaje_cliente, texto, estado)
 
-            # activar captura lead por interés
+            # ------------------------------------------------------------
+            # ACTIVAR CAPTURA LEAD (CLIENTE)
+            # ------------------------------------------------------------
             if (
                 estado["rol"] == "cliente"
                 and sender not in clientes_procesados
@@ -1244,6 +1352,7 @@ async def handle_request(request: Request):
                 )
             ):
                 estado["estado"] = ESTADO_CAPTURANDO_LEAD
+
                 faltante = proximo_dato_lead(estado["lead"])
                 if faltante:
                     if estado.get("ultimo_campo_solicitado") == faltante:
@@ -1258,12 +1367,16 @@ async def handle_request(request: Request):
                 # lead completo => asignación turno
                 agente = asignar_agente_round_robin()
                 resumen = construir_resumen_necesidad(estado["filtros"])
+
                 if agente:
                     enviar_notificaciones_telegram(agente, estado["lead"], resumen)
 
                 clientes_procesados.add(sender)
                 estado["estado"] = ESTADO_LEAD_COMPLETO
-                nombre_mostrar = capitalizar_nombre(estado["lead"].get("nombre", "")) or "Cliente"
+
+                nombre_mostrar = capitalizar_nombre(estado["lead"].get("nombre", ""))
+                if not es_nombre_persona_valido(nombre_mostrar):
+                    nombre_mostrar = "Cliente"
 
                 if agente:
                     msg = (
@@ -1273,21 +1386,26 @@ async def handle_request(request: Request):
                     )
                 else:
                     msg = "¡Perfecto! Ya tengo tus datos. En breve te contactará un asesor disponible. 😊"
+
                 return enviar_respuesta(sender, mensaje_cliente, msg, estado)
 
-            # diagnóstico IA: pedir dato faltante
+            # ------------------------------------------------------------
+            # FASE DIAGNÓSTICO IA
+            # ------------------------------------------------------------
             faltante = campo_faltante_diagnostico(estado["filtros"])
             if faltante:
                 estado["estado"] = ESTADO_DIAGNOSTICO_IA
                 pregunta = pregunta_clara_por_campo(faltante, analisis.get("pregunta_siguiente", ""))
 
-                # evita repetir literal si IA devolvió algo genérico
                 if estado.get("ultima_respuesta", "").strip() == pregunta.strip():
                     pregunta = pregunta_clara_por_campo(faltante, "")
+
                 estado["ultimo_campo_solicitado"] = faltante
                 return enviar_respuesta(sender, mensaje_cliente, pregunta, estado)
 
-            # mostrar propiedades
+            # ------------------------------------------------------------
+            # MOSTRAR PROPIEDADES
+            # ------------------------------------------------------------
             props = elegir_top_n_propiedades(
                 inventario, estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"]
             )
@@ -1304,8 +1422,8 @@ async def handle_request(request: Request):
 
             es_colega = estado["rol"] == "colega_inmobiliario"
             fichas = [formatear_ficha_propiedad(p, es_colega) for p in props]
-
             resumen = construir_resumen_necesidad(estado["filtros"])
+
             if es_colega:
                 respuesta = (
                     f"Perfecto, colega. Con base en tu búsqueda:\n{resumen}\n\n"
@@ -1319,10 +1437,15 @@ async def handle_request(request: Request):
                     + "\n\n".join(fichas)
                     + "\n\n¿Alguna te interesa para coordinar visita o asignarte un asesor? 😊"
                 )
+
             return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error general webhook: {e}", exc_info=True)
-        return {"replies": [{"message": "Lo siento, tuve un inconveniente procesando tu solicitud. ¿Me la repites por favor?"}]}
+        return {
+            "replies": [
+                {"message": "Lo siento, tuve un inconveniente procesando tu solicitud. ¿Me la repites por favor?"}
+            ]
+        }
