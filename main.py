@@ -801,6 +801,21 @@ def construir_pregunta_campo(campo: str, es_inicio=False) -> str:
 
 
 # ============================================================
+# DETECCIÓN ESPECIAL DE MENSAJES
+# ============================================================
+
+def usuario_solicita_ajuste(mensaje: str) -> bool:
+    texto = normalizar_texto(mensaje)
+    patrones = [
+        "no me gustaron", "no me gusto", "no me gustan",
+        "ninguna me gusta", "ninguna me gustó", "no es lo que busco",
+        "no me interesa", "no me sirve", "no me convencen",
+        "no encuentro", "no lo que busco", "no me termina"
+    ]
+    return any(p in texto for p in patrones)
+
+
+# ============================================================
 # ROL
 # ============================================================
 
@@ -994,9 +1009,9 @@ def formatear_ficha_propiedad(propiedad: dict, es_colega: bool = False) -> str:
 def usuario_pide_mas_opciones(mensaje: str) -> bool:
     texto = normalizar_texto(mensaje)
     patrones = [
-        "ver mas", "muestrame mas", "otras opciones", "otra opcion",
-        "ninguna me gusta", "no me gusto", "no me gustaron", "tienes mas",
-        "mas opciones", "quiero ver mas"
+        "ver mas", "muestrame mas", "muestrame más", "otras opciones", "otra opcion",
+        "otra opción", "tienes mas", "tienes más", "mas opciones",
+        "más opciones", "quiero ver mas", "quiero ver más"
     ]
     return any(p in texto for p in patrones)
 
@@ -1030,6 +1045,29 @@ def construir_cierre_cliente() -> str:
 # LEADS
 # ============================================================
 
+PALABRAS_INVALIDAS_NOMBRE = {
+    "me", "interesa", "quiero", "verla", "visitar", "cita",
+    "agendar", "asesor", "hola", "buenas", "gracias",
+    "opcion", "opción", "primera", "segunda", "tercera",
+    "lista", "lista", "ultima", "última", "segunda", "tercera",
+    "casa", "casas", "venta", "alquiler", "propiedad", "mas", "más", "lista"
+}
+
+
+def es_nombre_directo(mensaje: str, palabras_validas: list[str]) -> bool:
+    texto = (mensaje or "").strip()
+    if not texto or len(texto) > 40 or len(palabras_validas) < 2 or len(palabras_validas) > 4:
+        return False
+    texto_lower = texto.lower()
+    prohibidas = {
+        "opcion", "opción", "lista", "última", "ultima",
+        "primera", "segunda", "tercera", "ver", "verla", "verlo",
+        "quiero", "mostrar", "opciones", "más", "mas", "casa",
+        "venta", "alquiler", "propiedad"
+    }
+    return not any(palabra in texto_lower for palabra in prohibidas)
+
+
 def extraer_datos_lead(mensaje: str, lead_actual: dict, sender: str = "") -> dict:
     lead = lead_actual.copy()
 
@@ -1046,13 +1084,27 @@ def extraer_datos_lead(mensaje: str, lead_actual: dict, sender: str = "") -> dic
         if len(sender_limpio) >= 7:
             lead["whatsapp"] = sender_limpio
 
+    palabras = re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", mensaje or "")
+    palabras_limpias = [
+        p for p in palabras
+        if normalizar_texto(p) not in PALABRAS_INVALIDAS_NOMBRE
+    ]
+
     nombre_match = re.search(
         r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÀ-ÖØ-ÿ'´-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'´-]+){1,4})",
         mensaje,
         re.IGNORECASE
     )
+
+    nombre_candidato = None
+
     if nombre_match:
-        lead["nombre"] = nombre_match.group(1).strip()
+        nombre_candidato = nombre_match.group(1).strip()
+    elif es_nombre_directo(mensaje, palabras_limpias):
+        nombre_candidato = " ".join(palabras_limpias[:4]).strip()
+
+    if nombre_candidato:
+        lead["nombre"] = nombre_candidato
 
     return lead
 
@@ -1283,6 +1335,15 @@ async def handle_request(request: Request):
             sender not in memoria_conversaciones
             or len(memoria_conversaciones.get(sender, [])) == 0
         )
+
+        if (
+            estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES
+            and usuario_solicita_ajuste(mensaje_cliente)
+        ):
+            respuesta = (
+                "Entiendo que ninguna opción fue perfecta. ¿Quieres que ajustemos la zona, el presupuesto o algunas características antes de mostrarte nuevas opciones?"
+            )
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
         if (
             estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES
