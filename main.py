@@ -22,7 +22,7 @@ app = FastAPI()
 
 HORARIOS_ACTUALIZACION_INVENTARIO = [0, 12]
 
-MODELO_PRINCIPAL = "openai/gpt-4o-mini"  # Modelo económico y versátil
+MODELO_PRINCIPAL = "openai/gpt-4o-mini"
 MODELO_RESPALDO = "google/gemini-2.5-flash-lite"
 MAX_TOKENS_IA = 220
 
@@ -308,7 +308,7 @@ async def cargar_inventario_al_arrancar():
 
 
 # ============================================================
-# INVENTARIO WASI (sin cambios funcionales importantes)
+# INVENTARIO WASI
 # ============================================================
 
 def obtener_inventario_desde_wasi():
@@ -663,7 +663,7 @@ JSON:
 }}
 """
 
-    historial_reciente = memoria_conversaciones.get(historial and historial[0].get("username", ""), [])[-4:]
+    historial_reciente = historial[-4:] if isinstance(historial, list) else []
 
     respuesta_raw = consultar_ia(
         [{"role": "system", "content": prompt}] + historial_reciente,
