@@ -3,7 +3,6 @@ import requests
 import logging
 import time
 import re
-import json 
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 
@@ -12,672 +11,276 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# --- CONFIGURACIÓN DE TIEMPO DE ACTUALIZACIÓN ---
-INTERVALO_ACTUALIZACION_INVENTARIO = timedelta(hours=24)
-INTERVALO_ACTUALIZACION_SHEETS = timedelta(hours=1)
-
-# --- SISTEMAS DE CACHÉ Y MEMORIA ---
+# Sistemas de Caché y Memoria
 cache = {
-    "inventario_completo": [], # Lista de diccionarios de propiedades
-    "ultima_actualizacion_inventario": datetime.min
+    "inventario_texto": "",
+    "ultima_actualizacion": datetime.min
 }
 
 sheets_cache = {
-    "agentes": [], # Lista de agentes con 'nombre' y 'telegram_id'
-    "captadores": {}, # Diccionario: {nombre_captador: telefono_captador}
-    "ultimo_indice_agente": -1,
-    "ultima_actualizacion_sheets": datetime.min
+    "agentes": [],
+    "captadores": {},
+    "ultimo_indice": -1,
+    "ultima_actualizacion": datetime.min
 }
 
 memoria_conversaciones = {}
-clientes_procesados = set() # Para evitar re-asignar leads que ya se han procesado
-# --- FIN CONFIGURACIÓN ALMACENAMIENTO ---
+clientes_procesados = set() 
 
-
-# --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS ---
+# --- CONFIGURACIÓN ESTRATÉGICA DE MODELOS (INTACTOS) ---
 MODELO_PRINCIPAL = "google/gemini-2.5-flash-lite"
-MODELO_RESPALDO = "anthropic/claude-3.5-haiku" # Puede tener problemas temporales de acceso
+MODELO_RESPALDO = "anthropic/claude-3.5-haiku" 
 
 # --- FUNCIONES DE SOPORTE ---
 
 def obtener_inventario_desde_wasi():
-    """Descarga TODAS las propiedades activas desde Wasi.co y las retorna como lista de diccionarios."""
-    propiedades = []
+    propiedades_limpias = []
     take = 100
     skip = 0
-    total_obtenidas = 0
-
+    
     logger.info("Iniciando descarga completa de propiedades ACTIVAS desde Wasi...")
-
+    
     while True:
-        url_base = f"https://api.wasi.co/v1/property/search?"
-        params = {
-            "wasi_token": os.getenv('WASI_TOKEN'),
-            "id_company": os.getenv('WASI_COMPANY_ID'),
-            "take": take,
-            "skip": skip,
-            "status": 1 # 1: Activo
-        }
-        url = url_base + "&".join([f"{k}={v}" for k, v in params.items() if v is not None])
-
+        url = f"https://api.wasi.co/v1/property/search?wasi_token={os.getenv('WASI_TOKEN')}&id_company={os.getenv('WASI_COMPANY_ID')}&take={take}&skip={skip}&status=1"
         exito_pagina = False
         intentos = 0
-
+        
         while intentos < 3 and not exito_pagina:
             try:
                 response = requests.get(url, timeout=30)
-                response.raise_for_status() # Lanza excepción para errores HTTP (4xx, 5xx)
                 data = response.json()
                 contador_pagina = 0
-
                 for key, value in data.items():
                     if isinstance(value, dict) and key.isdigit():
                         contador_pagina += 1
                         id_prop = value.get('id_property')
                         enlace_web = f"https://www.mettryc.com/inmueble/{id_prop}"
-
+                        
                         user_data = value.get('user_data', {})
                         asesor_encargado = f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip() or "Asesor Mettryc"
-                        telefono_asesor = user_data.get('phone', '') # Teléfono del asesor asignado en Wasi
-
-                        propiedades.append({
-                            "id": id_prop, "titulo": value.get('title', 'Sin título'), "ciudad": value.get('city_label', 'N/D'),
-                            "zona": value.get('zone_label', 'N/D'), "venta": value.get('sale_price_label', 'N/D'),
-                            "renta": value.get('rent_price_label', 'N/D'), "area": value.get('area', 'N/D'),
-                            "habitaciones": value.get('bedrooms', 'N/D'), "banos": value.get('bathrooms', 'N/D'),
-                            "enlace": enlace_web, 
-                            "captador_propiedad": asesor_encargado, # Nombre del captador/agente asociado en Wasi
-                            "telefono_captador_propiedad": telefono_asesor # Teléfono del captador/agente asociado en Wasi
-                        })
-
+                        
+                        prop = (
+                            f"-[ID: {id_prop}] {value.get('title')} | "
+                            f"Ciudad: {value.get('city_label')} | Zona: {value.get('zone_label')} | "
+                            f"Venta: {value.get('sale_price_label')} | Renta: {value.get('rent_price_label')} | "
+                            f"Área: {value.get('area')}m2 | Hab: {value.get('bedrooms')} | Baños: {value.get('bathrooms')} | "
+                            f"Enlace: {enlace_web}"
+                        )
+                        propiedades_limpias.append(prop)
+                
                 exito_pagina = True
-                total_obtenidas += contador_pagina
-                logger.info(f"Descargadas {contador_pagina} propiedades en esta página. Total acumulado: {total_obtenidas}")
-
-                if contador_pagina < take:
-                    logger.info(f"Descarga completa: Última página tiene menos de {take} registros. Total de propiedades obtenidas: {total_obtenidas}")
-                    return propiedades 
-
+                
+                if contador_pagina < take: 
+                    return "\n".join(propiedades_limpias)
+                
                 skip += take
-                time.sleep(2) 
-
-            except requests.exceptions.RequestException as e:
+                time.sleep(2)
+            except Exception:
                 intentos += 1
-                logger.warning(f"Intento {intentos}/3 de obtener inventario. Error: {e}. Reintentando en 5 seg.")
                 time.sleep(5)
-            except Exception as e:
-                logger.error(f"Error inesperado procesando inventario de Wasi: {e}", exc_info=True)
-                break 
+                
+        if not exito_pagina: 
+            break
+            
+    return "\n".join(propiedades_limpias)
 
-        if not exito_pagina:
-            logger.error(f"No se pudo obtener inventario de Wasi después de {intentos} intentos.")
-            break 
-
-    return propiedades
-
-def obtener_inventario_cache():
-    """Retorna inventario desde caché o lo actualiza si está obsoleto/vacío y la obtención es exitosa."""
-    ahora = datetime.now()
-    inventario_actual = cache["inventario_completo"]
-    ultima_act = cache["ultima_actualizacion_inventario"]
-    
-    necesita_actualizacion = not inventario_actual or (ahora - ultima_act > INTERVALO_ACTUALIZACION_INVENTARIO)
-
-    if necesita_actualizacion:
-        logger.info("Cache de inventario obsoleta o vacía. Intentando actualizar desde Wasi...")
+def obtener_inventario():
+    if datetime.now() - cache["ultima_actualizacion"] > timedelta(hours=24) or not cache["inventario_texto"]:
         inventario_nuevo = obtener_inventario_desde_wasi()
-        
-        if inventario_nuevo: # Solo actualizar si la obtención fue exitosa y devolvió propiedades
-            cache["inventario_completo"] = inventario_nuevo
-            cache["ultima_actualizacion_inventario"] = ahora
-            logger.info(f"Inventario actualizado en caché con {len(inventario_nuevo)} propiedades.")
-        else:
-            logger.warning("La obtención del inventario de Wasi devolvió lista vacía o falló. Se mantiene el inventario anterior (si existe).")
-            if not inventario_actual:
-                logger.error("No se pudo obtener inventario inicial y la caché está vacía.")
-    else:
-        logger.debug("Usando inventario de propiedades desde caché.")
-    return cache["inventario_completo"]
+        if inventario_nuevo: 
+            cache["inventario_texto"] = inventario_nuevo
+            cache["ultima_actualizacion"] = datetime.now()
+    return cache["inventario_texto"]
 
 def sincronizar_google_sheet():
-    """Sincroniza agentes y captadores desde la URL de Google Sheets SECRETA."""
-    script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL")
-    if not script_url:
-        logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada. No se sincronizarán datos de agentes/captadores.")
-        return
-
-    ahora = datetime.now()
-    # Actualizar si ha pasado el intervalo O si los datos importantes de caché están vacíos
-    si_necesita_actualizacion = (ahora - sheets_cache["ultima_actualizacion_sheets"] > INTERVALO_ACTUALIZACION_SHEETS) or \
-                                (not sheets_cache["agentes"] or not sheets_cache["captadores"])
-    
-    if si_necesita_actualizacion:
-        logger.info("Sincronizando Google Sheets para datos de agentes y captadores...")
+    script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL") 
+    if not script_url: return
+    if datetime.now() - sheets_cache["ultima_actualizacion"] > timedelta(hours=1) or not sheets_cache["agentes"]:
         try:
             response = requests.get(script_url, timeout=15)
-            response.raise_for_status()
             payload_sheet = response.json()
-
-            # Validar estructura esperada del JSON
-            if isinstance(payload_sheet, dict) and \
-               "agentes" in payload_sheet and isinstance(payload_sheet["agentes"], list) and \
-               "captadores" in payload_sheet and isinstance(payload_sheet["captadores"], dict):
-                
-                sheets_cache["agentes"] = payload_sheet["agentes"] # Lista de dicts con 'nombre' y 'telegram_id'
-                # Limpiar captadores: asegura que sea un dict {nombre: telefono}
-                sheets_cache["captadores"] = {
-                    k: str(v) for k, v in payload_sheet["captadores"].items() if isinstance(v, (str, int, float)) and k and str(v).strip()
-                }
-                sheets_cache["ultima_actualizacion_sheets"] = ahora
-                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes y {len(sheets_cache['captadores'])} captadores desde Google Sheets.")
-            else:
-                logger.warning(f"Datos de Google Sheets con formato inesperado. Esperado dict con 'agentes' (list) y 'captadores' (dict). Recibido: {payload_sheet}")
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error de red al sincronizar Google Sheets: {e}")
-        except json.JSONDecodeError:
-            logger.error(f"Error al decodificar JSON de Google Sheets.")
-        except Exception as e:
-            logger.error(f"Error inesperado sincronizando Google Sheets: {e}", exc_info=True)
-    else:
-        logger.debug("Usando datos de agentes/captadores desde caché de Sheets.")
+            if isinstance(payload_sheet, dict):
+                sheets_cache["agentes"] = payload_sheet.get("agentes", [])
+                sheets_cache["captadores"] = payload_sheet.get("captadores", {})
+                sheets_cache["ultima_actualizacion"] = datetime.now()
+                logger.info(f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes y {len(sheets_cache['captadores'])} captadores.")
+        except Exception as e: logger.error(f"Error sincronizando Google Sheets: {e}")
 
 def asignar_agente_round_robin():
-    """Asigna un agente de forma cíclica (Round Robin) usando los datos de Sheets."""
-    sincronizar_google_sheet() # Asegura que los datos de agentes estén actualizados
+    sincronizar_google_sheet()
     lista_agentes = sheets_cache["agentes"]
-    
-    if not lista_agentes:
-        logger.warning("No hay agentes disponibles en caché para asignar.")
-        return None
+    if not lista_agentes: return None
+    sheets_cache["ultimo_indice"] = (sheets_cache["ultimo_indice"] + 1) % len(lista_agentes)
+    return lista_agentes[sheets_cache["ultimo_indice"]]
 
-    # Calcular el próximo índice de agente
-    sheets_cache["ultimo_indice_agente"] = (sheets_cache["ultimo_indice_agente"] + 1) % len(lista_agentes)
-    agente_asignado = lista_agentes[sheets_cache["ultimo_indice_agente"]]
-    
-    logger.info(f"Agente asignado (Round Robin): {agente_asignado.get('nombre', 'Sin Nombre')}")
-    return agente_asignado
-
-def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
-    """Busca el teléfono de un captador en la caché de Google Sheets."""
-    if not sheets_cache["captadores"]: # Si la caché de captadores está vacía, intenta sincronizar
-        sincronizar_google_sheet()
-        
-    telefono = sheets_cache["captadores"].get(nombre_captador)
-    if telefono:
-        logger.debug(f"Teléfono encontrado en Sheet para captador '{nombre_captador}': {telefono}")
-        return telefono
-    else:
-        logger.warning(f"Teléfono NO encontrado en sheets_cache para captador: '{nombre_captador}'.")
-        return "N/D"
-
-def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead_dict):
-    """Envía notificaciones a Telegram para agente asignado y administrador."""
+def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead):
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     admin_id = os.getenv("TELEGRAM_ADMIN_ID")
+    agente_id = str(agente.get("telegram_id", "")).strip()
+    link_wa = f"https://wa.me/{telefono_destino.replace('+', '').replace(' ', '')}"
+    info_cliente = f"\n\n*Datos del Cliente:*\n{datos_lead}\n\n📲 *Contactar de inmediato:* {link_wa}"
+    url_tg = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     
-    if not telegram_token:
-        logger.warning("TELEGRAM_BOT_TOKEN no configurado. Notificaciones a Telegram deshabilitadas.")
-        return
+    if telegram_token and agente_id and agente_id != "None":
+        try: requests.post(url_tg, json={"chat_id": agente_id, "text": f"👤 *¡Tienes un nuevo cliente asignado!* \n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+        except Exception as e: logger.error(f"Error notificar agente: {e}")
+    if telegram_token and admin_id:
+        try: requests.post(url_tg, json={"chat_id": admin_id, "text": f"👁️ *REPORTE ADMIN*\n👤 *Agente a cargo:* {agente.get('nombre')}\n{info_cliente}", "parse_mode": "Markdown"}, timeout=5)
+        except Exception as e: logger.error(f"Error notificar admin: {e}")
 
-    # Limpiar y validar teléfono para enlace WhatsApp
-    telefono_limpio = re.sub(r'\D', '', str(telefono_destino)) 
-    link_wa = f"https://wa.me/{telefono_limpio}" if telefono_limpio and len(telefono_limpio) >= 7 else "#"
-
-    # Construir string legible de datos del lead
-    datos_lead_str_list = []
-    for k, v in datos_lead_dict.items():
-        if v: # Incluir solo si tiene valor
-            datos_lead_str_list.append(f"- **{k.capitalize()}**: {v}")
-    datos_lead_str = "\n".join(datos_lead_str_list) or "No hay detalles adicionales."
-
-    # Mensajes de Telegram
-    mensaje_agente = f"👤 *¡Nuevo Cliente VIP Asignado!*\n\nTu cliente potencial es: **{agente.get('nombre', 'Sin nombre')}**\n\n*Detalles del Lead:*\n{datos_lead_str}\n\n📲 *Contacta de inmediato (WhatsApp):* {link_wa}"
-    mensaje_admin = f"👁️ *REPORTE ADMIN: Nuevo Lead Capturado*\n\n👤 *Agente a cargo:* **{agente.get('nombre', 'Sin nombre')}**\n*Detalles del Lead:*\n{datos_lead_str}\n📲 *Link WhatsApp:* {link_wa}"
-
-    # Enviar al agente
-    if agente and agente.get("telegram_id"):
-        agente_id = str(agente["telegram_id"]).strip()
-        if agente_id and agente_id != "None" and agente_id.lstrip('-').isdigit(): # Validación básica de ID válido
-            try:
-                requests.post(f"https://api.telegram.org/bot{telegram_token}/sendMessage", json={"chat_id": agente_id, "text": mensaje_agente, "parse_mode": "Markdown"}, timeout=5)
-                logger.info(f"Notificación a Telegram enviada para agente ID: {agente_id}.")
-            except Exception as e:
-                logger.error(f"Error notificando a Telegram (Agente ID {agente_id}): {e}")
-        else:
-             logger.warning(f"Agente '{agente.get('nombre')}' tiene telegram_id inválido ({agente.get('telegram_id')}).")
-    else:
-         logger.warning(f"Agente '{agente.get('nombre')}' no tiene telegram_id configurado.")
-
-    # Enviar al administrador
-    if admin_id and admin_id.lstrip('-').isdigit(): # Validación básica de ID válido
-        try:
-            requests.post(f"https://api.telegram.org/bot{telegram_token}/sendMessage", json={"chat_id": admin_id, "text": mensaje_admin, "parse_mode": "Markdown"}, timeout=5)
-            logger.info(f"Notificación a Telegram enviada al administrador ID: {admin_id}.")
-        except Exception as e:
-            logger.error(f"Error notificando a Telegram (Admin ID {admin_id}): {e}")
-    else:
-        logger.warning("TELEGRAM_ADMIN_ID no configurado o inválido.")
-
-# --- FUNCIÓN IA CENTRALIZADA Y BLINDADA ---
-def consultar_ia(historial: list, max_tokens_respuesta: int = 150) -> str:
-    """
-    Consulta IA, prueba modelos principal y de respaldo. Maneja errores y limita tokens de respuesta.
-    """
+# --- FUNCIÓN IA BLINDADA ---
+def consultar_ia(historial):
     url_ia = "https://openrouter.ai/api/v1/chat/completions"
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    headers = {"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
     
-    if not api_key:
-        logger.error("Acceso a IA deshabilitado: OPENROUTER_API_KEY no configurado.")
-        return "Lo siento, mi sistema de IA no está disponible. Inténtalo más tarde."
-
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    modelos_a_probar = [MODELO_PRINCIPAL, MODELO_RESPALDO]
-
-    for modelo in modelos_a_probar:
-        try:
-            logger.info(f"Intentando consulta a IA con modelo: {modelo}")
-            response = requests.post(
-                url_ia,
-                headers=headers,
-                json={"model": modelo, "messages": historial, "max_tokens": max_tokens_respuesta},
-                timeout=30
-            )
-            response.raise_for_status() 
-            data = response.json()
-
-            if 'choices' in data and data['choices']:
-                respuesta_ia = data['choices'][0]['message']['content']
-                if respuesta_ia and respuesta_ia.strip(): 
-                    logger.info(f"Respuesta exitosa de IA con modelo '{modelo}'.")
-                    return respuesta_ia.strip()
-                else:
-                    logger.warning(f"IA ({modelo}) devolvió respuesta vacía o solo espacios.")
-            else:
-                logger.warning(f"IA ({modelo}) devolvió structure inesperada o sin 'choices'. Payload: {data}")
-
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Error de red/HTTP al consultar IA ({modelo}): {e}")
-        except json.JSONDecodeError:
-            logger.error(f"Error al decodificar JSON de IA ({modelo}). Payload: {response.text}")
-        except Exception as e:
-            logger.error(f"Error inesperado procesando respuesta IA ({modelo}): {e}", exc_info=True)
-
-    logger.error("Todos los intentos de consulta a IA han fallado.")
-    return "Lo siento, mi sistema de IA está temporalmente fuera de servicio. Intenta de nuevo en unos minutos. 🙏"
-
-# --- FUNCIONES DE CLASIFICACIÓN Y DETECCIÓN ---
-
-def validar_filtro_numerico(valor, tipo_esperado=int):
-    """Valida si un valor es numérico (int/float) o None."""
-    if valor is None:
-        return None
     try:
-        if tipo_esperado == int: return int(valor)
-        elif tipo_esperado == float: return float(valor)
-    except (ValueError, TypeError): return None
-    return None
-
-def detectar_rol_y_intencion(mensaje_usuario: str, historial_conversacion: list) -> dict:
-    """
-    Usa IA para clasificar rol, intención y extraer filtros de búsqueda.
-    Prioriza la detección de 'colega_inmobiliario' y si NO SE DETECTA, por defecto es 'cliente' con 'info_general'.
-    El prompt exige EXCLUSIVAMENTE JSON de respuesta pura.
-    """
-    prompt_deteccion = f"""
-    Eres un clasificador de usuarios para chatbot inmobiliario. Analiza el mensaje Y el historial de conversación para determinar:
-    1. ROL: DEBE SER 'cliente' O 'colega_inmobiliario'. Si no hay pistas claras para 'colega_inmobiliario', ASUME 'cliente'.
-    2. INTENCIÓN: DEBE SER 'buscar_propiedad', 'pedir_ficha_completa', 'solicitar_captador', 'info_general', o 'otro'. 
-       - Usa 'buscar_propiedad' si detectas filtros de zona, precio, habitaciones.
-       - Usa 'pedir_ficha_completa' si solicita detalles de una propiedad específica.
-       - Usa 'info_general' para saludos, consultas básicas, o si la intención es ambigua.
-    3. FILTROS (solo si la INTENCIÓN es 'buscar_propiedad'): dict con 'zona' (str), 'tipo' (str), 'precio_max' (numérico float, usa null si no viable), 'habitaciones_min' (numérico int, usa null si no viable). Usa valores NUMÉRICOS REALISTAS (ej. 100000.00, 250000.00 para precios; 2, 3 para habitaciones). Si un filtro es inválido (ej. precio 500), usa null.
-
-    Critérios clave para 'colega_inmobiliario': mención de comisiones, captaciones, MLS, términos técnicos inmobiliarios, o referencia a mí como colega/agente.
-
-    DEBES RESPONDER EXCLUSIVAMENTE CON UN OBJETO JSON VÁLIDO. SIN TEXTO ADICIONAL, NI MARCADORES DE CÓDIGO COMO ```json.
-
-    JSON de ejemplo A (Colega buscando): {{"rol": "colega_inmobiliario", "intencion": "buscar_propiedad", "filtros": {{"zona": "Altamira", "tipo": "casa", "precio_max": 300000.00, "habitaciones_min": 4}} }}
-    JSON de ejemplo B (Colega info): {{"rol": "colega_inmobiliario", "intencion": "info_general", "filtros": {{}}}}
-    JSON de ejemplo C (Cliente buscando): {{"rol": "cliente", "intencion": "buscar_propiedad", "filtros": {{"zona": "Las Mercedes", "tipo": "apartamento", "precio_max": 150000.00, "habitaciones_min": 3}} }}
-    JSON de ejemplo D (Cliente saludo): {{"rol": "cliente", "intencion": "info_general", "filtros": {{}}}}
-    JSON de ejemplo E (Cliente precio bajo/inválido): {{"rol": "cliente", "intencion": "buscar_propiedad", "filtros": {{"precio_max": null, "habitaciones_min": 1}} }} # Precio 500 es inválido para búsqueda si el contexto es alto, se vuelve null.
-    """
-
-    mensajes_para_ia = [{"role": "system", "content": prompt_deteccion}]
-    mensajes_para_ia.extend(historial_conversacion[-4:]) # Contexto reciente
-    mensajes_para_ia.append({"role": "user", "content": f"Analiza este mensaje: \"{mensaje_usuario}\""})
-
-    respuesta_raw = consultar_ia(mensajes_para_ia, max_tokens_respuesta=250) 
+        response = requests.post(url_ia, headers=headers, json={"model": MODELO_PRINCIPAL, "messages": historial}, timeout=30)
+        data = response.json()
+        if 'choices' in data: return data['choices'][0]['message']['content']
+    except Exception as e: logger.warning(f"Error principal: {e}")
 
     try:
-        # Intenta extraer JSON de forma robusta
-        start_index = respuesta_raw.find('{')
-        end_index = respuesta_raw.rfind('}')
-        
-        if start_index != -1 and end_index != -1 and start_index < end_index:
-            respuesta_json_str = respuesta_raw[start_index : end_index + 1]
-            datos_extraccion = json.loads(respuesta_json_str)
-            
-            # --> **Validación y Limpieza de Datos Extraídos** <--
-            rol_detectado = datos_extraccion.get("rol")
-            intencion_detectada = datos_extraccion.get("intencion")
-            filtros_raw = datos_extraccion.get("filtros", {})
-
-            # Limpiar y validar filtros
-            filtros_limpios = {
-                "zona": filtros_raw.get("zona", "") if isinstance(filtros_raw.get("zona"), str) else "",
-                "tipo": filtros_raw.get("tipo", "") if isinstance(filtros_raw.get("tipo"), str) else "",
-                "precio_max": validar_filtro_numerico(filtros_raw.get("precio_max"), float),
-                "habitaciones_min": validar_filtro_numerico(filtros_raw.get("habitaciones_min"), int),
-            }
-            # Anular valores numéricos inválidos o no realistas
-            if filtros_limpios["precio_max"] is not None and filtros_limpios["precio_max"] <= 0: filtros_limpios["precio_max"] = None
-            if filtros_limpios["habitaciones_min"] is not None and filtros_limpios["habitaciones_min"] < 0: filtros_limpios["habitaciones_min"] = None
-                
-            # Validar rol: Prioriza 'colega_inmobiliario', si no, por defecto 'cliente'
-            rol_final = "cliente" # Default más seguro
-            if rol_detectado == "colega_inmobiliario":
-                rol_final = "colega_inmobiliario"
-            elif rol_detectado != "cliente": # Si no es 'colega' y tampoco es 'cliente' explícito
-                logger.warning(f"Rol detectado '{rol_detectado}' desconocido. Asumiendo rol por defecto: '{rol_final}'.")
-
-            # Validar intención: por defecto 'info_general'
-            intencion_final = intencion_detectada if intencion_detectada and intencion_detectada != 'otro' else "info_general"
-            if intencion_final == 'otro': intencion_final = "info_general" # Simplificar intenciones clave
-            
-            return {"rol": rol_final, "intencion": intencion_final, "filtros": filtros_limpios}
-        else:
-            logger.error(f"No se pudo extraer un objeto JSON de la respuesta de la IA. Respuesta cruda: {respuesta_raw}")
-            # Fallback: Si no se puede extraer JSON, ASUME 'cliente' con intención 'info_general'.
-            return {"rol": "cliente", "intencion": "info_general", "filtros": {}}
-
-    except json.JSONDecodeError:
-        logger.error(f"Error de decodificación JSON de la IA. Respuesta cruda: {respuesta_raw}")
-        # Fallback: Si falla JSON, ASUME 'cliente' con 'info_general'.
-        return {"rol": "cliente", "intencion": "info_general", "filtros": {}} 
-    except Exception as e:
-        logger.error(f"Error inesperado procesando respuesta IA: {e}", exc_info=True)
-        # Fallback general en caso de cualquier otro error.
-        return {"rol": "cliente", "intencion": "info_general", "filtros": {}}
-
-def formatear_ficha_propiedad(propiedad: dict, es_colega: bool = False) -> str:
-    """Formatea la información de una propiedad para cliente o colega. Incluye captador si es colega."""
-    lineas = [
-        f"*{propiedad.get('titulo', 'Propiedad sin título')}*",
-        f"📍 Zona: {propiedad.get('zona', 'N/D')} | Ciudad: {propiedad.get('ciudad', 'N/D')}",
-        f"💰 Venta: {propiedad.get('venta', 'N/D')} | Renta: {propiedad.get('renta', 'N/D')}",
-        f"📐 Área: {propiedad.get('area', 'N/D')}m² | 🛏️ Hab: {propiedad.get('habitaciones', 'N/D')} | 🛁 Baños: {propiedad.get('banos', 'N/D')}",
-        f"🔗 Ver más: {propiedad.get('enlace', '#')}"
-    ]
-    if es_colega: # Solo para colega, añade datos del captador de la Sheet
-        captador_nombre_prop = propiedad.get('captador_propiedad', 'N/D') # Nombre del captador/agente de la propiedad de Wasi
-        
-        # INTENTAMOS OBTENER el teléfono del captador buscándolo por nombre en la caché de Sheets
-        captador_tel_sheet = "N/D"
-        if captador_nombre_prop != 'N/D':
-            # Asegurarse de que la caché de captadores esté cargada
-            if not sheets_cache["captadores"]: sincronizar_google_sheet()
-            captador_tel_sheet = sheets_cache["captadores"].get(captador_nombre_prop, "N/D")
-        
-        # Añadir línea de captador y teléfono solo si el nombre O teléfono es diferente de 'N/D'
-        # Y si el teléfono obtenido de la sheet no está vacío.
-        if captador_nombre_prop != 'N/D' or (captador_tel_sheet != 'N/D' and captador_tel_sheet):
-            lineas.append(f"👤 Captador: {captador_nombre_prop} | 📲 WhatsApp Captador: {captador_tel_sheet}")
+        response = requests.post(url_ia, headers=headers, json={"model": MODELO_RESPALDO, "messages": historial}, timeout=30)
+        data = response.json()
+        if 'choices' in data: return data['choices'][0]['message']['content']
+    except Exception as e: logger.error(f"Falla total: {e}")
     
-    return "\n".join(lineas)
+    return "Lo siento, mi sistema está experimentando una breve pausa. ¿Podrías escribirme de nuevo en un minuto? 🙏"
 
-def parsear_precio(precio_str: str) -> float:
-    """Convierte string de precio a float. Devuelve 0.0 si es inválido o 'N/D'."""
-    if not precio_str or precio_str.lower() == 'n/d': return 0.0
-    precio_limpio = re.sub(r'[^\d.]', '', str(precio_str)) 
-    try:
-        valor_float = float(precio_limpio)
-        # Advertir si el precio parece sospechosamente bajo
-        if valor_float > 0 and valor_float < 1000 and precio_str.strip() != '0.0': 
-            logger.warning(f"Precio parseado muy bajo ({valor_float} de '{precio_str}'). Puede ser inválido.")
-        return valor_float
-    except ValueError:
-        logger.warning(f"Error al parsear precio '{precio_str}'. Retornando 0.0.")
-        return 0.0
-
-def elegir_top_n_propiedades(propiedades_disponibles: list, intencion: dict, n: int = 3) -> list:
-    """Filtra y selecciona las 'n' propiedades más relevantes según intención y filtros."""
-    filtros = intencion.get("filtros", {})
-    zona_buscada = filtros.get("zona", "").lower()
-    tipo_buscado = filtros.get("tipo", "").lower() 
-    precio_max_buscado = filtros.get("precio_max")
-    habitaciones_min_buscado = filtros.get("habitaciones_min")
-
-    propiedades_filtradas = propiedades_disponibles
-
-    # 1. Filtro por Zona (si está especificado)
-    if zona_buscada:
-        propiedades_filtradas = [
-            p for p in propiedades_filtradas
-            if zona_buscada in p.get('zona', '').lower() or zona_buscada in p.get('ciudad', '').lower()
-        ]
-
-    # Función de scoring para relevancia general
-    def score_propiedad(p):
-        score = 0
-        if p.get('zona', '') != 'N/D': score += 2
-        if p.get('ciudad', '') != 'N/D': score += 1
-        if p.get('venta', 'N/D') != 'N/D' or p.get('renta', 'N/D') != 'N/D': score += 1
-        if p.get('area', 'N/D') != 'N/D': score += 1
-        # Contar habitaciones/baños si son números válidos
-        hab_valido = False
-        try: 
-            if p.get('habitaciones') not in ['N/D', ''] and int(p.get('habitaciones')) > 0: hab_valido = True
-        except (ValueError, TypeError): pass
-        if hab_valido: score += 2
-        
-        banos_valido = False
-        try: 
-            if p.get('banos') not in ['N/D', ''] and int(p.get('banos')) > 0: banos_valido = True
-        except (ValueError, TypeError): pass
-        if banos_valido: score += 1
-        
-        return score
-
-    # Ordenar propiedades por relevancia general
-    propiedades_ordenadas_relevancia = sorted(propiedades_filtradas, key=score_propiedad, reverse=True)
-
-    # 2. Aplicar filtros de Precio y Habitaciones (después de ordenar por relevancia)
-    propiedades_finales_seleccionadas = []
-    
-    for p in propiedades_ordenadas_relevancia:
-        # Parsar precios y habitaciones para comparación
-        precio_venta_prop = parsear_precio(p.get('venta'))
-        precio_renta_prop = parsear_precio(p.get('renta'))
-        habitaciones_prop_int = 0 # Default
-        try:
-            if p.get('habitaciones') not in ['N/D', ''] : habitaciones_prop_int = int(p.get('habitaciones'))
-        except (ValueError, TypeError): pass
-            
-        # Evaluar filtro de precio (si se especificó precio_max)
-        precio_cumple = True
-        if precio_max_buscado is not None:
-            precio_cumple = (precio_venta_prop > 0 and precio_venta_prop <= precio_max_buscado) or \
-                            (precio_renta_prop > 0 and precio_renta_prop <= precio_max_buscado)
-
-        # Evaluar filtro de habitaciones (si se especificó habitaciones_min)
-        habitaciones_cumplen = True
-        if habitaciones_min_buscado is not None:
-            habitaciones_cumplen = habitaciones_prop_int >= habitaciones_min_buscado
-
-        # Añadir si cumple todos los filtros aplicados
-        if precio_cumple and habitaciones_cumplen:
-            propiedades_finales_seleccionadas.append(p)
-        
-        # Detener si ya hemos encontrado suficientes propiedades para el top N
-        if len(propiedades_finales_seleccionadas) >= n: 
-            break
-
-    return propiedades_finales_seleccionadas[:n]
-
-# --- LLAMADA CENTRAL DEL WEBHOOK ---
+# --- WEBHOOK ---
 @app.post("/webhook")
 async def handle_request(request: Request):
     try:
-        # 1. Validar Clave API
-        api_key_header = request.headers.get("x-api-key")
-        valid_api_keys = os.getenv("API_KEYS_AGENTES", "").split(",")
-        if api_key_header not in valid_api_keys or not api_key_header:
-            logger.error(f"Acceso denegado: API Key '{api_key_header}' inválida.")
-            raise HTTPException(status_code=403, detail="Acceso denegado.")
-
-        # 2. Parsear payload
         data = await request.json()
+        if request.headers.get("x-api-key") not in os.getenv("API_KEYS_AGENTES", "").split(","):
+            raise HTTPException(status_code=403, detail="Acceso denegado")
+
         payload = data.get("query") if isinstance(data.get("query"), dict) else data
-        
         sender = str(payload.get("sender", "")).strip()
-        mensaje_usuario_raw = str(payload.get("message", "")).strip()
+        mensaje_cliente = str(payload.get("message", ""))
         
-        if not mensaje_usuario_raw:
-            logger.info("Mensaje vacío recibido. Ignorando.")
-            return {"replies": []}
+        if not mensaje_cliente.strip(): return {"replies": []}
 
-        # --- PROCESAMIENTO PRINCIPAL ---
-        
-        # 3. Cargar/Actualizar datos maestros (inventario y agentes/captadores)
-        inventario_disponible = obtener_inventario_cache()
-        if not inventario_disponible:
-            logger.warning("Inventario de propiedades no disponible. Consultas de búsqueda fallarán.")
-            return {"replies": [{"message": "¡Hola! Estamos actualizando nuestro catálogo. Por favor, inténtalo de nuevo más tarde."}]}
-        
-        sincronizar_google_sheet() # Asegurar que sheets_cache tenga los datos más recientes
-        
-        # 4. Detectar rol, intención y filtros usando IA
-        if sender not in memoria_conversaciones:
-            memoria_conversaciones[sender] = []
-        
-        # LLAMADA CLAVE A IA PARA DETECCIÓN DE ROL E INTENCIÓN
-        deteccion = detectar_rol_y_intencion(mensaje_usuario_raw, memoria_conversaciones[sender])
-        rol_usuario = deteccion.get("rol", "cliente") # POR DEFECTO: cliente
-        intencion_usuario = deteccion.get("intencion", "info_general") # POR DEFECTO: info_general
-        filtros_busqueda = deteccion.get("filtros", {})
-        
-        logger.info(f"Usuario {sender}: Rol='{rol_usuario}', Intención='{intencion_usuario}', Filtros={filtros_busqueda}")
+        inventario = obtener_inventario()
+        sincronizar_google_sheet()
+        directorio = "\n".join([f"- {k}: WhatsApp {v}" for k, v in sheets_cache["captadores"].items()])
 
-        respuesta_final_chatbot = "" # Variable para construir la respuesta
+        sender_limpio = sender.replace("+", "").replace(" ", "")
+        es_numero_puro = sender_limpio.isdigit()
 
-        # --- Lógica de Respuesta según Rol ---
-        if rol_usuario == "cliente":
-            if intencion_usuario == "buscar_propiedad":
-                # Seleccionar las 3 propiedades más relevantes
-                propiedades_seleccionadas = elegir_top_n_propiedades(inventario_disponible, deteccion, n=3)
+        # PROMPT DE ALTA CONVERSIÓN (CHAT MARKETING & HUMANIZADO)
+        prompt_sistema = f"""
+        Eres Paty, la especialista de atención VIP de Mettryc Realty (la primera Tecnoinmobiliaria de Venezuela, en Valencia, Carabobo, CC Patio Trigal). 
+        Tu objetivo es guiar al usuario de forma súper empática y persuasiva usando Chat Marketing para lograr cierres efectivos.
+
+        REGLAS DE PERSONALIDAD Y MARKETING CONVERSACIONAL:
+        1. Eres entusiasta, ultra amigable y muy humana. Usa emojis con naturalidad y calidez.
+        2. TUS RESPUESTAS DEBEN SER CORTAS (máximo 30 palabras), excepto al enviar fichas de propiedades. Rompe las ideas en frases fluidas.
+        3. REGLA DE ORO CONVERSACIONAL: NUNCA hagas múltiples preguntas en un solo mensaje. Pregunta UNA SOLA COSA a la vez, genera rapport celebrando su respuesta y avanza al siguiente paso creando micro-acuerdos.
+        4. JAMÁS digas que eres una inteligencia artificial o un bot. Eres Paty.
+
+        BASE DE DATOS EN TIEMPO REAL:
+        <INVENTARIO>
+        {inventario}
+        </INVENTARIO>
+        
+        <DIRECTORIO_CONFIDENCIAL>
+        {directorio}
+        </DIRECTORIO_CONFIDENCIAL>
+
+        INSTRUCCIONES DEL FLUJO DE VENTAS PASO A PASO:
+        - Paso 1 (Bienvenida y Tipo): Si el usuario inicia la conversación, salúdalo con inmensa alegría y energía positiva. Pregúntale con mucho interés qué TIPO de propiedad busca (casa, apartamento, etc.) y qué ZONA de su preferencia le entusiasma.
+        - Paso 2 (Inversión): Valora su respuesta anterior y pregúntale amigablemente cuál es su presupuesto aproximado para filtrar las mejores opciones exclusivas.
+        - Paso 3 (Requisitos clave): Pregunta por algún detalle indispensable (ej. habitaciones o baños).
+        - Paso 4 (Recomendación VIP): Muestra exactamente 3 opciones del <INVENTARIO> usando ESTRICTAMENTE este formato plano de WhatsApp. 
+        
+        ⚠️ REGLA DE FORMATO OBLIGATORIA: Tienes TERMINANTEMENTE PROHIBIDO usar doble asterisco (**), almohadillas (###) o corchetes con paréntesis para enlaces. Usa un único asterisco (*) al inicio y final del título para ponerlo en negrita. Enlaces 100% crudos (raw links).
+
+        1. *[Título de la propiedad]*
+        📍 Zona: [Zona o Ciudad]
+        💰 Precio: [Precio]
+        📐 Área: [M2] | 🛏️ Habs: [Habitaciones] | 🛁 Baños: [Baños]
+        🔗 Ver más: https://www.instagram.com/p/DTjPFKgDeCe/
+
+        - Paso 5 (Cierre de Alta Conversión): Si el cliente muestra interés en una propiedad o desea agendar una visita, dile con entusiasmo que para asignarle de inmediato al asesor especialista de guardia que abrirá su ficha VIP y gestionará su caso, te confirme por favor su Nombre Completo (Nombre y Apellido) y su Correo electrónico.
+
+        ⚠️ REGLA DE CAPTURA ESTRICTA: Detente al pedir los datos. Si el cliente solo te da su primer nombre, pídele su apellido amablemente. Si no te da el correo, insiste carismáticamente. NO generes la etiqueta final si los datos están incompletos o faltan apellidos o correos reales.
+
+        ⚡ DISPARADOR DE ASIGNACIÓN ⚡
+        Únicamente en un nuevo mensaje, cuando el cliente ya te haya facilitado su Nombre Completo (Nombre y Apellido) y Correo Electrónico REALES, añade al final de tu texto de cierre esta etiqueta exacta:
+        ###LEAD_CAPTURED###Nombre: [Nombre y Apellido Real] | Correo: [Correo Real] | Telefono: [WhatsApp Real]###
+
+        ▶ CASO A: MERCADOLIBRE -> Si el mensaje contiene "mercadolibre.com.ve/mlv", responde EXACTAMENTE: "¡Hola! 👋 Esta propiedad se encuentra disponible en el precio publicado. ¿Quieres agendar una visita?". Si piden más info, di que un agente les contactará.
+        ▶ CASO B: RECLUTAMIENTO -> Para unirse envía: https://mettryc.com/blog/unete-al-mettryc-team-y-gana-desde-el-80-al-100-de-comision/18270?page=1. Curso inicial: $60, dura 5 días de 9am a 12pm.
+        ▶ CASO C: COLEGAS -> Si es colega/agente, dale Nombre y WhatsApp del captador desde el <DIRECTORIO_CONFIDENCIAL>. NO PIDES DATOS AL COLEGA NI GENERAS ETIQUETA LEAD.
+        """
+        
+        if sender not in memoria_conversaciones: memoria_conversaciones[sender] = []
+        historial_api = [{"role": "system", "content": prompt_sistema}] + memoria_conversaciones[sender] + [{"role": "user", "content": mensaje_cliente}]
+        
+        respuesta_bot = consultar_ia(historial_api)
+        
+        # --- BLOQUE DE SEGURIDAD EXTREMA (CONTROL DE CALIDAD) ---
+        if "###LEAD_CAPTURED###" in respuesta_bot:
+            partes = respuesta_bot.split("###LEAD_CAPTURED###")
+            texto_cliente = partes[0].strip()
+            datos_lead_raw = partes[1].replace("###", "").strip()
+            
+            palabras_prohibidas = ["[", "]", "Su Nombre", "Su Correo", "Su WhatsApp", "Dato Real", "Numero Real", "Valor real", "Nombre Real", "Email Real", "Apellido Real"]
+            
+            # Análisis sintáctico para garantizar Nombre Completo y Correo Real
+            nombre_match = re.search(r'Nombre:\s*([^|]+)', datos_lead_raw)
+            correo_match = re.search(r'Correo:\s*([^|]+)', datos_lead_raw)
+            
+            nombre_val = nombre_match.group(1).strip() if nombre_match else ""
+            correo_val = correo_match.group(1).strip() if correo_match else ""
+            
+            palabras_nombre = len(nombre_val.split())
+            tiene_correo_valido = "@" in correo_val and "." in correo_val
+            
+            # Si se detectan plantillas falsas o datos incompletos, interceptamos y forzamos a Paty a insistir
+            if any(palabra in datos_lead_raw for palabra in palabras_prohibidas) or palabras_nombre < 2 or not tiene_correo_valido:
+                logger.warning(f"Lead Incompleto o Falso Positivo interceptado para {sender}. Nombre palabras: {palabras_nombre}, Correo válido: {tiene_correo_valido}")
                 
-                if not propiedades_seleccionadas:
-                    respuesta_final_chatbot = "¡Hola! 👋 Gracias por tu interés. Lamentablemente, no encontré propiedades que coincidan con tu búsqueda actual. ¿Probamos con otros criterios o zonas?"
+                if palabras_nombre < 2 and not tiene_correo_valido:
+                    respuesta_bot = "¡Excelente elección! Me entusiasma muchísimo ayudarte a encontrar tu propiedad ideal. 😍 Para poder registrar tu ficha VIP en nuestro sistema y asignarte de inmediato al asesor especialista de guardia, por favor confírmame tu Nombre Completo (Nombre y Apellido) junto con tu Correo electrónico. ¡Así procesamos tu solicitud de inmediato! 🤝"
+                elif palabras_nombre < 2:
+                    respuesta_bot = f"¡Perfecto! Ya anoté tu interés. Por favor, confírmame también tu Apellido para poder registrar tu Nombre Completo en el sistema Mettryc y abrir tu ficha VIP con éxito. ¡Ya casi estamos listos! 😊"
+                elif not tiene_correo_valido:
+                    respuesta_bot = f"¡Excelente, {nombre_val}! Ya tengo tu nombre registrado. Por favor, compárteme tu Correo electrónico actual para completar tu ficha VIP en el sistema y que nuestro especialista de guardia te envíe toda la información detallada de inmediato. 📲"
                 else:
-                    fichas_formateadas = [formatear_ficha_propiedad(p, es_colega=False) for p in propiedades_seleccionadas]
-                    texto_introductorio = "¡Hola! 👋 ¡Qué gusto atenderte! Encontré estas 3 opciones geniales que pensé que te podrían encantar. ✨"
-                    respuesta_final_chatbot = texto_introductorio + "\n\n" + "\n\n".join(fichas_formateadas)
-
-            else: # Cliente con intención general o saludo (por defecto si no hay rol claro o intención específica)
-                prompt_respuesta_cliente = f"""
-                Eres Paty, tu asistente VIP de Mettryc Realty. Responde de forma cálida y amigablemente, máximo 30 palabras.
-                Sé útil y haz una pregunta abierta para continuar la charla.
-                Contexto: El usuario es un CLIENTE. Su última interacción fue: "{mensaje_usuario_raw}".
-                """
-                historial_para_ia = [{"role": "system", "content": prompt_respuesta_cliente}] + memoria_conversaciones[sender][-4:] 
-                respuesta_final_chatbot = consultar_ia(historial_para_ia, max_tokens_respuesta=60) # ~30 palabras
-
-        elif rol_usuario == "colega_inmobiliario":
-            # Si el colega solicita propiedades o fichas específicas
-            if intencion_usuario == "buscar_propiedad" or intencion_usuario == "pedir_ficha_completa": 
-                propiedades_seleccionadas = elegir_top_n_propiedades(inventario_disponible, deteccion, n=3)
-                
-                if not propiedades_seleccionadas:
-                    respuesta_final_chatbot = "Hola colega. Revisé nuestro inventario pero hoy no encontré propiedades que se ajusten a tu búsqueda. ¿Puedo ayudarte con algo más?"
-                else:
-                    # Formatear fichas PARA COLEGA (incluye captador y su teléfono de la SHEET)
-                    fichas_formateadas = [formatear_ficha_propiedad(p, es_colega=True) for p in propiedades_seleccionadas]
+                    respuesta_bot = texto_cliente
                     
-                    # Mensaje introductorio para el colega, aclarando origen de datos de captador
-                    respuesta_final_chatbot = f"¡Hola colega! 👋 Te comparto estas opciones de nuestro inventario que podrían interesarte. Por favor, ten en cuenta que los datos de 'WhatsApp Captador' se obtienen de nuestra base de datos y se recomienda verificar directamente:\n\n" + "\n\n".join(fichas_formateadas)
-                    
-            else: # Colega con intención general
-                prompt_respuesta_colega = f"""
-                Eres un asistente profesional para colegas de Mettryc Realty. Responde de forma cordial y eficiente, máximo 30 palabras.
-                Contexto: El usuario es un COLEGA INMOBILIARIO. Su última interacción fue: "{mensaje_usuario_raw}".
-                """
-                historial_para_ia = [{"role": "system", "content": prompt_respuesta_colega}] + memoria_conversaciones[sender][-4:]
-                respuesta_final_chatbot = consultar_ia(historial_para_ia, max_tokens_respuesta=60)
-
-        # --- LÓGICA DE CAPTURA DE LEAD PARA CLIENTES ---
-        # Se activa si es cliente, busca propiedad Y parece dar datos en su ÚLTIMO mensaje.
-        # (Esta lógica debe seguir pensando en el rol 'cliente')
-        if rol_usuario == "cliente" and intencion_usuario == "buscar_propiedad" and sender not in clientes_procesados:
-            
-            datos_lead_extraccion = {}
-            # Extracción de datos más robusta
-            nombre_match = re.search(r"(?:mi? nombre es|soy|me llamo|me llamo soy)\s+([A-Za-zÀ-ÖØ-ÿ'-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'-]+){1,})", mensaje_usuario_raw, re.IGNORECASE) # Busca Nombre Apellido
-            correo_match = re.search(r"([\w\.-]+@[\w\.-]+\.[\w]+)", mensaje_usuario_raw, re.IGNORECASE) # Patrón básico de email
-            telefono_match = re.search(r"(?:mi? teléfono es|mi? celular es|mi? wsp es|tel:|cel:)\s*([\+?\d\s()-]{7,})", mensaje_usuario_raw, re.IGNORECASE) # Patrón básico de teléfono
-            
-            if nombre_match: datos_lead_extraccion["nombre"] = nombre_match.group(1).strip()
-            if correo_match: datos_lead_extraccion["correo"] = correo_match.group(1).strip()
-            if telefono_match: datos_lead_extraccion["telefono"] = telefono_match.group(1).strip()
-            elif sender.isdigit() and len(sender) > 5: # Si el sender es un número de teléfono válido
-                 datos_lead_extraccion["telefono"] = sender 
-            
-            # CONDICIÓN PARA PROCEDER: Nombre COMPLETO (mín 2 palabras) Y Correo.
-            if "nombre" in datos_lead_extraccion and "correo" in datos_lead_extraccion:
+            elif sender not in clientes_procesados:
+                nums = re.findall(r'\+?\d{8,15}', datos_lead_raw)
+                telefono_final = nums[0] if nums else None
                 
-                if len(datos_lead_extraccion["nombre"].split()) < 2: # Re-validar si el nombre tiene al menos dos partes
-                    logger.warning(f"Nombre incompleto detectado de {sender}: '{datos_lead_extraccion['nombre']}'. Pidiendo apellidos.")
-                    respuesta_final_chatbot = f"¡Excelente! Para poder registrar tu ficha VIP y asignarte el asesor especialista, por favor, confírmame tu Apellido. 😊"
+                if not telefono_final and not es_numero_puro:
+                    logger.warning(f"Enlace de número roto evitado para {sender}")
+                    respuesta_bot = texto_cliente + "\n\n¡Por último! Como no logro ver tu número de teléfono automáticamente en mi panel, por favor escríbelo por aquí (con el código de tu país) para que nuestro asesor especialista te escriba de inmediato a tu WhatsApp. 📲"
                 else:
-                    # Tenemos Nombre completo y Correo: Asignar agente y notificar
-                    agente_asignado = asignar_agente_round_robin()
-                    if agente_asignado:
-                        telefono_a_notificar = datos_lead_extraccion.get("telefono", sender) # Usar teléfono capturado o sender como fallback
+                    if not telefono_final:
+                        telefono_final = sender
                         
-                        datos_notificacion = {
-                            "Nombre": datos_lead_extraccion["nombre"],
-                            "Correo": datos_lead_extraccion["correo"],
-                            "Telefono": telefono_a_notificar,
-                            "Origen": "Chatbot Inmobiliario" # Campo para saber de dónde vino el lead
-                        }
-                        enviar_notificaciones_telegram(agente_asignado, telefono_a_notificar, datos_notificacion)
-                        
-                        clientes_procesados.add(sender) # Marcar como cliente procesado para evitar re-asignación
-                        
-                        respuesta_final_chatbot = (
-                            f"¡Perfecto, {datos_lead_extraccion['nombre'].split()[0]}! ✨"
-                            f" He registrado tus datos VIP. Nuestro asesor, *{agente_asignado['nombre']}*, te contactará de inmediato para atención personalizada. "
-                            f"¡Gracias por confiar en Mettryc Realty! 🤝"
-                        )
-                    else:
-                        # Si no se pudo asignar agente (ej. lista vacía)
-                        respuesta_final_chatbot = "¡Genial! Hemos registrado tu interés y estamos asignando un asesor de inmediato. Por favor, espera un momento mientras te conectamos. Gracias."
-            
-            # Si faltan datos cruciales (Nombre o Correo) y NO hemos procesado al cliente aún
-            elif "nombre" not in datos_lead_extraccion or "correo" not in datos_lead_extraccion:
-                 if not "nombre" in datos_lead_extraccion: # Si falta Nombre
-                     respuesta_final_chatbot = "¡Me alegra tu interés! Para registrar tu ficha VIP y asignar un asesor, confírmame tu Nombre Completo (Nombre y Apellido). 😊"
-                 elif "correo" not in datos_lead_extraccion: # Si falta Correo (y ya tenemos nombre)
-                      respuesta_final_chatbot = f"¡Excelente, {datos_lead_extraccion['nombre'].split()[0]}! Ya tengo tu nombre. Por favor, compárteme tu Correo Electrónico actual para completar tu ficha VIP. 📲"
+                    agente = asignar_agente_round_robin()
+                    if agente:
+                        enviar_notificaciones_telegram(agente, telefono_final, datos_lead_raw)
+                        texto_cliente += f"\n\n¡Listo, {nombre_val}! He registrado tus datos en nuestro sistema premium. Nuestro asesor especializado, *{agente['nombre']}*, ya tiene tu caso asignado y te contactará directamente a tu WhatsApp de inmediato para darte una atención 100% personalizada. 🤝✨"
+                        clientes_procesados.add(sender)
+                    respuesta_bot = texto_cliente
+            else:
+                respuesta_bot = texto_cliente
         
-        # --- Actualizar historial de conversación ---
-        memoria_conversaciones[sender].append({"role": "user", "content": mensaje_usuario_raw})
-        # Añadir respuesta del asistente si es diferente a la última para evitar duplicados en reintentos
-        if not memoria_conversaciones[sender] or memoria_conversaciones[sender][-1]["content"] != respuesta_final_chatbot:
-            memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_final_chatbot})
+        memoria_conversaciones[sender].append({"role": "user", "content": mensaje_cliente})
+        memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
         
-        # Limitar el tamaño del historial para optimizar memoria
         if len(memoria_conversaciones[sender]) > 20:
             memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
             
-        # --- Formatear y retornar ---
-        respuesta_limpia = respuesta_final_chatbot.replace("**", "*") # Limpieza final de formato Markdown
-
-        return {"replies": [{"message": respuesta_limpia}]}
-
-    except HTTPException as e:
-        raise e # Relanzar errores HTTP conocidos (ej. 403)
+        # LIMPIEZA GLOBAL DE FORMATO: Asegura que nunca pasen negritas dobles (**) a WhatsApp
+        respuesta_bot_final = respuesta_bot.replace("**", "*")
+            
+        return {"replies": [{"message": respuesta_bot_final}]}
     except Exception as e:
-        logger.error(f"Error crítico e inesperado en el endpoint /webhook: {e}", exc_info=True)
-        return {"replies": [{"message": "Lo siento, hemos encontrado un inconveniente técnico. Por favor, intenta de nuevo más tarde."}]}
+        logger.error(f"Error crítico general: {e}", exc_info=True)
+        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud. Por favor, escribe de nuevo."}]}
