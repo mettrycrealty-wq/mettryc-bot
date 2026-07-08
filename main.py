@@ -5,11 +5,8 @@ import time
 import re
 import json
 import unicodedata
-import threading
-import hashlib
-import random
+import asyncio
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, HTTPException
 
 logging.basicConfig(level=logging.INFO)
@@ -21,75 +18,37 @@ app = FastAPI()
 # CONFIGURACIÓN GENERAL
 # ============================================================
 
-ZONA_HORARIA_LOCAL = ZoneInfo("America/Caracas")
-
+INTERVALO_ACTUALIZACION_INVENTARIO = timedelta(hours=12)
 INTERVALO_ACTUALIZACION_SHEETS = timedelta(hours=1)
-HORAS_ACTUALIZACION_INVENTARIO = {0, 12}
 
-VENTANA_DEDUPLICACION_SEGUNDOS = 20
-
-# ============================================================
-# MODELOS IA ECONÓMICOS POR TAREA
-# ============================================================
-
-MODELOS_IA = {
-    "analisis": {
-        "principal": "google/gemini-2.5-flash-lite",
-        "respaldo": "openai/gpt-4o-mini",
-        "max_tokens": 350,
-        "temperature": 0.1
-    },
-    "redaccion": {
-        "principal": "google/gemini-2.5-flash-lite",
-        "respaldo": "openai/gpt-4o-mini",
-        "max_tokens": 120,
-        "temperature": 0.65
-    },
-    "critico": {
-        "principal": "openai/gpt-4o-mini",
-        "respaldo": "google/gemini-2.0-flash-001",
-        "max_tokens": 250,
-        "temperature": 0.2
-    },
-    "resumen": {
-        "principal": "google/gemini-2.5-flash-lite",
-        "respaldo": "openai/gpt-4o-mini",
-        "max_tokens": 180,
-        "temperature": 0.2
-    }
-}
-
-# Compatibilidad con nombres anteriores
-MODELO_PRINCIPAL = MODELOS_IA["analisis"]["principal"]
-MODELO_RESPALDO = MODELOS_IA["analisis"]["respaldo"]
+# Modelos más económicos para extracción y clasificación
+MODELO_EXTRACCION = os.getenv("MODELO_EXTRACCION", "google/gemini-2.0-flash-lite")
+MODELO_RESPALDO = os.getenv("MODELO_RESPALDO", "openai/gpt-4o-mini")
 
 # ============================================================
-# CACHÉ, LOCKS Y MEMORIA
+# CACHÉ Y MEMORIA
 # ============================================================
 
 cache = {
     "inventario": [],
-    "ultima_actualizacion": None,
-    "slot_actualizacion": None,
-    "actualizando": False
+    "ultima_actualizacion": datetime.min
 }
 
 sheets_cache = {
     "agentes": [],
     "captadores": {},
     "ultimo_indice": -1,
-    "ultima_actualizacion": datetime.min.replace(tzinfo=ZONA_HORARIA_LOCAL)
+    "ultima_actualizacion": datetime.min
 }
 
 memoria_conversaciones = {}
 clientes_procesados = set()
 estado_usuarios = {}
+ultimos_mensajes = {}  # dedupe
 
-mensajes_procesados = {}
-
-lock_inventario = threading.Lock()
-lock_sheets = threading.Lock()
-lock_deduplicacion = threading.Lock()
+# Bloqueo para refrescos
+inventario_lock = asyncio.Lock()
+sheets_lock = asyncio.Lock()
 
 # ============================================================
 # ESTADOS CONVERSACIONALES
@@ -110,19 +69,6 @@ STOPWORDS_ZONA = {
     "el", "la", "los", "las", "de", "del", "en", "y",
     "urb", "urbanizacion", "urbanización", "sector", "zona"
 }
-
-CALIFICADORES_ZONA = {
-    "norte", "sur", "este", "oeste", "centro", "central",
-    "alto", "alta", "bajo", "baja"
-}
-
-CIUDADES_COMUNES = {
-    "valencia", "carabobo", "naguanagua", "san", "diego",
-    "guacara", "tocuyito", "maracay", "caracas"
-}
-
-def ahora_local():
-    return datetime.now(ZONA_HORARIA_LOCAL)
 
 def normalizar_texto(texto: str) -> str:
     if not texto:
@@ -151,30 +97,20 @@ def zona_coincide(zona_buscada: str, zona_propiedad: str, ciudad_propiedad: str 
     if not buscada_norm:
         return True
 
+    texto_propiedad = f"{zona_norm} {ciudad_norm}".strip()
+
+    if buscada_norm in texto_propiedad:
+        return True
+
     tokens_busqueda = tokens_relevantes(buscada_norm)
-    tokens_zona_propiedad = tokens_relevantes(zona_norm)
-    tokens_ciudad = tokens_relevantes(ciudad_norm)
-    tokens_propiedad_total = tokens_zona_propiedad.union(tokens_ciudad)
+    tokens_propiedad = tokens_relevantes(texto_propiedad)
 
     if not tokens_busqueda:
         return True
 
-    calificadores_buscados = tokens_busqueda.intersection(CALIFICADORES_ZONA)
+    coincidencias = tokens_busqueda.intersection(tokens_propiedad)
 
-    if calificadores_buscados:
-        if not calificadores_buscados.issubset(tokens_zona_propiedad):
-            return False
-
-    tokens_clave_busqueda = tokens_busqueda - CIUDADES_COMUNES
-
-    if len(tokens_clave_busqueda) >= 2:
-        return tokens_clave_busqueda.issubset(tokens_zona_propiedad)
-
-    if len(tokens_clave_busqueda) == 1:
-        token = list(tokens_clave_busqueda)[0]
-        return token in tokens_zona_propiedad
-
-    return bool(tokens_busqueda.intersection(tokens_propiedad_total))
+    return len(coincidencias) >= min(len(tokens_busqueda), 2)
 
 def convertir_entero_seguro(valor) -> int:
     try:
@@ -209,6 +145,7 @@ def obtener_estado_usuario(sender: str) -> dict:
         estado_usuarios[sender] = {
             "estado": ESTADO_INDAGANDO,
             "rol": None,
+            "intentos_rol": 0,
             "filtros": {
                 "tipo_propiedad": "",
                 "tipo_operacion": "",
@@ -219,8 +156,6 @@ def obtener_estado_usuario(sender: str) -> dict:
                 "caracteristicas": []
             },
             "propiedades_enviadas": [],
-            "ultimas_propiedades_mostradas": [],
-            "propiedad_interes": None,
             "lead": {
                 "nombre": "",
                 "correo": "",
@@ -229,77 +164,6 @@ def obtener_estado_usuario(sender: str) -> dict:
         }
 
     return estado_usuarios[sender]
-
-def mensaje_es_saludo_simple(mensaje: str) -> bool:
-    texto = normalizar_texto(mensaje)
-
-    saludos = {
-        "hola",
-        "buenas",
-        "buenos dias",
-        "buenas tardes",
-        "buenas noches",
-        "saludos",
-        "hello",
-        "hi"
-    }
-
-    return texto in saludos
-
-def limpiar_respuesta_whatsapp(texto: str) -> str:
-    return str(texto or "").replace("**", "*").strip()
-
-# ============================================================
-# DEDUPLICACIÓN DE WEBHOOKS
-# ============================================================
-
-def obtener_message_id_payload(payload: dict) -> str:
-    posibles_campos = [
-        "message_id",
-        "messageId",
-        "id",
-        "wamid",
-        "whatsapp_message_id",
-        "messageID"
-    ]
-
-    for campo in posibles_campos:
-        valor = payload.get(campo)
-        if valor:
-            return str(valor).strip()
-
-    return ""
-
-def generar_clave_deduplicacion(payload: dict, sender: str, mensaje: str) -> str:
-    message_id = obtener_message_id_payload(payload)
-
-    if message_id:
-        return f"id:{sender}:{message_id}"
-
-    base = f"{sender}:{normalizar_texto(mensaje)}"
-    digest = hashlib.sha256(base.encode("utf-8")).hexdigest()
-
-    return f"hash:{digest}"
-
-def es_mensaje_duplicado(payload: dict, sender: str, mensaje: str) -> bool:
-    ahora = time.time()
-    clave = generar_clave_deduplicacion(payload, sender, mensaje)
-
-    with lock_deduplicacion:
-        expiradas = [
-            k for k, ts in mensajes_procesados.items()
-            if ahora - ts > VENTANA_DEDUPLICACION_SEGUNDOS
-        ]
-
-        for k in expiradas:
-            mensajes_procesados.pop(k, None)
-
-        if clave in mensajes_procesados:
-            logger.warning(f"Mensaje duplicado ignorado: {clave}")
-            return True
-
-        mensajes_procesados[clave] = ahora
-        return False
 
 # ============================================================
 # PRECIOS
@@ -351,42 +215,19 @@ def parsear_precio_wasi(valor_numerico=None, valor_label=None) -> float:
     return parsear_precio(valor_label)
 
 def parsear_presupuesto_texto(texto: str):
-    if not texto:
-        return None
-
-    texto_original = str(texto).lower().strip()
-
-    # Ejemplos: 200.000 / 200,000 / 1.500.000
-    match_miles = re.search(r"(\d{1,3}(?:[.,]\d{3})+)", texto_original)
-
-    if match_miles:
-        numero = match_miles.group(1)
-        numero = numero.replace(".", "").replace(",", "")
-
-        try:
-            return float(numero)
-        except Exception:
-            pass
-
     texto_norm = normalizar_texto(texto)
 
-    # Ejemplos: 200 mil / 200k
     match = re.search(r"(\d+(?:[.,]\d+)?)\s*(mil|k)", texto_norm)
-
     if match:
         numero = float(match.group(1).replace(",", "."))
         return numero * 1000
 
-    # Ejemplos: 1.5 millones / 2 millones
     match = re.search(r"(\d+(?:[.,]\d+)?)\s*(millon|millones|mm)", texto_norm)
-
     if match:
         numero = float(match.group(1).replace(",", "."))
         return numero * 1000000
 
-    # Ejemplo: 200000
     match = re.search(r"(?:usd|us|\$)?\s*(\d{4,9})", texto_norm)
-
     if match:
         return float(match.group(1))
 
@@ -395,23 +236,6 @@ def parsear_presupuesto_texto(texto: str):
 # ============================================================
 # INVENTARIO WASI
 # ============================================================
-
-def obtener_slot_actual_inventario():
-    ahora = ahora_local()
-
-    if ahora.hour < 12:
-        hora_slot = 0
-    else:
-        hora_slot = 12
-
-    slot = ahora.replace(
-        hour=hora_slot,
-        minute=0,
-        second=0,
-        microsecond=0
-    )
-
-    return slot.strftime("%Y-%m-%d %H:%M")
 
 def obtener_inventario_desde_wasi():
     propiedades = []
@@ -437,7 +261,7 @@ def obtener_inventario_desde_wasi():
                 response = requests.get(
                     "https://api.wasi.co/v1/property/search",
                     params=params,
-                    timeout=60
+                    timeout=30
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -508,129 +332,53 @@ def obtener_inventario_desde_wasi():
 
     return propiedades
 
-def actualizar_inventario_si_corresponde(forzar: bool = False):
-    slot_actual = obtener_slot_actual_inventario()
+async def refrescar_inventario(force: bool = False):
+    async with inventario_lock:
+        if not force:
+            reciente = datetime.now() - cache["ultima_actualizacion"] <= INTERVALO_ACTUALIZACION_INVENTARIO
+            if cache["inventario"] and reciente:
+                return
 
-    if (
-        not forzar
-        and cache.get("slot_actualizacion") == slot_actual
-        and cache.get("inventario")
-    ):
-        logger.info(
-            f"Inventario vigente en memoria. Slot: {slot_actual}. "
-            f"Propiedades: {len(cache['inventario'])}"
-        )
-        return cache["inventario"]
+        inventario_nuevo = await asyncio.to_thread(obtener_inventario_desde_wasi)
 
-    with lock_inventario:
-        slot_actual = obtener_slot_actual_inventario()
+        if inventario_nuevo:
+            cache["inventario"] = inventario_nuevo
+            cache["ultima_actualizacion"] = datetime.now()
+            logger.info(f"Inventario actualizado con {len(inventario_nuevo)} propiedades.")
+        else:
+            logger.warning("No se pudo actualizar inventario. Se mantiene caché anterior.")
 
-        if (
-            not forzar
-            and cache.get("slot_actualizacion") == slot_actual
-            and cache.get("inventario")
-        ):
-            logger.info("Otro request ya actualizó el inventario para este slot.")
-            return cache["inventario"]
-
-        try:
-            cache["actualizando"] = True
-            logger.info(
-                f"Actualizando inventario desde Wasi. "
-                f"Forzar={forzar}. Slot={slot_actual}"
-            )
-
-            inventario_nuevo = obtener_inventario_desde_wasi()
-
-            if inventario_nuevo:
-                cache["inventario"] = inventario_nuevo
-                cache["ultima_actualizacion"] = ahora_local()
-                cache["slot_actualizacion"] = slot_actual
-
-                logger.info(
-                    f"Inventario actualizado correctamente con "
-                    f"{len(inventario_nuevo)} propiedades. Slot={slot_actual}"
-                )
-            else:
-                logger.warning(
-                    "Wasi devolvió inventario vacío. Se mantiene inventario anterior."
-                )
-
-        except Exception as e:
-            logger.error(
-                f"Error actualizando inventario desde Wasi: {e}",
-                exc_info=True
-            )
-
-        finally:
-            cache["actualizando"] = False
-
-    return cache["inventario"]
+async def loop_actualizacion_inventario():
+    while True:
+        await refrescar_inventario(force=False)
+        await asyncio.sleep(INTERVALO_ACTUALIZACION_INVENTARIO.total_seconds())
 
 def obtener_inventario():
-    """
-    Devuelve inventario desde memoria.
-    No descarga por saludo ni por conversación.
-    Solo actualiza al iniciar, deploy/reinicio o cuando cambia el slot 12 a.m. / 12 p.m.
-    """
-    if cache.get("inventario"):
-        slot_actual = obtener_slot_actual_inventario()
-
-        if cache.get("slot_actualizacion") == slot_actual:
-            return cache["inventario"]
-
-    return actualizar_inventario_si_corresponde(forzar=False)
-
-def scheduler_inventario_background():
-    logger.info("Scheduler de inventario iniciado.")
-
-    while True:
-        try:
-            actualizar_inventario_si_corresponde(forzar=False)
-        except Exception as e:
-            logger.error(
-                f"Error en scheduler de inventario: {e}",
-                exc_info=True
-            )
-
-        time.sleep(300)
+    return cache["inventario"]
 
 # ============================================================
 # GOOGLE SHEETS
 # ============================================================
 
-def sincronizar_google_sheet():
+async def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL")
 
     if not script_url:
         logger.warning("GOOGLE_SHEET_TURNOS_URL no configurada.")
         return
 
-    ahora = ahora_local()
-
-    necesita_actualizar = (
-        ahora - sheets_cache["ultima_actualizacion"] > INTERVALO_ACTUALIZACION_SHEETS
-        or not sheets_cache["agentes"]
-        or not sheets_cache["captadores"]
-    )
-
-    if not necesita_actualizar:
-        return
-
-    with lock_sheets:
-        ahora = ahora_local()
-
-        necesita_actualizar_dentro_lock = (
-            ahora - sheets_cache["ultima_actualizacion"] > INTERVALO_ACTUALIZACION_SHEETS
+    async with sheets_lock:
+        necesita_actualizar = (
+            datetime.now() - sheets_cache["ultima_actualizacion"] > INTERVALO_ACTUALIZACION_SHEETS
             or not sheets_cache["agentes"]
             or not sheets_cache["captadores"]
         )
 
-        if not necesita_actualizar_dentro_lock:
+        if not necesita_actualizar:
             return
 
         try:
-            response = requests.get(script_url, timeout=15)
+            response = await asyncio.to_thread(requests.get, script_url, 15)
             response.raise_for_status()
             payload_sheet = response.json()
 
@@ -641,7 +389,7 @@ def sincronizar_google_sheet():
                     for k, v in payload_sheet.get("captadores", {}).items()
                     if str(k).strip() and str(v).strip()
                 }
-                sheets_cache["ultima_actualizacion"] = ahora_local()
+                sheets_cache["ultima_actualizacion"] = datetime.now()
 
                 logger.info(
                     f"✅ Sincronizados {len(sheets_cache['agentes'])} agentes "
@@ -653,9 +401,12 @@ def sincronizar_google_sheet():
         except Exception as e:
             logger.error(f"Error sincronizando Google Sheets: {e}")
 
-def asignar_agente_round_robin():
-    sincronizar_google_sheet()
+async def loop_actualizacion_sheets():
+    while True:
+        await sincronizar_google_sheet()
+        await asyncio.sleep(INTERVALO_ACTUALIZACION_SHEETS.total_seconds())
 
+def asignar_agente_round_robin():
     lista_agentes = sheets_cache["agentes"]
 
     if not lista_agentes:
@@ -674,7 +425,7 @@ def asignar_agente_round_robin():
 
 def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
     if not sheets_cache["captadores"]:
-        sincronizar_google_sheet()
+        return "N/D"
 
     if not nombre_captador:
         return "N/D"
@@ -708,23 +459,13 @@ def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
 # OPENROUTER IA
 # ============================================================
 
-def consultar_ia(historial, tarea="analisis", max_tokens=None, temperature=None, fallback=""):
+def consultar_ia(messages, max_tokens=200, fallback=""):
     url_ia = "https://openrouter.ai/api/v1/chat/completions"
     api_key = os.getenv("OPENROUTER_API_KEY")
 
     if not api_key:
         logger.error("OPENROUTER_API_KEY no configurada.")
         return fallback or ""
-
-    config = MODELOS_IA.get(tarea, MODELOS_IA["analisis"])
-
-    modelos = [
-        config["principal"],
-        config["respaldo"]
-    ]
-
-    max_tokens_final = max_tokens or config.get("max_tokens", 250)
-    temperature_final = temperature if temperature is not None else config.get("temperature", 0.2)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -733,23 +474,20 @@ def consultar_ia(historial, tarea="analisis", max_tokens=None, temperature=None,
         "X-Title": "Mettryc Realty Chatbot"
     }
 
-    for modelo in modelos:
+    for modelo in [MODELO_EXTRACCION, MODELO_RESPALDO]:
         try:
-            logger.info(
-                f"Consultando IA | tarea={tarea} | modelo={modelo} | "
-                f"max_tokens={max_tokens_final} | temperature={temperature_final}"
-            )
+            logger.info(f"Consultando IA con modelo: {modelo}")
 
             response = requests.post(
                 url_ia,
                 headers=headers,
                 json={
                     "model": modelo,
-                    "messages": historial,
-                    "max_tokens": max_tokens_final,
-                    "temperature": temperature_final
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": 0.2
                 },
-                timeout=25
+                timeout=30
             )
 
             response.raise_for_status()
@@ -759,7 +497,6 @@ def consultar_ia(historial, tarea="analisis", max_tokens=None, temperature=None,
 
             if choices:
                 contenido = choices[0].get("message", {}).get("content", "")
-
                 if contenido and contenido.strip():
                     return contenido.strip()
 
@@ -770,207 +507,11 @@ def consultar_ia(historial, tarea="analisis", max_tokens=None, temperature=None,
 
     return fallback or ""
 
-def analizar_respuesta_usuario(mensaje_usuario: str, estado: dict) -> dict:
-    estado_resumido = {
-        "estado": estado.get("estado"),
-        "rol": estado.get("rol"),
-        "filtros": estado.get("filtros"),
-        "lead": {
-            "tiene_nombre": bool(estado.get("lead", {}).get("nombre")),
-            "tiene_correo": bool(estado.get("lead", {}).get("correo")),
-            "tiene_whatsapp": bool(estado.get("lead", {}).get("whatsapp"))
-        }
-    }
-
-    prompt = f"""
-Analiza mensaje inmobiliario. Devuelve solo JSON válido. No inventes.
-
-Estado:
-{json.dumps(estado_resumido, ensure_ascii=False)}
-
-Mensaje:
-"{mensaje_usuario}"
-
-JSON:
-{{
- "filtros_detectados": {{
-  "tipo_propiedad": "",
-  "tipo_operacion": "",
-  "zona": "",
-  "presupuesto": null,
-  "habitaciones_min": null,
-  "banos_min": null,
-  "caracteristicas": []
- }},
- "rol_detectado": "cliente|colega_inmobiliario|desconocido",
- "pide_mas_opciones": false,
- "muestra_interes": false,
- "quiere_agendar": false,
- "datos_contacto": {{
-  "nombre": "",
-  "correo": "",
-  "whatsapp": ""
- }},
- "objecion_detectada": "",
- "emocion_detectada": "",
- "confianza_extraccion": 0.0
-}}
-"""
-
-    respuesta_raw = consultar_ia(
-        [{"role": "system", "content": prompt}],
-        tarea="analisis",
-        fallback="{}"
-    )
-
-    try:
-        start = respuesta_raw.find("{")
-        end = respuesta_raw.rfind("}")
-
-        if start != -1 and end != -1:
-            return json.loads(respuesta_raw[start:end + 1])
-
-    except Exception as e:
-        logger.warning(f"No se pudo parsear análisis IA: {e}")
-
-    return {}
-
-def fusionar_filtros(filtros_actuales: dict, filtros_nuevos: dict) -> dict:
-    filtros = filtros_actuales.copy()
-
-    for campo in ["tipo_propiedad", "tipo_operacion", "zona"]:
-        valor = filtros_nuevos.get(campo)
-        if valor:
-            filtros[campo] = str(valor).strip()
-
-    for campo in ["presupuesto", "habitaciones_min", "banos_min"]:
-        valor = filtros_nuevos.get(campo)
-
-        if valor not in [None, "", []]:
-            try:
-                filtros[campo] = float(valor) if campo == "presupuesto" else int(valor)
-            except Exception:
-                pass
-
-    nuevas_caracteristicas = filtros_nuevos.get("caracteristicas", [])
-
-    if isinstance(nuevas_caracteristicas, list) and nuevas_caracteristicas:
-        actuales = filtros.get("caracteristicas", [])
-        filtros["caracteristicas"] = list(dict.fromkeys(actuales + nuevas_caracteristicas))
-
-    tipo_op = normalizar_texto(filtros.get("tipo_operacion", ""))
-
-    if tipo_op in ["comprar", "compra", "venta", "vendo"]:
-        filtros["tipo_operacion"] = "venta"
-    elif tipo_op in ["renta", "alquiler", "alquilar", "arrendamiento"]:
-        filtros["tipo_operacion"] = "alquiler"
-
-    return filtros
-
-# ============================================================
-# REDACCIÓN HUMANA Y PLANTILLAS
-# ============================================================
-
-PLANTILLAS_HUMANAS = {
-    "tipo_propiedad": [
-        "¡Hola! 👋 Qué gusto saludarte. Soy Paty de Mettryc Realty 😊\n\nCuéntame, ¿qué tipo de propiedad estás buscando?",
-        "¡Hola! Bienvenido a Mettryc Realty 😊 Para ayudarte bien, cuéntame: ¿buscas casa, apartamento, local u otro tipo de propiedad?"
-    ],
-    "tipo_operacion": [
-        "¡Qué buena elección! 🏡 ¿La buscas para comprar o alquilar?",
-        "Perfecto, ya voy entendiendo lo que necesitas 😊 ¿Sería para venta o alquiler?"
-    ],
-    "zona": [
-        "Excelente. Para enfocarme en opciones que realmente te sirvan, ¿en qué zona te gustaría buscar?",
-        "Muy bien 😊 ¿Qué zona, urbanización o ciudad tienes en mente?"
-    ],
-    "presupuesto": [
-        "Perfecto. Para mostrarte opciones realistas y bien filtradas, ¿cuál sería tu presupuesto máximo aproximado?",
-        "Genial. Así puedo afinar mejor la búsqueda: ¿qué presupuesto máximo tienes en mente?"
-    ],
-    "caracteristicas": [
-        "Buenísimo. ¿Qué característica es indispensable para ti? Por ejemplo: habitaciones, patio, estacionamiento o vigilancia.",
-        "Perfecto 😊 ¿Hay algo que no pueda faltar en la propiedad?"
-    ],
-    "rol": [
-        "Gracias, ya tengo la información base 😊 Una pregunta rápida: ¿la propiedad la buscas para ti o para un cliente?"
-    ]
-}
-
-def obtener_plantilla_humana(campo: str) -> str:
-    opciones = PLANTILLAS_HUMANAS.get(campo, [])
-    if not opciones:
-        return "Cuéntame un poco más para ayudarte mejor 😊"
-    return random.choice(opciones)
-
-def construir_pregunta_campo(campo: str, es_inicio=False) -> str:
-    if es_inicio and campo == "tipo_propiedad":
-        return obtener_plantilla_humana("tipo_propiedad")
-
-    return obtener_plantilla_humana(campo)
-
-def construir_pregunta_rol() -> str:
-    return obtener_plantilla_humana("rol")
-
-def redactar_respuesta_humana(objetivo: str, pregunta_base: str, estado: dict, mensaje_usuario: str) -> str:
-    contexto = {
-        "rol": estado.get("rol"),
-        "estado": estado.get("estado"),
-        "filtros": estado.get("filtros")
-    }
-
-    prompt = f"""
-Eres Paty, asesora VIP de Mettryc Realty.
-
-Redacta una respuesta de WhatsApp:
-- Humana, cálida y comercial.
-- Máximo 45 palabras.
-- Una sola pregunta.
-- No digas que eres IA.
-- No uses doble asterisco.
-- Incluye la pregunta obligatoria.
-
-Objetivo:
-{objetivo}
-
-Contexto:
-{json.dumps(contexto, ensure_ascii=False)}
-
-Último mensaje:
-"{mensaje_usuario}"
-
-Pregunta obligatoria:
-{pregunta_base}
-
-Respuesta:
-"""
-
-    respuesta = consultar_ia(
-        [{"role": "system", "content": prompt}],
-        tarea="redaccion",
-        fallback=pregunta_base
-    )
-
-    return limpiar_respuesta_whatsapp(respuesta or pregunta_base)
-
-def debe_usar_ia_redaccion(analisis: dict, estado: dict) -> bool:
-    if analisis.get("objecion_detectada"):
-        return True
-
-    if analisis.get("emocion_detectada") in ["molestia", "duda", "desconfianza", "ansiedad"]:
-        return True
-
-    if estado.get("estado") in [ESTADO_CAPTURANDO_LEAD, ESTADO_LEAD_COMPLETO]:
-        return True
-
-    return False
-
 # ============================================================
 # EXTRACCIÓN DE FILTROS
 # ============================================================
 
 def extraer_filtros_regex(mensaje_usuario: str, filtros: dict) -> dict:
-    filtros = filtros.copy()
     texto = normalizar_texto(mensaje_usuario)
 
     tipos = [
@@ -985,40 +526,25 @@ def extraer_filtros_regex(mensaje_usuario: str, filtros: dict) -> dict:
             break
 
     if not filtros.get("tipo_operacion"):
-        if any(p in texto for p in ["venta", "comprar", "compra", "adquirir"]):
+        if any(p in texto for p in ["venta", "comprar", "compra"]):
             filtros["tipo_operacion"] = "venta"
         elif any(p in texto for p in ["alquiler", "alquilar", "renta", "arrendamiento"]):
             filtros["tipo_operacion"] = "alquiler"
 
-    presupuesto_detectado = parsear_presupuesto_texto(mensaje_usuario)
-
-    if presupuesto_detectado:
-        presupuesto_actual = filtros.get("presupuesto")
-
-        if presupuesto_actual is None:
-            filtros["presupuesto"] = presupuesto_detectado
-        elif presupuesto_detectado > presupuesto_actual * 10:
-            filtros["presupuesto"] = presupuesto_detectado
-
-    actuales = filtros.get("caracteristicas", [])
+    if filtros.get("presupuesto") is None:
+        presupuesto = parsear_presupuesto_texto(mensaje_usuario)
+        if presupuesto:
+            filtros["presupuesto"] = presupuesto
 
     if filtros.get("habitaciones_min") is None:
         match_hab = re.search(r"(\d+)\s*(hab|habitacion|habitaciones|cuarto|cuartos)", texto)
         if match_hab:
-            habitaciones = int(match_hab.group(1))
-            filtros["habitaciones_min"] = habitaciones
-            car = f"{habitaciones} habitaciones"
-            if car not in actuales:
-                actuales.append(car)
+            filtros["habitaciones_min"] = int(match_hab.group(1))
 
     if filtros.get("banos_min") is None:
         match_banos = re.search(r"(\d+)\s*(bano|banos|baño|baños)", texto)
         if match_banos:
-            banos = int(match_banos.group(1))
-            filtros["banos_min"] = banos
-            car = f"{banos} baños"
-            if car not in actuales:
-                actuales.append(car)
+            filtros["banos_min"] = int(match_banos.group(1))
 
     if not filtros.get("zona"):
         zona_match = re.search(
@@ -1030,22 +556,23 @@ def extraer_filtros_regex(mensaje_usuario: str, filtros: dict) -> dict:
         if zona_match:
             zona = zona_match.group(1).strip()
             zona = re.sub(r"\s+", " ", zona)
-            if len(zona.split()) <= 8:
+            if len(zona.split()) <= 6:
                 filtros["zona"] = zona
 
     caracteristicas_clave = [
         "patio", "terraza", "jardin", "jardín", "piscina", "vigilancia",
         "seguridad", "estacionamiento", "garage", "garaje", "maletero",
         "planta baja", "remodelado", "amoblado", "ascensor", "pozo",
-        "tanque", "calle cerrada", "conjunto cerrado", "parrillera",
-        "family room", "estudio", "deposito", "depósito"
+        "tanque", "calle cerrada", "conjunto cerrado"
     ]
+
+    actuales = filtros.get("caracteristicas", [])
 
     for car in caracteristicas_clave:
         if normalizar_texto(car) in texto and car not in actuales:
             actuales.append(car)
 
-    if any(p in texto for p in ["sin caracteristicas", "sin características", "ninguna", "no tengo", "nada especial"]):
+    if any(p in texto for p in ["sin caracteristicas", "sin características", "ninguna", "no tengo"]):
         if not actuales:
             actuales.append("sin características adicionales")
 
@@ -1053,21 +580,93 @@ def extraer_filtros_regex(mensaje_usuario: str, filtros: dict) -> dict:
 
     return filtros
 
-def extraer_filtros_busqueda(mensaje_usuario: str, filtros_actuales: dict, estado: dict) -> dict:
-    filtros_antes = filtros_actuales.copy()
-    filtros_regex = extraer_filtros_regex(mensaje_usuario, filtros_actuales)
+def extraer_filtros_busqueda(mensaje_usuario: str, filtros_actuales: dict) -> dict:
+    filtros = filtros_actuales.copy()
+    filtros = extraer_filtros_regex(mensaje_usuario, filtros)
 
-    # Si regex logró extraer algo útil, evitamos IA para ahorrar tokens.
-    if filtros_regex != filtros_antes:
-        return filtros_regex
+    faltantes = [
+        k for k in ["tipo_propiedad", "tipo_operacion", "zona", "presupuesto"]
+        if not filtros.get(k)
+    ]
 
-    # Si no hubo cambio y el mensaje no es simple, usamos IA económica.
-    analisis = analizar_respuesta_usuario(mensaje_usuario, estado)
-    filtros_ia = analisis.get("filtros_detectados", {})
+    # Solo usar IA si aún faltan datos clave
+    if not faltantes:
+        return filtros
 
-    filtros = fusionar_filtros(filtros_regex, filtros_ia)
+    prompt = f"""
+Eres un extractor de datos para búsqueda inmobiliaria.
 
-    # Regex final para corregir posibles errores de IA, especialmente presupuesto.
+Responde exclusivamente JSON válido.
+
+Extrae estos campos:
+- tipo_propiedad: casa, apartamento, local, terreno, oficina, galpón, townhouse, penthouse, etc.
+- tipo_operacion: venta o alquiler.
+- zona: zona, urbanización o ciudad.
+- presupuesto: número máximo, sin símbolos. Si no aparece, null.
+- habitaciones_min: número mínimo de habitaciones. Si no aparece, null.
+- banos_min: número mínimo de baños. Si no aparece, null.
+- caracteristicas: lista de características importantes. Ej: patio, terraza, vigilancia, piscina, estacionamiento, remodelado.
+
+Si el usuario dice que no tiene características especiales, usa ["sin características adicionales"].
+
+Mantén los datos existentes si el mensaje nuevo no los modifica.
+
+Filtros actuales:
+{json.dumps(filtros_actuales, ensure_ascii=False)}
+
+Mensaje:
+"{mensaje_usuario}"
+
+JSON:
+{{
+  "tipo_propiedad": "",
+  "tipo_operacion": "",
+  "zona": "",
+  "presupuesto": null,
+  "habitaciones_min": null,
+  "banos_min": null,
+  "caracteristicas": []
+}}
+"""
+
+    respuesta_raw = consultar_ia(
+        [{"role": "system", "content": prompt}],
+        max_tokens=220,
+        fallback=""
+    )
+
+    try:
+        start = respuesta_raw.find("{")
+        end = respuesta_raw.rfind("}")
+        data = json.loads(respuesta_raw[start:end + 1])
+    except Exception:
+        data = {}
+
+    for campo in ["tipo_propiedad", "tipo_operacion", "zona"]:
+        valor = data.get(campo)
+        if valor:
+            filtros[campo] = str(valor).strip()
+
+    for campo in ["presupuesto", "habitaciones_min", "banos_min"]:
+        valor = data.get(campo)
+        if valor not in [None, "", []]:
+            try:
+                filtros[campo] = float(valor) if campo == "presupuesto" else int(valor)
+            except Exception:
+                pass
+
+    caracteristicas = data.get("caracteristicas", [])
+    if isinstance(caracteristicas, list) and caracteristicas:
+        actuales = filtros.get("caracteristicas", [])
+        filtros["caracteristicas"] = list(dict.fromkeys(actuales + caracteristicas))
+
+    tipo_op = normalizar_texto(filtros.get("tipo_operacion", ""))
+
+    if tipo_op in ["comprar", "compra", "venta", "vendo"]:
+        filtros["tipo_operacion"] = "venta"
+    elif tipo_op in ["renta", "alquiler", "alquilar", "arrendamiento"]:
+        filtros["tipo_operacion"] = "alquiler"
+
     filtros = extraer_filtros_regex(mensaje_usuario, filtros)
 
     return filtros
@@ -1090,6 +689,31 @@ def obtener_siguiente_campo_faltante(filtros: dict):
 
     return None
 
+def construir_pregunta_campo(campo: str, es_inicio=False) -> str:
+    prefijo = ""
+
+    if es_inicio:
+        prefijo = (
+            "¡Hola! 👋 Soy Paty, asistente VIP de Mettryc Realty. "
+            "Estoy aquí para ayudarte. 😊\n\n"
+        )
+
+    preguntas = {
+        "tipo_propiedad": (
+            "Cuéntame, ¿qué tipo de propiedad estás buscando? "
+            "Por ejemplo: casa, apartamento, local u oficina."
+        ),
+        "tipo_operacion": "Perfecto 😊 ¿La buscas para venta o alquiler?",
+        "zona": "Genial. ¿Qué zona, urbanización o ciudad tienes en mente?",
+        "presupuesto": "Súper. Para afinar opciones, ¿cuál es tu presupuesto máximo aproximado?",
+        "caracteristicas": (
+            "Buenísimo. ¿Qué característica es indispensable para ti? "
+            "Por ejemplo: habitaciones, patio, estacionamiento o vigilancia."
+        )
+    }
+
+    return prefijo + preguntas.get(campo, "Cuéntame un poco más sobre lo que necesitas.")
+
 # ============================================================
 # DETECCIÓN DE ROL
 # ============================================================
@@ -1109,10 +733,7 @@ def detectar_rol_por_respuesta_directa(mensaje: str) -> str:
         "comision",
         "mls",
         "captador",
-        "inmobiliario",
-        "soy inmobiliario",
-        "soy asesora",
-        "soy agente inmobiliario"
+        "inmobiliario"
     ]
 
     patrones_cliente = [
@@ -1125,9 +746,7 @@ def detectar_rol_por_respuesta_directa(mensaje: str) -> str:
         "quiero comprar",
         "quiero alquilar",
         "es para vivir",
-        "para vivir",
-        "para invertir",
-        "para mi empresa"
+        "para vivir"
     ]
 
     if any(p in texto for p in patrones_colega):
@@ -1138,19 +757,11 @@ def detectar_rol_por_respuesta_directa(mensaje: str) -> str:
 
     return "desconocido"
 
-def detectar_rol_usuario(mensaje_usuario: str, estado: dict) -> str:
-    rol_directo = detectar_rol_por_respuesta_directa(mensaje_usuario)
-
-    if rol_directo != "desconocido":
-        return rol_directo
-
-    analisis = analizar_respuesta_usuario(mensaje_usuario, estado)
-    rol = analisis.get("rol_detectado", "desconocido")
-
-    if rol in ["cliente", "colega_inmobiliario", "desconocido"]:
-        return rol
-
-    return "desconocido"
+def construir_pregunta_rol() -> str:
+    return (
+        "Antes de mostrarte opciones, una pregunta rápida 😊\n"
+        "¿La propiedad la estás buscando para ti o para un cliente?"
+    )
 
 # ============================================================
 # BÚSQUEDA DE PROPIEDADES
@@ -1339,10 +950,7 @@ def usuario_pide_mas_opciones(mensaje: str) -> bool:
         "no me gustaron",
         "tienes mas",
         "mas opciones",
-        "quiero ver mas",
-        "muestrame otra",
-        "muestre otra",
-        "otra alternativa"
+        "quiero ver mas"
     ]
 
     return any(p in texto for p in patrones)
@@ -1360,11 +968,6 @@ def usuario_muestra_interes(mensaje: str) -> bool:
         "la primera",
         "la segunda",
         "la tercera",
-        "1era",
-        "1ra",
-        "2da",
-        "3era",
-        "3ra",
         "opcion 1",
         "opcion 2",
         "opcion 3",
@@ -1381,137 +984,93 @@ def usuario_envia_datos_contacto(mensaje: str) -> bool:
     tiene_telefono = bool(re.search(r"\+?\d[\d\s\-\(\)]{7,}\d", mensaje))
     return tiene_correo or tiene_telefono
 
-def detectar_indice_propiedad_interes(mensaje: str):
-    texto = normalizar_texto(mensaje)
-
-    if any(p in texto for p in ["primera", "1era", "1ra", "opcion 1", "opcion uno"]):
-        return 0
-
-    if any(p in texto for p in ["segunda", "2da", "2nda", "opcion 2", "opcion dos"]):
-        return 1
-
-    if any(p in texto for p in ["tercera", "3era", "3ra", "opcion 3", "opcion tres"]):
-        return 2
-
-    return None
-
 def construir_cierre_cliente() -> str:
     return (
-        "\n\n¿Alguna te llamó la atención para coordinar una visita o recibir atención personalizada? "
-        "Puedo asignarte un asesor de Mettryc Realty para acompañarte de cerca. 😊"
+        "\n\n¿Alguna te interesa para coordinar una visita o recibir atención personalizada? "
+        "Si quieres, te asigno un asesor de inmediato. 😊"
     )
 
 # ============================================================
 # LEADS
 # ============================================================
 
-PALABRAS_PROHIBIDAS_NOMBRE = {
-    "me", "interesa", "quiero", "verla", "visitar", "cita",
-    "agendar", "asesor", "hola", "buenas", "gracias",
-    "opcion", "opción", "primera", "segunda", "tercera",
-    "la", "el", "era", "3era", "3ra", "tercer", "tercera",
-    "propiedad", "casa", "apartamento", "correo", "telefono",
-    "whatsapp", "número", "numero"
-}
-
-def limpiar_nombre_lead(nombre: str) -> str:
-    nombre = re.sub(r"[^A-Za-zÀ-ÖØ-ÿ'´\s-]", " ", str(nombre))
-    nombre = re.sub(r"\s+", " ", nombre).strip()
-    return nombre
-
-def nombre_es_valido(nombre: str) -> bool:
-    if not nombre:
-        return False
-
-    partes = nombre.split()
-
-    if len(partes) < 2:
-        return False
-
-    if len(partes) > 5:
-        return False
-
-    for parte in partes:
-        if normalizar_texto(parte) in PALABRAS_PROHIBIDAS_NOMBRE:
-            return False
-
-    return True
-
-def obtener_primer_nombre(nombre: str) -> str:
-    if not nombre_es_valido(nombre):
-        return ""
-
-    return nombre.split()[0]
-
 def extraer_datos_lead(mensaje: str, lead_actual: dict, sender: str = "") -> dict:
     lead = lead_actual.copy()
 
     correo_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", mensaje, re.IGNORECASE)
-
     if correo_match:
         lead["correo"] = correo_match.group(0).strip()
 
     telefono_match = re.search(r"(\+?\d[\d\s\-\(\)]{7,}\d)", mensaje)
-
     if telefono_match:
         lead["whatsapp"] = limpiar_telefono(telefono_match.group(1))
 
+    if not lead.get("whatsapp"):
+        sender_limpio = limpiar_telefono(sender)
+        if len(sender_limpio) >= 7:
+            lead["whatsapp"] = sender_limpio
+
+    # Extraer nombre de forma segura
+    texto = mensaje
+    texto = re.sub(r"[\w\.-]+@[\w\.-]+\.\w+", "", texto)
+    texto = re.sub(r"\+?\d[\d\s\-\(\)]{7,}\d", "", texto)
+    texto = texto.strip()
+
     nombre_match = re.search(
-        r"(?:soy|me llamo|mi nombre es|nombre completo es|mi nombre completo es)\s+([A-Za-zÀ-ÖØ-ÿ'´-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'´-]+){1,4})",
-        mensaje,
+        r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÀ-ÖØ-ÿ'´-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'´-]+){0,4})",
+        texto,
         re.IGNORECASE
     )
 
     if nombre_match:
-        nombre_detectado = limpiar_nombre_lead(nombre_match.group(1).strip())
-
-        if nombre_es_valido(nombre_detectado):
-            lead["nombre"] = nombre_detectado
-
-    elif not lead.get("nombre"):
-        # Permite capturar si el usuario responde solo con nombre y apellido,
-        # o si envía nombre + correo + teléfono juntos.
-        texto_sin_email = re.sub(r"[\w\.-]+@[\w\.-]+\.\w+", "", mensaje)
-        texto_sin_tel = re.sub(r"\+?\d[\d\s\-\(\)]{7,}\d", "", texto_sin_email)
-        posible_nombre = limpiar_nombre_lead(texto_sin_tel)
-
-        if nombre_es_valido(posible_nombre):
-            lead["nombre"] = posible_nombre
+        lead["nombre"] = nombre_match.group(1).strip()
+    else:
+        # Si el mensaje parece ser solo un nombre
+        if re.fullmatch(r"[A-Za-zÀ-ÖØ-ÿ'´-\s]{2,40}", texto):
+            lead["nombre"] = texto.strip()
 
     return lead
 
+def nombre_completo_valido(nombre: str) -> bool:
+    return bool(nombre and len(nombre.strip().split()) >= 2)
+
 def lead_completo(lead: dict) -> bool:
-    nombre = lead.get("nombre", "")
-    correo = lead.get("correo", "")
-    whatsapp = lead.get("whatsapp", "")
-
     return bool(
-        nombre_es_valido(nombre)
-        and correo
-        and "@" in correo
-        and "." in correo
-        and whatsapp
+        nombre_completo_valido(lead.get("nombre", ""))
+        and lead.get("correo")
+        and "@" in lead.get("correo", "")
+        and "." in lead.get("correo", "")
+        and lead.get("whatsapp")
     )
 
-def construir_solicitud_datos_cliente(lead: dict) -> str:
-    faltantes = []
-
-    if not nombre_es_valido(lead.get("nombre", "")):
-        faltantes.append("Nombre completo, nombre y apellido")
-
+def siguiente_campo_lead(lead: dict) -> str:
+    if not nombre_completo_valido(lead.get("nombre", "")):
+        return "nombre"
     if not lead.get("correo"):
-        faltantes.append("correo electrónico")
-
+        return "correo"
     if not lead.get("whatsapp"):
-        faltantes.append("número de WhatsApp")
+        return "whatsapp"
+    return ""
 
-    return (
-        "¡Excelente! Me encanta que quieras avanzar 😊 "
-        "Para asignarte rápidamente un asesor por nuestro sistema inmobiliario, "
-        f"compárteme por favor: {', '.join(faltantes)}."
-    )
+def construir_pregunta_lead(campo: str, lead: dict) -> str:
+    nombre = (lead.get("nombre", "").split()[0] if lead.get("nombre") else "").strip()
 
-def construir_resumen_necesidad(filtros: dict, propiedad_interes: dict = None) -> str:
+    if campo == "nombre":
+        return "¡Excelente! Para asignarte un asesor, ¿me compartes tu *nombre y apellido*? 😊"
+
+    if campo == "correo":
+        saludo = f"Gracias, {nombre}. " if nombre else "Gracias. "
+        return (
+            f"{saludo}¿Cuál es tu *correo electrónico*? "
+            "Es para enviarte más opciones disponibles. ✉️"
+        )
+
+    if campo == "whatsapp":
+        return "Perfecto. ¿Cuál es tu *número de WhatsApp* para coordinar la visita? 📲"
+
+    return "¿Me compartes tus datos de contacto, por favor?"
+
+def construir_resumen_necesidad(filtros: dict) -> str:
     partes = []
 
     if filtros.get("tipo_propiedad"):
@@ -1535,14 +1094,7 @@ def construir_resumen_necesidad(filtros: dict, propiedad_interes: dict = None) -
     if filtros.get("caracteristicas"):
         partes.append(f"Características: {', '.join(filtros['caracteristicas'])}")
 
-    if propiedad_interes:
-        partes.append("")
-        partes.append("Propiedad de interés:")
-        partes.append(f"Título: {propiedad_interes.get('titulo', 'N/D')}")
-        partes.append(f"ID: {propiedad_interes.get('id', 'N/D')}")
-        partes.append(f"Enlace: {propiedad_interes.get('enlace', 'N/D')}")
-
-    return "\n".join([f"- {p}" if p else "" for p in partes]) or "No especificado"
+    return "\n".join([f"- {p}" for p in partes]) or "No especificado"
 
 # ============================================================
 # TELEGRAM
@@ -1619,61 +1171,6 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
             logger.warning(f"TELEGRAM_ADMIN_ID inválido: {admin_id}")
 
 # ============================================================
-# APRENDIZAJE OPERATIVO OPCIONAL
-# ============================================================
-
-def registrar_aprendizaje_conversacion(
-    sender: str,
-    rol: str,
-    mensaje_usuario: str,
-    estado: dict,
-    respuesta_bot: str,
-    resultado: str = ""
-):
-    url = os.getenv("GOOGLE_SHEET_APRENDIZAJE_URL")
-
-    if not url:
-        return
-
-    payload = {
-        "fecha": ahora_local().isoformat(),
-        "sender": sender,
-        "rol": rol,
-        "mensaje_usuario": mensaje_usuario,
-        "estado": estado.get("estado"),
-        "filtros": estado.get("filtros"),
-        "lead": {
-            "tiene_nombre": bool(estado.get("lead", {}).get("nombre")),
-            "tiene_correo": bool(estado.get("lead", {}).get("correo")),
-            "tiene_whatsapp": bool(estado.get("lead", {}).get("whatsapp"))
-        },
-        "propiedad_interes": estado.get("propiedad_interes"),
-        "respuesta_bot": respuesta_bot,
-        "resultado": resultado
-    }
-
-    try:
-        requests.post(url, json=payload, timeout=8)
-    except Exception as e:
-        logger.warning(f"No se pudo registrar aprendizaje: {e}")
-
-def responder(sender: str, mensaje_usuario: str, respuesta: str, estado: dict, resultado: str = "respuesta_enviada"):
-    respuesta_limpia = limpiar_respuesta_whatsapp(respuesta)
-
-    actualizar_memoria(sender, mensaje_usuario, respuesta_limpia)
-
-    registrar_aprendizaje_conversacion(
-        sender=sender,
-        rol=estado.get("rol"),
-        mensaje_usuario=mensaje_usuario,
-        estado=estado,
-        respuesta_bot=respuesta_limpia,
-        resultado=resultado
-    )
-
-    return {"replies": [{"message": respuesta_limpia}]}
-
-# ============================================================
 # CASOS ESPECIALES
 # ============================================================
 
@@ -1702,57 +1199,40 @@ def respuesta_reclutamiento() -> str:
     )
 
 # ============================================================
-# STARTUP
+# DEDUPE
 # ============================================================
 
-def precargar_inventario_background():
-    try:
-        logger.info("Precarga de inventario iniciada en background...")
-        actualizar_inventario_si_corresponde(forzar=True)
-        logger.info("Precarga de inventario finalizada.")
-    except Exception as e:
-        logger.error(f"Error precargando inventario en background: {e}", exc_info=True)
+def respuesta_duplicada(sender: str, mensaje: str):
+    ahora = time.time()
+    ultimo = ultimos_mensajes.get(sender)
+    if ultimo and ultimo["texto"] == mensaje and (ahora - ultimo["ts"]) < 8:
+        return ultimo["respuesta"]
+    return None
 
-def precargar_sheets_background():
-    try:
-        logger.info("Precarga de Google Sheets iniciada en background...")
-        sincronizar_google_sheet()
-        logger.info("Precarga de Google Sheets finalizada.")
-    except Exception as e:
-        logger.error(f"Error precargando Google Sheets: {e}", exc_info=True)
-
-@app.on_event("startup")
-def startup_event():
-    logger.info("Iniciando tareas de startup...")
-
-    hilo_precarga = threading.Thread(
-        target=precargar_inventario_background,
-        daemon=True
-    )
-    hilo_precarga.start()
-
-    hilo_scheduler = threading.Thread(
-        target=scheduler_inventario_background,
-        daemon=True
-    )
-    hilo_scheduler.start()
-
-    hilo_sheets = threading.Thread(
-        target=precargar_sheets_background,
-        daemon=True
-    )
-    hilo_sheets.start()
+def guardar_ultima_respuesta(sender: str, mensaje: str, respuesta: str):
+    ultimos_mensajes[sender] = {
+        "texto": mensaje,
+        "respuesta": respuesta,
+        "ts": time.time()
+    }
 
 # ============================================================
 # WEBHOOK PRINCIPAL
 # ============================================================
+
+@app.on_event("startup")
+async def on_startup():
+    await refrescar_inventario(force=True)
+    await sincronizar_google_sheet()
+    asyncio.create_task(loop_actualizacion_inventario())
+    asyncio.create_task(loop_actualizacion_sheets())
 
 @app.post("/webhook")
 async def handle_request(request: Request):
     try:
         data = await request.json()
 
-        api_key_header = str(request.headers.get("x-api-key", "")).strip()
+        api_key_header = request.headers.get("x-api-key")
         valid_api_keys = [
             key.strip()
             for key in os.getenv("API_KEYS_AGENTES", "").split(",")
@@ -1770,14 +1250,33 @@ async def handle_request(request: Request):
         if not mensaje_cliente:
             return {"replies": []}
 
-        logger.info(
-            f"Webhook recibido | sender='{sender}' | "
-            f"message_id='{obtener_message_id_payload(payload)}' | "
-            f"mensaje='{mensaje_cliente[:100]}'"
-        )
+        # Dedupe
+        respuesta_dup = respuesta_duplicada(sender, mensaje_cliente)
+        if respuesta_dup:
+            return {"replies": [{"message": respuesta_dup}]}
 
-        if es_mensaje_duplicado(payload, sender, mensaje_cliente):
-            return {"replies": []}
+        # ------------------------------------------------------------
+        # Casos especiales
+        # ------------------------------------------------------------
+
+        if "mercadolibre.com.ve/mlv" in mensaje_cliente.lower():
+            respuesta = (
+                "¡Hola! 👋 Esta propiedad se encuentra disponible en el precio publicado. "
+                "¿Quieres agendar una visita?"
+            )
+            actualizar_memoria(sender, mensaje_cliente, respuesta)
+            guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+            return {"replies": [{"message": respuesta}]}
+
+        if es_consulta_reclutamiento(mensaje_cliente):
+            respuesta = respuesta_reclutamiento()
+            actualizar_memoria(sender, mensaje_cliente, respuesta)
+            guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+            return {"replies": [{"message": respuesta}]}
+
+        # ------------------------------------------------------------
+        # Estado e inventario
+        # ------------------------------------------------------------
 
         estado = obtener_estado_usuario(sender)
 
@@ -1786,47 +1285,25 @@ async def handle_request(request: Request):
             or len(memoria_conversaciones.get(sender, [])) == 0
         )
 
-        # ------------------------------------------------------------
-        # Casos especiales sin tocar inventario
-        # ------------------------------------------------------------
+        inventario = obtener_inventario()
 
-        if "mercadolibre.com.ve/mlv" in mensaje_cliente.lower():
+        if not inventario:
             respuesta = (
-                "¡Hola! 👋 Esta propiedad se encuentra disponible en el precio publicado. "
-                "¿Quieres agendar una visita?"
+                "¡Hola! Estamos actualizando nuestro inventario. "
+                "Por favor, escríbeme nuevamente en unos minutos. 😊"
             )
-            return responder(sender, mensaje_cliente, respuesta, estado)
-
-        if es_consulta_reclutamiento(mensaje_cliente):
-            respuesta = respuesta_reclutamiento()
-            return responder(sender, mensaje_cliente, respuesta, estado)
+            actualizar_memoria(sender, mensaje_cliente, respuesta)
+            guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+            return {"replies": [{"message": respuesta}]}
 
         # ------------------------------------------------------------
-        # Saludo simple sin IA y sin inventario
-        # ------------------------------------------------------------
-
-        if primera_interaccion and mensaje_es_saludo_simple(mensaje_cliente):
-            estado["estado"] = ESTADO_INDAGANDO
-            respuesta = construir_pregunta_campo("tipo_propiedad", es_inicio=True)
-            return responder(sender, mensaje_cliente, respuesta, estado)
-
-        # ------------------------------------------------------------
-        # Más opciones luego de mostrar propiedades
+        # Si ya mostró propiedades y usuario pide más
         # ------------------------------------------------------------
 
         if (
             estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES
             and usuario_pide_mas_opciones(mensaje_cliente)
         ):
-            inventario = obtener_inventario()
-
-            if not inventario:
-                respuesta = (
-                    "Estoy actualizando nuestro inventario en este momento. "
-                    "Por favor, escríbeme nuevamente en unos minutos. 😊"
-                )
-                return responder(sender, mensaje_cliente, respuesta, estado)
-
             propiedades = elegir_top_n_propiedades(
                 inventario,
                 estado["filtros"],
@@ -1836,7 +1313,7 @@ async def handle_request(request: Request):
 
             if not propiedades:
                 respuesta = (
-                    "Por ahora no encontré más opciones con esos mismos criterios. "
+                    "Por ahora no encontré más opciones con esos criterios. "
                     "¿Quieres que ampliemos la zona o ajustemos el presupuesto?"
                 )
             else:
@@ -1844,8 +1321,6 @@ async def handle_request(request: Request):
                     p.get("id")
                     for p in propiedades
                 ])
-
-                estado["ultimas_propiedades_mostradas"] = propiedades
 
                 es_colega = estado["rol"] == "colega_inmobiliario"
 
@@ -1855,17 +1330,19 @@ async def handle_request(request: Request):
                 ]
 
                 respuesta = (
-                    "Claro, te comparto opciones adicionales:\n\n"
+                    "Claro, te comparto 3 opciones adicionales:\n\n"
                     + "\n\n".join(fichas)
                 )
 
                 if estado["rol"] == "cliente":
                     respuesta += construir_cierre_cliente()
 
-            return responder(sender, mensaje_cliente, respuesta, estado)
+            actualizar_memoria(sender, mensaje_cliente, respuesta)
+            guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+            return {"replies": [{"message": respuesta.replace("**", "*")}]}
 
         # ------------------------------------------------------------
-        # Interés de cliente luego de ver propiedades
+        # Si cliente muestra interés luego de ver propiedades
         # ------------------------------------------------------------
 
         if (
@@ -1877,18 +1354,10 @@ async def handle_request(request: Request):
                 or usuario_envia_datos_contacto(mensaje_cliente)
             )
         ):
-            indice = detectar_indice_propiedad_interes(mensaje_cliente)
-
-            if indice is not None:
-                ultimas = estado.get("ultimas_propiedades_mostradas", [])
-
-                if indice < len(ultimas):
-                    estado["propiedad_interes"] = ultimas[indice]
-
             estado["estado"] = ESTADO_CAPTURANDO_LEAD
 
         # ------------------------------------------------------------
-        # Captura de lead
+        # Captura de lead (en pasos)
         # ------------------------------------------------------------
 
         if estado["estado"] == ESTADO_CAPTURANDO_LEAD:
@@ -1898,16 +1367,16 @@ async def handle_request(request: Request):
                 sender
             )
 
-            if not lead_completo(estado["lead"]):
-                respuesta = construir_solicitud_datos_cliente(estado["lead"])
-                return responder(sender, mensaje_cliente, respuesta, estado)
+            campo_pendiente = siguiente_campo_lead(estado["lead"])
+
+            if campo_pendiente:
+                respuesta = construir_pregunta_lead(campo_pendiente, estado["lead"])
+                actualizar_memoria(sender, mensaje_cliente, respuesta)
+                guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+                return {"replies": [{"message": respuesta.replace("**", "*")}]}
 
             agente = asignar_agente_round_robin()
-
-            resumen = construir_resumen_necesidad(
-                estado["filtros"],
-                estado.get("propiedad_interes")
-            )
+            resumen = construir_resumen_necesidad(estado["filtros"])
 
             if agente:
                 enviar_notificaciones_telegram(
@@ -1919,11 +1388,8 @@ async def handle_request(request: Request):
                 clientes_procesados.add(sender)
                 estado["estado"] = ESTADO_LEAD_COMPLETO
 
-                primer_nombre = obtener_primer_nombre(estado["lead"]["nombre"])
-                saludo_nombre = f", {primer_nombre}" if primer_nombre else ""
-
                 respuesta = (
-                    f"¡Perfecto{saludo_nombre}! ✨ "
+                    f"¡Perfecto, {estado['lead']['nombre'].split()[0]}! ✨ "
                     f"He registrado tus datos y asigné tu solicitud a *{agente.get('nombre', 'uno de nuestros asesores')}*. "
                     "Te contactará muy pronto para coordinar tu atención personalizada. 🤝"
                 )
@@ -1933,26 +1399,21 @@ async def handle_request(request: Request):
                     "para que te contacte lo antes posible. 😊"
                 )
 
-            return responder(
-                sender,
-                mensaje_cliente,
-                respuesta,
-                estado,
-                resultado="lead_convertido"
-            )
+            actualizar_memoria(sender, mensaje_cliente, respuesta)
+            guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+            return {"replies": [{"message": respuesta.replace("**", "*")}]}
 
         # ------------------------------------------------------------
-        # Extraer filtros sin descargar inventario
+        # Extraer y acumular filtros
         # ------------------------------------------------------------
 
         estado["filtros"] = extraer_filtros_busqueda(
             mensaje_cliente,
-            estado["filtros"],
-            estado
+            estado["filtros"]
         )
 
         # ------------------------------------------------------------
-        # Preguntar filtros faltantes
+        # Preguntar filtros faltantes antes de buscar
         # ------------------------------------------------------------
 
         campo_faltante = obtener_siguiente_campo_faltante(estado["filtros"])
@@ -1960,50 +1421,47 @@ async def handle_request(request: Request):
         if campo_faltante:
             estado["estado"] = ESTADO_COMPLETANDO_FILTROS
 
-            pregunta_base = construir_pregunta_campo(
+            respuesta = construir_pregunta_campo(
                 campo_faltante,
                 es_inicio=primera_interaccion
             )
 
-            # Para ahorrar tokens, usamos plantilla. IA solo si queremos salvar objeciones o dudas.
-            respuesta = pregunta_base
-
-            return responder(sender, mensaje_cliente, respuesta, estado)
+            actualizar_memoria(sender, mensaje_cliente, respuesta)
+            guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+            return {"replies": [{"message": respuesta.replace("**", "*")}]}
 
         # ------------------------------------------------------------
-        # Detectar rol
+        # Definir rol (si no se ha definido)
         # ------------------------------------------------------------
-
-        rol_detectado = detectar_rol_por_respuesta_directa(mensaje_cliente)
-
-        if rol_detectado != "desconocido":
-            estado["rol"] = rol_detectado
 
         if not estado.get("rol"):
-            rol_ia = detectar_rol_usuario(
-                mensaje_cliente,
-                estado
-            )
+            rol_directo = detectar_rol_por_respuesta_directa(mensaje_cliente)
+            if rol_directo != "desconocido":
+                estado["rol"] = rol_directo
+            else:
+                if estado["intentos_rol"] < 2:
+                    estado["estado"] = ESTADO_DEFINIENDO_ROL
+                    estado["intentos_rol"] += 1
+                    respuesta = construir_pregunta_rol()
+                    actualizar_memoria(sender, mensaje_cliente, respuesta)
+                    guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+                    return {"replies": [{"message": respuesta.replace("**", "*")}]}
+                else:
+                    estado["rol"] = "cliente"  # fallback suave
 
-            if rol_ia == "desconocido":
-                estado["estado"] = ESTADO_DEFINIENDO_ROL
-                respuesta = construir_pregunta_rol()
-                return responder(sender, mensaje_cliente, respuesta, estado)
-
-            estado["rol"] = rol_ia
+        if estado["estado"] == ESTADO_DEFINIENDO_ROL and not estado.get("rol"):
+            rol_directo = detectar_rol_por_respuesta_directa(mensaje_cliente)
+            if rol_directo != "desconocido":
+                estado["rol"] = rol_directo
+            else:
+                respuesta = "¿Sería para ti o para un cliente? Solo dime una de esas dos opciones 😊"
+                actualizar_memoria(sender, mensaje_cliente, respuesta)
+                guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+                return {"replies": [{"message": respuesta}]}
 
         # ------------------------------------------------------------
-        # Buscar propiedades solo aquí
+        # Buscar propiedades
         # ------------------------------------------------------------
-
-        inventario = obtener_inventario()
-
-        if not inventario:
-            respuesta = (
-                "Estoy actualizando nuestro inventario en este momento. "
-                "Por favor, escríbeme nuevamente en unos minutos. 😊"
-            )
-            return responder(sender, mensaje_cliente, respuesta, estado)
 
         propiedades = elegir_top_n_propiedades(
             inventario,
@@ -2017,15 +1475,13 @@ async def handle_request(request: Request):
         if not propiedades:
             respuesta = (
                 "Revisé nuestro inventario activo y no encontré una coincidencia exacta con esos criterios. "
-                "¿Quieres que ampliemos la zona o ajustemos un poco el presupuesto?"
+                "¿Quieres que ampliemos la zona o ajustemos el presupuesto?"
             )
         else:
             estado["propiedades_enviadas"].extend([
                 p.get("id")
                 for p in propiedades
             ])
-
-            estado["ultimas_propiedades_mostradas"] = propiedades
 
             es_colega = estado["rol"] == "colega_inmobiliario"
 
@@ -2036,18 +1492,21 @@ async def handle_request(request: Request):
 
             if es_colega:
                 respuesta = (
-                    "¡Perfecto, colega! Revisé nuestro inventario y estas son las opciones que más se acercan. "
-                    "Te incluyo los datos del captador para que puedas validar disponibilidad:\n\n"
+                    "¡Perfecto, colega! Revisé nuestro inventario y estas son las 3 opciones que más se acercan. "
+                    "Te incluyo los datos del captador:\n\n"
                     + "\n\n".join(fichas)
                 )
             else:
                 respuesta = (
-                    "¡Perfecto! Revisé nuestro inventario y estas son las opciones que más se acercan a lo que buscas:\n\n"
+                    "¡Perfecto! Estas son las opciones que más se acercan a lo que buscas:\n\n"
                     + "\n\n".join(fichas)
                     + construir_cierre_cliente()
                 )
 
-        return responder(sender, mensaje_cliente, respuesta, estado)
+        actualizar_memoria(sender, mensaje_cliente, respuesta)
+        guardar_ultima_respuesta(sender, mensaje_cliente, respuesta)
+
+        return {"replies": [{"message": respuesta.replace("**", "*")}]}
 
     except HTTPException as e:
         raise e
