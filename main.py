@@ -78,7 +78,7 @@ def obtener_inventario_desde_wasi():
 
                         user_data = value.get('user_data', {})
                         asesor_encargado = f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip() or "Asesor Mettryc"
-                        telefono_asesor = user_data.get('phone', '') # Teléfono del asesor (no del captador)
+                        telefono_asesor = user_data.get('phone', '') # Teléfono del asesor asignado en Wasi
 
                         propiedades.append({
                             "id": id_prop, "titulo": value.get('title', 'Sin título'), "ciudad": value.get('city_label', 'N/D'),
@@ -99,7 +99,7 @@ def obtener_inventario_desde_wasi():
                     return propiedades 
 
                 skip += take
-                time.sleep(2) # Pausa para no saturar la API
+                time.sleep(2) 
 
             except requests.exceptions.RequestException as e:
                 intentos += 1
@@ -200,9 +200,12 @@ def asignar_agente_round_robin():
 
 def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
     """Busca el teléfono de un captador en la caché de Google Sheets."""
+    if not sheets_cache["captadores"]: # Si la caché de captadores está vacía, intenta sincronizar
+        sincronizar_google_sheet()
+        
     telefono = sheets_cache["captadores"].get(nombre_captador)
     if telefono:
-        logger.debug(f"Teléfono encontrado para captador '{nombre_captador}': {telefono}")
+        logger.debug(f"Teléfono encontrado en Sheet para captador '{nombre_captador}': {telefono}")
         return telefono
     else:
         logger.warning(f"Teléfono NO encontrado en sheets_cache para captador: '{nombre_captador}'.")
@@ -235,7 +238,7 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead_dict):
     # Enviar al agente
     if agente and agente.get("telegram_id"):
         agente_id = str(agente["telegram_id"]).strip()
-        if agente_id and agente_id != "None" and agente_id.lstrip('-').isdigit():
+        if agente_id and agente_id != "None" and agente_id.lstrip('-').isdigit(): # Validación básica de ID válido
             try:
                 requests.post(f"https://api.telegram.org/bot{telegram_token}/sendMessage", json={"chat_id": agente_id, "text": mensaje_agente, "parse_mode": "Markdown"}, timeout=5)
                 logger.info(f"Notificación a Telegram enviada para agente ID: {agente_id}.")
@@ -247,7 +250,7 @@ def enviar_notificaciones_telegram(agente, telefono_destino, datos_lead_dict):
          logger.warning(f"Agente '{agente.get('nombre')}' no tiene telegram_id configurado.")
 
     # Enviar al administrador
-    if admin_id and admin_id.lstrip('-').isdigit():
+    if admin_id and admin_id.lstrip('-').isdigit(): # Validación básica de ID válido
         try:
             requests.post(f"https://api.telegram.org/bot{telegram_token}/sendMessage", json={"chat_id": admin_id, "text": mensaje_admin, "parse_mode": "Markdown"}, timeout=5)
             logger.info(f"Notificación a Telegram enviada al administrador ID: {admin_id}.")
@@ -269,7 +272,7 @@ def consultar_ia(historial: list, max_tokens_respuesta: int = 150) -> str:
         return "Lo siento, mi sistema de IA no está disponible. Inténtalo más tarde."
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    modelos_a_probar = [MODELO_PRINCIPAL, MODELO_RESPALDO] # Cola de modelos a probar
+    modelos_a_probar = [MODELO_PRINCIPAL, MODELO_RESPALDO]
 
     for modelo in modelos_a_probar:
         try:
@@ -318,17 +321,19 @@ def validar_filtro_numerico(valor, tipo_esperado=int):
 def detectar_rol_y_intencion(mensaje_usuario: str, historial_conversacion: list) -> dict:
     """
     Usa IA para clasificar rol, intención y extraer filtros de búsqueda.
-    El prompt está optimizado para EXIGIR SOLO JSON de respuesta pura.
-    Actualmente tiene una mejora para priorizar 'colega_inmobiliario' si hay pistas.
+    Prioriza la detección de 'colega_inmobiliario' y si NO SE DETECTA, por defecto es 'cliente' con 'info_general'.
+    El prompt exige EXCLUSIVAMENTE JSON de respuesta pura.
     """
     prompt_deteccion = f"""
-    Eres un clasificador de usuarios para chatbot inmobiliario. Analiza el mensaje y el historial para determinar:
-    1. ROL: DEBE SER 'cliente' O 'colega_inmobiliario'. Prioriza 'colega_inmobiliario' ante indicios de profesionalismo inmobiliario (ej. términos técnicos, petición de comisiones/captaciones).
+    Eres un clasificador de usuarios para chatbot inmobiliario. Analiza el mensaje Y el historial de conversación para determinar:
+    1. ROL: DEBE SER 'cliente' O 'colega_inmobiliario'. Si no hay pistas claras para 'colega_inmobiliario', ASUME 'cliente'.
     2. INTENCIÓN: DEBE SER 'buscar_propiedad', 'pedir_ficha_completa', 'solicitar_captador', 'info_general', o 'otro'. 
-       - Usa 'buscar_propiedad' si hay filtros de zona, precio, habitaciones.
-       - Usa 'pedir_ficha_completa' si solicita detalles específicos de una propiedad.
-       - Usa 'info_general' para saludos, consultas básicas, o si no se encuadra en las anteriores.
-    3. FILTROS (solo si la INTENCIÓN es 'buscar_propiedad'): dict con 'zona' (str), 'tipo' (str), 'precio_max' (numérico float, usa null si no se especifica/inválido), 'habitaciones_min' (numérico int, usa null si no se especifica/inválido). Usa valores NUMÉRICOS REALISTAS (ej. 100000.00, 250000.00 para precios; 2, 3 para habitaciones).
+       - Usa 'buscar_propiedad' si detectas filtros de zona, precio, habitaciones.
+       - Usa 'pedir_ficha_completa' si solicita detalles de una propiedad específica.
+       - Usa 'info_general' para saludos, consultas básicas, o si la intención es ambigua.
+    3. FILTROS (solo si la INTENCIÓN es 'buscar_propiedad'): dict con 'zona' (str), 'tipo' (str), 'precio_max' (numérico float, usa null si no viable), 'habitaciones_min' (numérico int, usa null si no viable). Usa valores NUMÉRICOS REALISTAS (ej. 100000.00, 250000.00 para precios; 2, 3 para habitaciones). Si un filtro es inválido (ej. precio 500), usa null.
+
+    Critérios clave para 'colega_inmobiliario': mención de comisiones, captaciones, MLS, términos técnicos inmobiliarios, o referencia a mí como colega/agente.
 
     DEBES RESPONDER EXCLUSIVAMENTE CON UN OBJETO JSON VÁLIDO. SIN TEXTO ADICIONAL, NI MARCADORES DE CÓDIGO COMO ```json.
 
@@ -336,7 +341,7 @@ def detectar_rol_y_intencion(mensaje_usuario: str, historial_conversacion: list)
     JSON de ejemplo B (Colega info): {{"rol": "colega_inmobiliario", "intencion": "info_general", "filtros": {{}}}}
     JSON de ejemplo C (Cliente buscando): {{"rol": "cliente", "intencion": "buscar_propiedad", "filtros": {{"zona": "Las Mercedes", "tipo": "apartamento", "precio_max": 150000.00, "habitaciones_min": 3}} }}
     JSON de ejemplo D (Cliente saludo): {{"rol": "cliente", "intencion": "info_general", "filtros": {{}}}}
-    JSON de ejemplo E (Cliente precio bajo): {{"rol": "cliente", "intencion": "buscar_propiedad", "filtros": {{"precio_max": 500.00, "habitaciones_min": 1}} }}
+    JSON de ejemplo E (Cliente precio bajo/inválido): {{"rol": "cliente", "intencion": "buscar_propiedad", "filtros": {{"precio_max": null, "habitaciones_min": 1}} }} # Precio 500 es inválido para búsqueda si el contexto es alto, se vuelve null.
     """
 
     mensajes_para_ia = [{"role": "system", "content": prompt_deteccion}]
@@ -346,7 +351,7 @@ def detectar_rol_y_intencion(mensaje_usuario: str, historial_conversacion: list)
     respuesta_raw = consultar_ia(mensajes_para_ia, max_tokens_respuesta=250) 
 
     try:
-        # Intenta extraer JSON de forma más robusta
+        # Intenta extraer JSON de forma robusta
         start_index = respuesta_raw.find('{')
         end_index = respuesta_raw.rfind('}')
         
@@ -370,10 +375,12 @@ def detectar_rol_y_intencion(mensaje_usuario: str, historial_conversacion: list)
             if filtros_limpios["precio_max"] is not None and filtros_limpios["precio_max"] <= 0: filtros_limpios["precio_max"] = None
             if filtros_limpios["habitaciones_min"] is not None and filtros_limpios["habitaciones_min"] < 0: filtros_limpios["habitaciones_min"] = None
                 
-            # Validar rol: por defecto 'cliente'
-            rol_final = rol_detectado if rol_detectado in ["cliente", "colega_inmobiliario"] else "cliente"
-            if rol_final == "cliente" and rol_detectado != "cliente":
-                logger.warning(f"Rol detectado '{rol_detectado}' no válido. Asumiendo rol por defecto: '{rol_final}'.")
+            # Validar rol: Prioriza 'colega_inmobiliario', si no, por defecto 'cliente'
+            rol_final = "cliente" # Default más seguro
+            if rol_detectado == "colega_inmobiliario":
+                rol_final = "colega_inmobiliario"
+            elif rol_detectado != "cliente": # Si no es 'colega' y tampoco es 'cliente' explícito
+                logger.warning(f"Rol detectado '{rol_detectado}' desconocido. Asumiendo rol por defecto: '{rol_final}'.")
 
             # Validar intención: por defecto 'info_general'
             intencion_final = intencion_detectada if intencion_detectada and intencion_detectada != 'otro' else "info_general"
@@ -382,14 +389,17 @@ def detectar_rol_y_intencion(mensaje_usuario: str, historial_conversacion: list)
             return {"rol": rol_final, "intencion": intencion_final, "filtros": filtros_limpios}
         else:
             logger.error(f"No se pudo extraer un objeto JSON de la respuesta de la IA. Respuesta cruda: {respuesta_raw}")
-            return {"rol": "cliente", "intencion": "info_general", "filtros": {}} # Fallback
+            # Fallback: Si no se puede extraer JSON, ASUME 'cliente' con intención 'info_general'.
+            return {"rol": "cliente", "intencion": "info_general", "filtros": {}}
 
     except json.JSONDecodeError:
         logger.error(f"Error de decodificación JSON de la IA. Respuesta cruda: {respuesta_raw}")
-        return {"rol": "cliente", "intencion": "info_general", "filtros": {}} # Fallback
+        # Fallback: Si falla JSON, ASUME 'cliente' con 'info_general'.
+        return {"rol": "cliente", "intencion": "info_general", "filtros": {}} 
     except Exception as e:
         logger.error(f"Error inesperado procesando respuesta IA: {e}", exc_info=True)
-        return {"rol": "cliente", "intencion": "info_general", "filtros": {}} # Fallback
+        # Fallback general en caso de cualquier otro error.
+        return {"rol": "cliente", "intencion": "info_general", "filtros": {}}
 
 def formatear_ficha_propiedad(propiedad: dict, es_colega: bool = False) -> str:
     """Formatea la información de una propiedad para cliente o colega. Incluye captador si es colega."""
@@ -406,10 +416,13 @@ def formatear_ficha_propiedad(propiedad: dict, es_colega: bool = False) -> str:
         # INTENTAMOS OBTENER el teléfono del captador buscándolo por nombre en la caché de Sheets
         captador_tel_sheet = "N/D"
         if captador_nombre_prop != 'N/D':
-            captador_tel_sheet = obtener_telefono_captador_de_sheet(captador_nombre_prop)
+            # Asegurarse de que la caché de captadores esté cargada
+            if not sheets_cache["captadores"]: sincronizar_google_sheet()
+            captador_tel_sheet = sheets_cache["captadores"].get(captador_nombre_prop, "N/D")
         
-        # Añadir línea de captador y teléfono solo si el nombre o teléfono es diferente de 'N/D'
-        if captador_nombre_prop != 'N/D' or captador_tel_sheet != 'N/D':
+        # Añadir línea de captador y teléfono solo si el nombre O teléfono es diferente de 'N/D'
+        # Y si el teléfono obtenido de la sheet no está vacío.
+        if captador_nombre_prop != 'N/D' or (captador_tel_sheet != 'N/D' and captador_tel_sheet):
             lineas.append(f"👤 Captador: {captador_nombre_prop} | 📲 WhatsApp Captador: {captador_tel_sheet}")
     
     return "\n".join(lineas)
@@ -420,6 +433,7 @@ def parsear_precio(precio_str: str) -> float:
     precio_limpio = re.sub(r'[^\d.]', '', str(precio_str)) 
     try:
         valor_float = float(precio_limpio)
+        # Advertir si el precio parece sospechosamente bajo
         if valor_float > 0 and valor_float < 1000 and precio_str.strip() != '0.0': 
             logger.warning(f"Precio parseado muy bajo ({valor_float} de '{precio_str}'). Puede ser inválido.")
         return valor_float
@@ -431,7 +445,7 @@ def elegir_top_n_propiedades(propiedades_disponibles: list, intencion: dict, n: 
     """Filtra y selecciona las 'n' propiedades más relevantes según intención y filtros."""
     filtros = intencion.get("filtros", {})
     zona_buscada = filtros.get("zona", "").lower()
-    tipo_buscado = filtros.get("tipo", "").lower() # No usado directamente en Wasi fetch, pero útil para IA
+    tipo_buscado = filtros.get("tipo", "").lower() 
     precio_max_buscado = filtros.get("precio_max")
     habitaciones_min_buscado = filtros.get("habitaciones_min")
 
@@ -444,7 +458,7 @@ def elegir_top_n_propiedades(propiedades_disponibles: list, intencion: dict, n: 
             if zona_buscada in p.get('zona', '').lower() or zona_buscada in p.get('ciudad', '').lower()
         ]
 
-    # Función de scoring para relevancia general (más datos = mayor score)
+    # Función de scoring para relevancia general
     def score_propiedad(p):
         score = 0
         if p.get('zona', '') != 'N/D': score += 2
@@ -538,10 +552,10 @@ async def handle_request(request: Request):
         if sender not in memoria_conversaciones:
             memoria_conversaciones[sender] = []
         
-        # Llamada a IA para clasificar el mensaje del usuario
+        # LLAMADA CLAVE A IA PARA DETECCIÓN DE ROL E INTENCIÓN
         deteccion = detectar_rol_y_intencion(mensaje_usuario_raw, memoria_conversaciones[sender])
-        rol_usuario = deteccion.get("rol", "cliente") # Por defecto, cliente
-        intencion_usuario = deteccion.get("intencion", "info_general") # Por defecto, información general
+        rol_usuario = deteccion.get("rol", "cliente") # POR DEFECTO: cliente
+        intencion_usuario = deteccion.get("intencion", "info_general") # POR DEFECTO: info_general
         filtros_busqueda = deteccion.get("filtros", {})
         
         logger.info(f"Usuario {sender}: Rol='{rol_usuario}', Intención='{intencion_usuario}', Filtros={filtros_busqueda}")
@@ -557,18 +571,17 @@ async def handle_request(request: Request):
                 if not propiedades_seleccionadas:
                     respuesta_final_chatbot = "¡Hola! 👋 Gracias por tu interés. Lamentablemente, no encontré propiedades que coincidan con tu búsqueda actual. ¿Probamos con otros criterios o zonas?"
                 else:
-                    # Formatear fichas para cliente
                     fichas_formateadas = [formatear_ficha_propiedad(p, es_colega=False) for p in propiedades_seleccionadas]
                     texto_introductorio = "¡Hola! 👋 ¡Qué gusto atenderte! Encontré estas 3 opciones geniales que pensé que te podrían encantar. ✨"
                     respuesta_final_chatbot = texto_introductorio + "\n\n" + "\n\n".join(fichas_formateadas)
 
-            else: # Cliente con intención general o saludo
+            else: # Cliente con intención general o saludo (por defecto si no hay rol claro o intención específica)
                 prompt_respuesta_cliente = f"""
                 Eres Paty, tu asistente VIP de Mettryc Realty. Responde de forma cálida y amigablemente, máximo 30 palabras.
                 Sé útil y haz una pregunta abierta para continuar la charla.
                 Contexto: El usuario es un CLIENTE. Su última interacción fue: "{mensaje_usuario_raw}".
                 """
-                historial_para_ia = [{"role": "system", "content": prompt_respuesta_cliente}] + memoria_conversaciones[sender][-4:] # Contexto reciente
+                historial_para_ia = [{"role": "system", "content": prompt_respuesta_cliente}] + memoria_conversaciones[sender][-4:] 
                 respuesta_final_chatbot = consultar_ia(historial_para_ia, max_tokens_respuesta=60) # ~30 palabras
 
         elif rol_usuario == "colega_inmobiliario":
@@ -595,6 +608,7 @@ async def handle_request(request: Request):
 
         # --- LÓGICA DE CAPTURA DE LEAD PARA CLIENTES ---
         # Se activa si es cliente, busca propiedad Y parece dar datos en su ÚLTIMO mensaje.
+        # (Esta lógica debe seguir pensando en el rol 'cliente')
         if rol_usuario == "cliente" and intencion_usuario == "buscar_propiedad" and sender not in clientes_procesados:
             
             datos_lead_extraccion = {}
@@ -609,7 +623,7 @@ async def handle_request(request: Request):
             elif sender.isdigit() and len(sender) > 5: # Si el sender es un número de teléfono válido
                  datos_lead_extraccion["telefono"] = sender 
             
-            # CONDICIÓN PARA PROCEDER: Nombre COMPLETO (mín 2 palabras) Y Correo electrónico.
+            # CONDICIÓN PARA PROCEDER: Nombre COMPLETO (mín 2 palabras) Y Correo.
             if "nombre" in datos_lead_extraccion and "correo" in datos_lead_extraccion:
                 
                 if len(datos_lead_extraccion["nombre"].split()) < 2: # Re-validar si el nombre tiene al menos dos partes
@@ -642,10 +656,9 @@ async def handle_request(request: Request):
             
             # Si faltan datos cruciales (Nombre o Correo) y NO hemos procesado al cliente aún
             elif "nombre" not in datos_lead_extraccion or "correo" not in datos_lead_extraccion:
-                 if not "nombre" in datos_lead_extraccion:
+                 if not "nombre" in datos_lead_extraccion: # Si falta Nombre
                      respuesta_final_chatbot = "¡Me alegra tu interés! Para registrar tu ficha VIP y asignar un asesor, confírmame tu Nombre Completo (Nombre y Apellido). 😊"
-                 elif "correo" not in datos_lead_extraccion:
-                      # Si ya tenemos nombre (y sabemos que es completo por la validación anterior)
+                 elif "correo" not in datos_lead_extraccion: # Si falta Correo (y ya tenemos nombre)
                       respuesta_final_chatbot = f"¡Excelente, {datos_lead_extraccion['nombre'].split()[0]}! Ya tengo tu nombre. Por favor, compárteme tu Correo Electrónico actual para completar tu ficha VIP. 📲"
         
         # --- Actualizar historial de conversación ---
@@ -658,7 +671,7 @@ async def handle_request(request: Request):
         if len(memoria_conversaciones[sender]) > 20:
             memoria_conversaciones[sender] = memoria_conversaciones[sender][-20:]
             
-        # --- Formatear y retornar la respuesta ---
+        # --- Formatear y retornar ---
         respuesta_limpia = respuesta_final_chatbot.replace("**", "*") # Limpieza final de formato Markdown
 
         return {"replies": [{"message": respuesta_limpia}]}
