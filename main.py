@@ -135,6 +135,45 @@ def limpiar_telefono(valor: str) -> str:
     return re.sub(r"\D", "", str(valor or ""))
 
 
+def es_mensaje_poco_informativo(mensaje: str) -> bool:
+    texto = (mensaje or "").strip()
+    if not texto:
+        return True
+    puntuaciones = set("?!¡¿.")
+    if len(texto) <= 3 and all(c in puntuaciones for c in texto):
+        return True
+    if texto.lower() in {"ok", "va", "si", "sí"} and len(texto) <= 2:
+        return True
+    return False
+
+
+def mensaje_recordatorio_filtro(campo: str) -> str:
+    recordatorios = {
+        "tipo_propiedad": (
+            "Te recuerdo que necesito saber qué tipo de propiedad estás buscando "
+            "(casa, apartamento, local, oficina…). 😊"
+        ),
+        "tipo_operacion": (
+            "Para seguir con la búsqueda me confirmas si la quieres para venta o alquiler."
+        ),
+        "zona": (
+            "¿En qué zona, urbanización o ciudad deseas que busque?"
+            " Puedes contármelo con tus palabras, por ejemplo: Trigal Norte, Valencia."
+        ),
+        "presupuesto": (
+            "¿Cuál es tu presupuesto máximo aproximado?"
+            " Así solo te muestro las opciones que realmente te sirven."
+        ),
+        "caracteristicas": (
+            "¿Qué característica es indispensable (patio, terraza, vigilancia, estacionamiento, etc.)?"
+        )
+    }
+    return recordatorios.get(
+        campo,
+        "Estoy pendiente de ese dato para ayudarte de forma precisa."
+    )
+
+
 def actualizar_memoria(sender: str, mensaje_usuario: str, respuesta_bot: str):
     if sender not in memoria_conversaciones:
         memoria_conversaciones[sender] = []
@@ -171,7 +210,9 @@ def obtener_estado_usuario(sender: str) -> dict:
                 "correo": "",
                 "whatsapp": ""
             },
-            "ultimo_pedido_dato": None
+            "ultimo_pedido_dato": None,
+            "ultimo_mensaje_usuario": "",
+            "ultima_respuesta": ""
         }
     return estado_usuarios[sender]
 
@@ -186,6 +227,14 @@ def registrar_aprendizaje(filtros: dict):
     zona = normalizar_texto(filtros.get("zona", ""))
     if zona:
         aprendizaje_global["zonas"][zona] += 1
+
+
+def enviar_respuesta(sender: str, mensaje_cliente: str, respuesta: str, estado: dict = None, formatear_bold: bool = True):
+    if estado is not None:
+        estado["ultima_respuesta"] = respuesta
+    actualizar_memoria(sender, mensaje_cliente, respuesta)
+    mensaje_final = respuesta.replace("**", "*") if formatear_bold else respuesta
+    return {"replies": [{"message": mensaje_final}]}
 
 
 # ============================================================
@@ -745,7 +794,10 @@ def construir_pregunta_campo(campo: str, es_inicio=False) -> str:
             " Por ejemplo: habitaciones, patio, estacionamiento, vigilancia o terraza."
         )
     }
-    return prefijo + "\n" + preguntas.get(campo, "Cuéntame un poco más sobre lo que necesitas.")
+    pregunta = preguntas.get(campo, "Cuéntame un poco más sobre lo que necesitas.")
+    if prefijo:
+        return prefijo + "\n" + pregunta
+    return pregunta
 
 
 # ============================================================
@@ -1207,18 +1259,19 @@ async def handle_request(request: Request):
         if not mensaje_cliente:
             return {"replies": []}
 
+        estado = obtener_estado_usuario(sender)
+        estado["ultimo_mensaje_usuario"] = mensaje_cliente
+
         if "mercadolibre.com.ve/mlv" in mensaje_cliente.lower():
             respuesta = (
                 "¡Hola! 👋 Esta propiedad se encuentra disponible en el precio publicado. "
                 "¿Quieres agendar una visita?"
             )
-            actualizar_memoria(sender, mensaje_cliente, respuesta)
-            return {"replies": [{"message": respuesta}]}
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
         if es_consulta_reclutamiento(mensaje_cliente):
             respuesta = respuesta_reclutamiento()
-            actualizar_memoria(sender, mensaje_cliente, respuesta)
-            return {"replies": [{"message": respuesta}]}
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
         await garantizar_inventario_actualizado()
         sincronizar_google_sheet()
@@ -1229,10 +1282,8 @@ async def handle_request(request: Request):
                 "Estamos actualizando nuestro inventario para ofrecerte las mejores opciones."
                 " Por favor, escríbeme de nuevo en unos minutos y te comparto todo. 😊"
             )
-            actualizar_memoria(sender, mensaje_cliente, respuesta)
-            return {"replies": [{"message": respuesta}]}
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
-        estado = obtener_estado_usuario(sender)
         primera_interaccion = (
             sender not in memoria_conversaciones
             or len(memoria_conversaciones.get(sender, [])) == 0
@@ -1266,8 +1317,7 @@ async def handle_request(request: Request):
                 )
                 if estado["rol"] == "cliente":
                     respuesta += construir_cierre_cliente()
-            actualizar_memoria(sender, mensaje_cliente, respuesta)
-            return {"replies": [{"message": respuesta.replace('**', '*')}]}
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
         if (
             estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES
@@ -1291,14 +1341,11 @@ async def handle_request(request: Request):
                 if estado["ultimo_pedido_dato"] != dato_faltante:
                     respuesta = construir_pedido_dato(dato_faltante, estado["lead"])
                     estado["ultimo_pedido_dato"] = dato_faltante
-                    actualizar_memoria(sender, mensaje_cliente, respuesta)
-                    return {"replies": [{"message": respuesta}]}
                 else:
                     respuesta = (
-                        "Estoy esperando ese dato para continuar, ¿puedes enviármelo cuando tengas un momento?"
+                        "Estoy esperando ese dato para continuar. ¿Me lo puedes enviar ahora?"
                     )
-                    actualizar_memoria(sender, mensaje_cliente, respuesta)
-                    return {"replies": [{"message": respuesta}]}
+                return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
             agente = asignar_agente_round_robin()
             resumen = construir_resumen_necesidad(estado["filtros"])
             if agente:
@@ -1319,8 +1366,7 @@ async def handle_request(request: Request):
                     "¡Perfecto! Ya tengo tus datos. Estamos asignando un asesor disponible "
                     "para que te contacte lo antes posible. 😊"
                 )
-            actualizar_memoria(sender, mensaje_cliente, respuesta)
-            return {"replies": [{"message": respuesta.replace('**', '*')}]}
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
         estado["filtros"] = extraer_filtros_busqueda(
             mensaje_cliente,
@@ -1331,12 +1377,18 @@ async def handle_request(request: Request):
         campo_faltante = obtener_siguiente_campo_faltante(estado["filtros"])
         if campo_faltante:
             estado["estado"] = ESTADO_COMPLETANDO_FILTROS
-            respuesta = construir_pregunta_campo(
+            pregunta = construir_pregunta_campo(
                 campo_faltante,
                 es_inicio=primera_interaccion
             )
-            actualizar_memoria(sender, mensaje_cliente, respuesta)
-            return {"replies": [{"message": respuesta}]}
+            if (
+                es_mensaje_poco_informativo(mensaje_cliente)
+                or estado.get("ultima_respuesta") == pregunta
+            ):
+                respuesta = mensaje_recordatorio_filtro(campo_faltante)
+            else:
+                respuesta = pregunta
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
         rol_detectado = detectar_rol_por_respuesta_directa(mensaje_cliente)
         if rol_detectado != "desconocido":
@@ -1347,8 +1399,7 @@ async def handle_request(request: Request):
                 estado["estado"] = ESTADO_DEFINIENDO_ROL
                 estado["rol_preguntado"] = True
                 respuesta = construir_pregunta_rol()
-                actualizar_memoria(sender, mensaje_cliente, respuesta)
-                return {"replies": [{"message": respuesta}]}
+                return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
             else:
                 rol_ia = detectar_rol_por_respuesta_directa(mensaje_cliente)
                 if rol_ia != "desconocido":
@@ -1369,31 +1420,31 @@ async def handle_request(request: Request):
                 "Revisé nuestro inventario activo y no encontré una coincidencia exacta."
                 " ¿Quieres ampliar la zona o ajustamos el presupuesto para seguir buscando?"
             )
+            return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
+
+        estado["propiedades_enviadas"].extend([p.get("id") for p in propiedades])
+        es_colega = estado["rol"] == "colega_inmobiliario"
+        fichas = [
+            formatear_ficha_propiedad(p, es_colega=es_colega)
+            for p in propiedades
+        ]
+        resumen = construir_resumen_necesidad(estado["filtros"])
+        resumen_prev = f"Entonces estás buscando:\n{resumen}\n\n" if resumen else ""
+        if es_colega:
+            respuesta = (
+                f"{resumen_prev}"
+                "¡Perfecto, colega! Revisé nuestro inventario y estas son las 3 opciones que más se acercan. "
+                "Te incluyo los datos del captador:\n\n"
+                + "\n\n".join(fichas)
+            )
         else:
-            estado["propiedades_enviadas"].extend([p.get("id") for p in propiedades])
-            es_colega = estado["rol"] == "colega_inmobiliario"
-            fichas = [
-                formatear_ficha_propiedad(p, es_colega=es_colega)
-                for p in propiedades
-            ]
-            resumen = construir_resumen_necesidad(estado["filtros"])
-            resumen_prev = f"Entonces estás buscando:\n{resumen}\n\n" if resumen else ""
-            if es_colega:
-                respuesta = (
-                    f"{resumen_prev}"
-                    "¡Perfecto, colega! Revisé nuestro inventario y estas son las 3 opciones que más se acercan. "
-                    "Te incluyo los datos del captador:\n\n"
-                    + "\n\n".join(fichas)
-                )
-            else:
-                respuesta = (
-                    f"{resumen_prev}"
-                    "¡Perfecto! Revisé nuestro inventario y estas son las 3 opciones que más se acercan a lo que buscas:\n\n"
-                    + "\n\n".join(fichas)
-                    + construir_cierre_cliente()
-                )
-        actualizar_memoria(sender, mensaje_cliente, respuesta)
-        return {"replies": [{"message": respuesta.replace('**', '*')}]}
+            respuesta = (
+                f"{resumen_prev}"
+                "¡Perfecto! Revisé nuestro inventario y estas son las 3 opciones que más se acercan a lo que buscas:\n\n"
+                + "\n\n".join(fichas)
+                + construir_cierre_cliente()
+            )
+        return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
     except HTTPException as e:
         raise e
