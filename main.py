@@ -30,9 +30,6 @@ MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "openai/gpt-4o-mini")
 MODELO_RESPALDO = os.getenv("MODELO_RESPALDO", "google/gemini-2.5-flash-lite")
 MAX_TOKENS_IA = int(os.getenv("MAX_TOKENS_IA", "160"))
 
-# Recomendación para agilidad: mantener en False y usar regex/local first.
-USAR_IA_EXTRACCION = os.getenv("USAR_IA_EXTRACCION", "false").lower() == "true"
-
 INTERVALO_ACTUALIZACION_SHEETS = timedelta(hours=1)
 
 # Evita responder doble ante reintentos del proveedor (WhatsApp/CRM)
@@ -93,7 +90,10 @@ STOPWORDS_ZONA = {
 
 TOKENS_DIRECCION_ZONA = {"norte", "sur", "este", "oeste", "centro"}
 
-DOMINIOS_CORREO_TIPICOS = {"gmail", "hotmail", "outlook", "yahoo", "icloud", "protonmail", "live", "com", "net", "org"}
+DOMINIOS_CORREO_TIPICOS = {
+    "gmail", "hotmail", "outlook", "yahoo", "icloud",
+    "protonmail", "live", "com", "net", "org"
+}
 
 SINONIMOS_TIPO = {
     "tohouse": "townhouse",
@@ -138,10 +138,7 @@ def normalizar_tipo_propiedad(tipo: str) -> str:
 
 def tokens_relevantes(texto: str) -> set:
     texto_norm = normalizar_texto(texto)
-    return {
-        t for t in texto_norm.split()
-        if t not in STOPWORDS_ZONA and len(t) > 1
-    }
+    return {t for t in texto_norm.split() if t not in STOPWORDS_ZONA and len(t) > 1}
 
 
 def zona_coincide(zona_buscada: str, zona_propiedad: str, ciudad_propiedad: str = "") -> bool:
@@ -172,11 +169,9 @@ def zona_coincide(zona_buscada: str, zona_propiedad: str, ciudad_propiedad: str 
     if direcciones_busqueda and not direcciones_busqueda.issubset(tokens_propiedad):
         return False
 
-    # Caso estricto: 2+ tokens => todos deben estar
     if len(tokens_busqueda) >= 2:
         return tokens_busqueda.issubset(tokens_propiedad)
 
-    # Caso laxo para 1 token
     unico = next(iter(tokens_busqueda))
     return (unico in tokens_propiedad) or (buscada_norm in texto_propiedad)
 
@@ -220,44 +215,11 @@ def es_mensaje_poco_informativo(mensaje: str) -> bool:
     return False
 
 
-def mensaje_recordatorio_filtro(campo: str) -> str:
-    recordatorios = {
-        "tipo_propiedad": (
-            "Te recuerdo que necesito saber qué tipo de propiedad estás buscando "
-            "(casa, apartamento, townhouse, apartoquinta, local, oficina…). 😊"
-        ),
-        "tipo_operacion": (
-            "Para seguir con la búsqueda, ¿la deseas para *venta* o *alquiler*?"
-        ),
-        "zona": (
-            "¿En qué zona, urbanización o ciudad deseas que busque?"
-            " Por ejemplo: *Trigal Norte, Valencia*."
-        ),
-        "presupuesto": (
-            "¿Cuál es tu presupuesto máximo aproximado?"
-            " Así solo te muestro opciones alineadas."
-        ),
-        "caracteristicas": (
-            "¿Qué característica es indispensable (patio, terraza, vigilancia, estacionamiento, etc.)?"
-        )
-    }
-    return recordatorios.get(
-        campo,
-        "Estoy pendiente de ese dato para ayudarte de forma precisa."
-    )
-
-
 def actualizar_memoria(sender: str, mensaje_usuario: str, respuesta_bot: str):
     if sender not in memoria_conversaciones:
         memoria_conversaciones[sender] = []
-    memoria_conversaciones[sender].append({
-        "role": "user",
-        "content": mensaje_usuario
-    })
-    memoria_conversaciones[sender].append({
-        "role": "assistant",
-        "content": respuesta_bot
-    })
+    memoria_conversaciones[sender].append({"role": "user", "content": mensaje_usuario})
+    memoria_conversaciones[sender].append({"role": "assistant", "content": respuesta_bot})
     if len(memoria_conversaciones[sender]) > 24:
         memoria_conversaciones[sender] = memoria_conversaciones[sender][-24:]
 
@@ -729,11 +691,141 @@ def consultar_ia(historial, max_tokens=MAX_TOKENS_IA, fallback=""):
 
 
 # ============================================================
-# EXTRACCIÓN DE FILTROS
+# NUEVO: ORQUESTACIÓN IA PARA DIAGNÓSTICO CONVERSACIONAL
+# ============================================================
+
+def extraer_json_de_texto(texto: str) -> dict:
+    if not texto:
+        return {}
+    try:
+        return json.loads(texto)
+    except Exception:
+        pass
+
+    try:
+        inicio = texto.find("{")
+        fin = texto.rfind("}")
+        if inicio != -1 and fin != -1 and fin > inicio:
+            return json.loads(texto[inicio:fin + 1])
+    except Exception:
+        return {}
+    return {}
+
+
+def fusionar_filtros(base: dict, nuevos: dict, mensaje_usuario: str) -> dict:
+    merged = (base or {}).copy()
+    nuevos = nuevos or {}
+
+    for campo in ["tipo_propiedad", "tipo_operacion", "zona"]:
+        v = nuevos.get(campo)
+        if isinstance(v, str) and v.strip():
+            merged[campo] = v.strip()
+
+    for campo in ["presupuesto", "habitaciones_min", "banos_min"]:
+        v = nuevos.get(campo)
+        if v not in [None, "", []]:
+            try:
+                if campo == "presupuesto":
+                    merged[campo] = float(v)
+                else:
+                    merged[campo] = int(v)
+            except Exception:
+                pass
+
+    cars = nuevos.get("caracteristicas")
+    if isinstance(cars, list):
+        actuales = merged.get("caracteristicas", [])
+        merged["caracteristicas"] = list(dict.fromkeys(actuales + [str(x).strip() for x in cars if str(x).strip()]))
+
+    merged = normalizar_filtros_post_extraccion(mensaje_usuario, merged)
+    return merged
+
+
+def orquestar_consulta_ia(mensaje_usuario: str, estado: dict, historial: list) -> dict:
+    """
+    IA conversacional para:
+    - extraer filtros
+    - detectar rol
+    - detectar intención (más opciones / interés)
+    - redactar respuesta natural SIN preguntas prediseñadas
+    """
+    filtros_actuales = estado.get("filtros", {})
+    rol_actual = estado.get("rol") or "desconocido"
+
+    prompt = f"""
+Eres Paty, asistente inmobiliaria VIP de Mettryc Realty.
+Tu trabajo es conversar de forma natural con el usuario para completar datos de búsqueda.
+NO uses respuestas robóticas ni plantillas fijas.
+Debes responder SOLO JSON válido con este esquema:
+
+{{
+  "respuesta": "texto para enviar al usuario (natural, amable, corto)",
+  "rol": "cliente|colega_inmobiliario|desconocido",
+  "pide_mas_opciones": false,
+  "muestra_interes": false,
+  "filtros": {{
+    "tipo_propiedad": "",
+    "tipo_operacion": "",
+    "zona": "",
+    "presupuesto": null,
+    "habitaciones_min": null,
+    "banos_min": null,
+    "caracteristicas": []
+  }}
+}}
+
+Reglas:
+1) Interpreta el mensaje actual y actualiza SOLO lo que el usuario sí dijo.
+2) Si faltan datos para buscar (tipo_propiedad, tipo_operacion, zona, presupuesto), en "respuesta" pregunta SOLO el siguiente dato faltante, en lenguaje natural.
+3) Si ya hay datos suficientes, en "respuesta" confirma brevemente que buscarás opciones (sin inventarlas).
+4) Respeta semántica inmobiliaria:
+   - townhouse y apartoquinta son estilos de casa
+   - penthouse es estilo de apartamento
+5) No inventes presupuesto, zona ni datos de contacto.
+6) Si detectas intención de ver más propiedades, marca "pide_mas_opciones": true.
+7) Si detectas interés por una propiedad o deseo de avanzar, marca "muestra_interes": true.
+8) Si el usuario solo saluda, responde cordial y pide tipo de propiedad.
+9) Nunca pidas todos los datos juntos; pide uno a la vez.
+
+Estado actual:
+- rol_actual: {rol_actual}
+- filtros_actuales: {json.dumps(filtros_actuales, ensure_ascii=False)}
+
+Mensaje del usuario:
+\"\"\"{mensaje_usuario}\"\"\"
+"""
+
+    mensajes = [{"role": "system", "content": prompt}]
+    if isinstance(historial, list) and historial:
+        mensajes.extend(historial[-6:])
+    mensajes.append({"role": "user", "content": mensaje_usuario})
+
+    raw = consultar_ia(mensajes, max_tokens=280, fallback="")
+    data = extraer_json_de_texto(raw)
+
+    if not isinstance(data, dict):
+        data = {}
+
+    salida = {
+        "respuesta": str(data.get("respuesta", "")).strip(),
+        "rol": str(data.get("rol", "desconocido")).strip().lower(),
+        "pide_mas_opciones": bool(data.get("pide_mas_opciones", False)),
+        "muestra_interes": bool(data.get("muestra_interes", False)),
+        "filtros": data.get("filtros", {}) if isinstance(data.get("filtros"), dict) else {}
+    }
+
+    if salida["rol"] not in {"cliente", "colega_inmobiliario", "desconocido"}:
+        salida["rol"] = "desconocido"
+
+    salida["filtros"] = fusionar_filtros(filtros_actuales, salida["filtros"], mensaje_usuario)
+    return salida
+
+
+# ============================================================
+# EXTRACCIÓN DE FILTROS (se mantiene para robustez de normalización)
 # ============================================================
 
 def detectar_tipo_propiedad_en_texto(texto_norm: str) -> Optional[str]:
-    # Orden importa (específicos antes que generales)
     if any(k in texto_norm for k in ["townhouse", "tohouse", "towhouse", "town house", "twhouse"]):
         return "townhouse"
     if any(k in texto_norm for k in ["apartoquinta", "aparto quinta", "apartoquita", "aptoquinta"]):
@@ -748,133 +840,6 @@ def detectar_tipo_propiedad_en_texto(texto_norm: str) -> Optional[str]:
         if t in texto_norm:
             return "galpón" if t == "galpon" else t
     return None
-
-
-def extraer_filtros_regex(mensaje_usuario: str, filtros: dict) -> dict:
-    texto = normalizar_texto(mensaje_usuario)
-
-    tipo_detectado = detectar_tipo_propiedad_en_texto(texto)
-    if tipo_detectado and not filtros.get("tipo_propiedad"):
-        filtros["tipo_propiedad"] = tipo_detectado
-
-    if not filtros.get("tipo_operacion"):
-        if any(p in texto for p in ["venta", "comprar", "compra", "comprarla", "la quiero comprar", "para comprar"]):
-            filtros["tipo_operacion"] = "venta"
-        elif any(p in texto for p in ["alquiler", "alquilar", "renta", "arrendamiento"]):
-            filtros["tipo_operacion"] = "alquiler"
-
-    if filtros.get("presupuesto") is None:
-        presupuesto = parsear_presupuesto_texto(mensaje_usuario)
-        if presupuesto:
-            filtros["presupuesto"] = presupuesto
-
-    if filtros.get("habitaciones_min") is None:
-        match_hab = re.search(r"(\d+)\s*(hab|habitacion|habitaciones|cuarto|cuartos)", texto)
-        if match_hab:
-            filtros["habitaciones_min"] = int(match_hab.group(1))
-
-    if filtros.get("banos_min") is None:
-        match_banos = re.search(r"(\d+)\s*(bano|banos|baño|baños)", texto)
-        if match_banos:
-            filtros["banos_min"] = int(match_banos.group(1))
-
-    if not filtros.get("zona"):
-        # Captura "en el trigal norte de valencia", etc.
-        zona_match = re.search(
-            r"(?:en|zona|urbanizacion|urbanización|sector|ciudad)\s+(.+?)(?:\s+(?:venta|alquiler|hasta|con|presupuesto|de\s+\d)|$)",
-            mensaje_usuario,
-            re.IGNORECASE
-        )
-        if zona_match:
-            zona = zona_match.group(1).strip()
-            zona = re.sub(r"\s+", " ", zona)
-            if 1 <= len(zona.split()) <= 8:
-                filtros["zona"] = zona
-
-    caracteristicas_clave = [
-        "patio", "terraza", "jardin", "jardín", "piscina", "vigilancia",
-        "seguridad", "estacionamiento", "garage", "garaje", "maletero",
-        "planta baja", "remodelado", "amoblado", "ascensor", "pozo",
-        "tanque", "calle cerrada", "conjunto cerrado"
-    ]
-
-    actuales = filtros.get("caracteristicas", [])
-    for car in caracteristicas_clave:
-        if normalizar_texto(car) in texto and car not in actuales:
-            actuales.append(car)
-
-    if any(p in texto for p in ["sin caracteristicas", "sin características", "ninguna", "no tengo"]):
-        if not actuales:
-            actuales.append("sin características adicionales")
-
-    filtros["caracteristicas"] = actuales
-    return filtros
-
-
-def extraer_filtros_ia(mensaje_usuario: str, filtros_actuales: dict, historial: list) -> dict:
-    prompt = f"""
-Eres un extractor de datos para búsqueda inmobiliaria.
-Responde únicamente JSON válido con campos:
-tipo_propiedad, tipo_operacion, zona, presupuesto, habitaciones_min, banos_min, caracteristicas.
-
-Reglas:
-- Si no hay dato nuevo, conserva el actual.
-- tipo_operacion solo: "venta" o "alquiler".
-- tipo_propiedad puede incluir: casa, apartamento, townhouse, apartoquinta, penthouse, local, oficina, terreno.
-- presupuesto: número sin símbolos.
-
-Filtros actuales:
-{json.dumps(filtros_actuales, ensure_ascii=False)}
-
-Mensaje:
-"{mensaje_usuario}"
-
-JSON:
-{{
-  "tipo_propiedad": "",
-  "tipo_operacion": "",
-  "zona": "",
-  "presupuesto": null,
-  "habitaciones_min": null,
-  "banos_min": null,
-  "caracteristicas": []
-}}
-"""
-    historial_reciente = historial[-4:] if isinstance(historial, list) else []
-
-    respuesta_raw = consultar_ia(
-        [{"role": "system", "content": prompt}] + historial_reciente,
-        max_tokens=220,
-        fallback=""
-    )
-
-    filtros = filtros_actuales.copy()
-    try:
-        start = respuesta_raw.find("{")
-        end = respuesta_raw.rfind("}")
-        data = json.loads(respuesta_raw[start:end + 1]) if start != -1 and end != -1 else {}
-    except Exception:
-        data = {}
-
-    for campo in ["tipo_propiedad", "tipo_operacion", "zona"]:
-        valor = data.get(campo)
-        if valor:
-            filtros[campo] = str(valor).strip()
-
-    for campo in ["presupuesto", "habitaciones_min", "banos_min"]:
-        valor = data.get(campo)
-        if valor not in [None, "", []]:
-            try:
-                filtros[campo] = float(valor) if campo == "presupuesto" else int(valor)
-            except Exception:
-                pass
-
-    caracteristicas = data.get("caracteristicas", [])
-    if isinstance(caracteristicas, list) and caracteristicas:
-        actuales = filtros.get("caracteristicas", [])
-        filtros["caracteristicas"] = list(dict.fromkeys(actuales + caracteristicas))
-
-    return filtros
 
 
 def normalizar_filtros_post_extraccion(mensaje_usuario: str, filtros: dict) -> dict:
@@ -894,21 +859,6 @@ def normalizar_filtros_post_extraccion(mensaje_usuario: str, filtros: dict) -> d
     if not filtros.get("caracteristicas"):
         filtros["caracteristicas"] = ["sin características adicionales"]
 
-    return filtros
-
-
-def extraer_filtros_busqueda(mensaje_usuario: str, filtros_actuales: dict, historial: list) -> dict:
-    # Estrategia rápida: regex/local first
-    filtros = filtros_actuales.copy()
-    filtros = extraer_filtros_regex(mensaje_usuario, filtros)
-
-    # IA opcional solo si sigue muy ambiguo
-    if USAR_IA_EXTRACCION:
-        faltantes = obtener_siguiente_campo_faltante(filtros)
-        if faltantes in {"tipo_propiedad", "tipo_operacion", "zona"}:
-            filtros = extraer_filtros_ia(mensaje_usuario, filtros, historial)
-
-    filtros = normalizar_filtros_post_extraccion(mensaje_usuario, filtros)
     registrar_aprendizaje(filtros)
     return filtros
 
@@ -925,32 +875,6 @@ def obtener_siguiente_campo_faltante(filtros: dict):
     if not filtros.get("caracteristicas"):
         return "caracteristicas"
     return None
-
-
-def construir_pregunta_campo(campo: str, es_inicio=False) -> str:
-    prefijo = ""
-    if es_inicio:
-        prefijo = (
-            "¡Hola! 👋 Soy Paty, asistente VIP de Mettryc Realty. "
-            "¿Vamos armando tu búsqueda?"
-        )
-    preguntas = {
-        "tipo_propiedad": (
-            "Cuéntame, ¿qué tipo de propiedad estás buscando?"
-            " Por ejemplo: casa, apartamento, townhouse, apartoquinta, local u oficina."
-        ),
-        "tipo_operacion": "Perfecto. ¿La buscas para venta o alquiler?",
-        "zona": "Excelente. ¿En qué zona, urbanización o ciudad te gustaría buscar?",
-        "presupuesto": "Genial. ¿Cuál es tu presupuesto máximo aproximado?",
-        "caracteristicas": (
-            "Y para asegurar una buena experiencia, ¿qué característica es indispensable?"
-            " Por ejemplo: habitaciones, patio, estacionamiento, vigilancia o terraza."
-        )
-    }
-    pregunta = preguntas.get(campo, "Cuéntame un poco más sobre lo que necesitas.")
-    if prefijo:
-        return prefijo + "\n" + pregunta
-    return pregunta
 
 
 # ============================================================
@@ -990,20 +914,13 @@ def detectar_rol_por_respuesta_directa(mensaje: str) -> str:
     return "desconocido"
 
 
-def construir_pregunta_rol() -> str:
-    return (
-        "Perfecto, ya tengo la información base para revisar opciones. 😊\n\n"
-        "Una pregunta rápida: ¿la propiedad la estás buscando para ti o para un cliente?"
-    )
-
-
 # ============================================================
 # PROPIEDADES
 # ============================================================
 
 def coincide_tipo_propiedad(propiedad: dict, tipo_filtro: str) -> bool:
     """
-    Reglas solicitadas:
+    Reglas:
     - townhouse/apartoquinta: buscar por título (aunque type sea casa).
     - casa: puede incluir casa + townhouse + apartoquinta.
     - penthouse: buscar por título penthouse.
@@ -1072,10 +989,7 @@ def elegir_top_n_propiedades(inventario, filtros, n=3, excluir_ids=None):
     banos_min = filtros.get("banos_min")
     caracteristicas = filtros.get("caracteristicas", [])
 
-    propiedades = [
-        p for p in inventario
-        if str(p.get("id")) not in excluir_ids
-    ]
+    propiedades = [p for p in inventario if str(p.get("id")) not in excluir_ids]
 
     if tipo_op == "venta":
         propiedades = [p for p in propiedades if p.get("precio_venta_float", 0) > 0]
@@ -1129,7 +1043,6 @@ def elegir_top_n_propiedades(inventario, filtros, n=3, excluir_ids=None):
 
         puntos += propiedad_contiene_caracteristicas(p, caracteristicas)
 
-        # bonus de exactitud cuando zona coincide textual completa
         buscada = normalizar_texto(zona)
         zona_prop = normalizar_texto(p.get("zona", ""))
         ciudad_prop = normalizar_texto(p.get("ciudad", ""))
@@ -1228,10 +1141,6 @@ PALABRAS_INVALIDAS_NOMBRE = {
 
 
 def es_nombre_directo(mensaje: str, palabras_validas: list) -> bool:
-    """
-    Solo nombre completo directo: 2 a 4 palabras alfabéticas.
-    Evita tomar frases o correos como nombre.
-    """
     texto = (mensaje or "").strip()
     if not texto or len(texto) > 60:
         return False
@@ -1289,7 +1198,6 @@ def extraer_datos_lead(mensaje: str, lead_actual: dict, sender: str = "") -> dic
         if len(sender_limpio) >= 7:
             lead["whatsapp"] = sender_limpio
 
-    # Nombre explícito
     nombre_match = re.search(
         r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÀ-ÖØ-ÿ'´-]+(?:\s+[A-Za-zÀ-ÖØ-ÿ'´-]+){0,4})",
         texto,
@@ -1300,7 +1208,6 @@ def extraer_datos_lead(mensaje: str, lead_actual: dict, sender: str = "") -> dic
     if nombre_match:
         nombre_candidato = sanitizar_nombre_candidato(nombre_match.group(1))
     else:
-        # Solo si NO parece correo/teléfono y tiene formato de nombre completo
         if not correo_match and not telefono_match:
             palabras = re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", texto)
             palabras_limpias = [
@@ -1325,9 +1232,7 @@ def lead_completo(lead: dict) -> bool:
 
 
 def construir_pedido_dato(dato: str, lead: dict) -> str:
-    nombre = lead.get("nombre", "")
     saludado = primer_nombre(lead)
-
     mensajes = {
         "nombre": (
             "¡Me encanta que quieras avanzar! 😊 Para asignarte un asesor y personalizar todo, "
@@ -1436,10 +1341,7 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
         try:
             response = requests.post(
                 url_tg,
-                json={
-                    "chat_id": chat_id,
-                    "text": mensaje
-                },
+                json={"chat_id": chat_id, "text": mensaje},
                 timeout=8
             )
             response.raise_for_status()
@@ -1516,7 +1418,6 @@ async def handle_request(request: Request):
             estado = obtener_estado_usuario(sender)
             ahora_ts = time.time()
 
-            # Anti-duplicado estricto: si llega exactamente el mismo mensaje en ventana corta, no re-enviar.
             if (
                 mensaje_cliente == estado.get("mensaje_previo", "")
                 and (ahora_ts - float(estado.get("ultimo_mensaje_ts", 0.0))) <= VENTANA_MENSAJE_DUPLICADO_SEGUNDOS
@@ -1549,53 +1450,24 @@ async def handle_request(request: Request):
                 )
                 return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
-            primera_interaccion = (
-                sender not in memoria_conversaciones
-                or len(memoria_conversaciones.get(sender, [])) == 0
-            )
-
-            # Ajuste de filtros cuando ya vio opciones
+            # Ajuste cuando ya vio opciones
             if estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES and usuario_solicita_ajuste(mensaje_cliente):
                 respuesta = (
-                    "Entiendo 👍 ¿Quieres que ajustemos *zona*, *presupuesto* o *características* "
-                    "antes de mostrarte nuevas opciones?"
+                    "Entiendo 👍 Si quieres, ajustamos zona, presupuesto o características y te muestro nuevas opciones."
                 )
-                return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
-
-            # Más opciones solo bajo solicitud explícita
-            if estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES and usuario_pide_mas_opciones(mensaje_cliente):
-                propiedades = elegir_top_n_propiedades(
-                    inventario,
-                    estado["filtros"],
-                    n=3,
-                    excluir_ids=estado["propiedades_enviadas"]
-                )
-                if not propiedades:
-                    respuesta = (
-                        "Por ahora no encontré más opciones exactamente con esos criterios. "
-                        "¿Quieres ampliar zona o ajustar presupuesto para seguir buscando?"
-                    )
-                else:
-                    ids_nuevos = [p.get("id") for p in propiedades if p.get("id")]
-                    estado["propiedades_enviadas"].extend(ids_nuevos)
-                    es_colega = estado["rol"] == "colega_inmobiliario"
-                    fichas = [formatear_ficha_propiedad(p, es_colega=es_colega) for p in propiedades]
-                    respuesta = "Claro, te comparto 3 opciones adicionales:\n\n" + "\n\n".join(fichas)
-                    if estado["rol"] == "cliente":
-                        respuesta += construir_cierre_cliente()
                 return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
             # Pasar a captura lead si hay interés real
             if (
                 estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES
-                and estado["rol"] == "cliente"
+                and estado.get("rol", "cliente") != "colega_inmobiliario"
                 and sender not in clientes_procesados
                 and (usuario_muestra_interes(mensaje_cliente) or usuario_envia_datos_contacto(mensaje_cliente))
             ):
                 estado["estado"] = ESTADO_CAPTURANDO_LEAD
                 estado["ultimo_pedido_dato"] = None
 
-            # Flujo lead
+            # Flujo lead (sin cambios)
             if estado["estado"] == ESTADO_CAPTURANDO_LEAD:
                 estado["lead"] = extraer_datos_lead(mensaje_cliente, estado["lead"], sender)
                 dato_faltante = proximo_dato_lead(estado["lead"])
@@ -1629,44 +1501,81 @@ async def handle_request(request: Request):
                     )
                 return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
-            # Extracción de filtros
-            estado["filtros"] = extraer_filtros_busqueda(
+            # ------------------------------------------------------------
+            # FASE DIAGNÓSTICO 100% IA (SIN PREGUNTAS PREDISEÑADAS)
+            # ------------------------------------------------------------
+            analisis_ia = orquestar_consulta_ia(
                 mensaje_cliente,
-                estado["filtros"],
+                estado,
                 memoria_conversaciones.get(sender, [])
             )
 
+            estado["filtros"] = analisis_ia["filtros"]
+
+            # respaldo por regex para rol
+            rol_directo = detectar_rol_por_respuesta_directa(mensaje_cliente)
+            if rol_directo != "desconocido":
+                estado["rol"] = rol_directo
+            elif analisis_ia["rol"] != "desconocido":
+                estado["rol"] = analisis_ia["rol"]
+
+            # Más opciones (solo bajo solicitud)
+            if estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES and (
+                analisis_ia["pide_mas_opciones"] or usuario_pide_mas_opciones(mensaje_cliente)
+            ):
+                propiedades = elegir_top_n_propiedades(
+                    inventario,
+                    estado["filtros"],
+                    n=3,
+                    excluir_ids=estado["propiedades_enviadas"]
+                )
+                if not propiedades:
+                    respuesta = analisis_ia["respuesta"] or (
+                        "No encontré más opciones exactas con esos criterios. "
+                        "Si quieres, ajustamos zona o presupuesto."
+                    )
+                else:
+                    ids_nuevos = [p.get("id") for p in propiedades if p.get("id")]
+                    estado["propiedades_enviadas"].extend(ids_nuevos)
+                    es_colega = estado.get("rol") == "colega_inmobiliario"
+                    fichas = [formatear_ficha_propiedad(p, es_colega=es_colega) for p in propiedades]
+                    respuesta = "Te comparto 3 opciones adicionales:\n\n" + "\n\n".join(fichas)
+                    if estado.get("rol") != "colega_inmobiliario":
+                        respuesta += construir_cierre_cliente()
+                return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
+
+            # Si detecta interés en esta fase, pasar a lead (clientes)
+            if (
+                estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES
+                and estado.get("rol", "cliente") != "colega_inmobiliario"
+                and sender not in clientes_procesados
+                and (analisis_ia["muestra_interes"] or usuario_muestra_interes(mensaje_cliente) or usuario_envia_datos_contacto(mensaje_cliente))
+            ):
+                estado["estado"] = ESTADO_CAPTURANDO_LEAD
+                estado["ultimo_pedido_dato"] = None
+                estado["lead"] = extraer_datos_lead(mensaje_cliente, estado["lead"], sender)
+                dato_faltante = proximo_dato_lead(estado["lead"])
+                if dato_faltante:
+                    respuesta = construir_pedido_dato(dato_faltante, estado["lead"])
+                    estado["ultimo_pedido_dato"] = dato_faltante
+                    return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
+
+            # Si faltan filtros, IA pregunta de forma natural
             campo_faltante = obtener_siguiente_campo_faltante(estado["filtros"])
             if campo_faltante:
                 estado["estado"] = ESTADO_COMPLETANDO_FILTROS
-                pregunta = construir_pregunta_campo(campo_faltante, es_inicio=primera_interaccion)
+                respuesta_ia = analisis_ia["respuesta"] or (
+                    "Perfecto, para continuar ayúdame con un dato más de tu búsqueda."
+                )
+                return enviar_respuesta(sender, mensaje_cliente, respuesta_ia, estado)
 
-                if es_mensaje_poco_informativo(mensaje_cliente):
-                    respuesta = mensaje_recordatorio_filtro(campo_faltante)
-                else:
-                    # Evitar repetir textual la última pregunta en loop
-                    if estado.get("ultima_respuesta", "").strip() == pregunta.strip():
-                        respuesta = mensaje_recordatorio_filtro(campo_faltante)
-                    else:
-                        respuesta = pregunta
-                return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
+            # Si ya hay filtros completos y rol vacío, asumimos cliente
+            if not estado.get("rol"):
+                estado["rol"] = "cliente"
 
-            # Rol
-            rol_detectado = detectar_rol_por_respuesta_directa(mensaje_cliente)
-            if rol_detectado != "desconocido":
-                estado["rol"] = rol_detectado
-
-            if not estado["rol"]:
-                if not estado["rol_preguntado"]:
-                    estado["estado"] = ESTADO_DEFINIENDO_ROL
-                    estado["rol_preguntado"] = True
-                    respuesta = construir_pregunta_rol()
-                    return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
-                else:
-                    rol_ia = detectar_rol_por_respuesta_directa(mensaje_cliente)
-                    estado["rol"] = rol_ia if rol_ia != "desconocido" else "cliente"
-
-            # Mostrar propiedades
+            # ------------------------------------------------------------
+            # MOSTRAR PROPIEDADES
+            # ------------------------------------------------------------
             propiedades = elegir_top_n_propiedades(
                 inventario,
                 estado["filtros"],
@@ -1676,9 +1585,9 @@ async def handle_request(request: Request):
             estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
 
             if not propiedades:
-                respuesta = (
-                    "Revisé nuestro inventario activo y no encontré una coincidencia exacta. "
-                    "¿Quieres ampliar la zona o ajustamos presupuesto para seguir buscando?"
+                respuesta = analisis_ia["respuesta"] or (
+                    "Revisé inventario activo y no encontré coincidencia exacta. "
+                    "¿Te parece si ampliamos zona o presupuesto?"
                 )
                 return enviar_respuesta(sender, mensaje_cliente, respuesta, estado)
 
