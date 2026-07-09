@@ -107,6 +107,18 @@ def normalizar_operacion(op: str) -> str:
     if t in {"alquiler", "alquilar", "arrendar", "arrendamiento", "renta"}: return "alquiler"
     return ""
 
+def mensaje_parece_contacto(mensaje: str) -> bool:
+    if not mensaje: return False
+    tiene_correo = bool(re.search(r"[\w\.-]+@[\w\.-]+\.\w+", mensaje, re.IGNORECASE))
+    tiene_tel = bool(re.search(r"\+?\d[\d\s\-\(\)]{7,}\d", mensaje))
+    return tiene_correo or tiene_tel
+
+def es_nombre_persona_valido(nombre: str) -> bool:
+    if not nombre: return False
+    n = normalizar_texto(nombre)
+    palabras = [p for p in re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", nombre) if normalizar_texto(p) not in STOPWORDS_NOMBRE_EXTRA and len(p) >= 2]
+    return 2 <= len(palabras) <= 4
+
 def parsear_presupuesto_texto(texto: str):
     if not texto: return None
     t = normalizar_texto(texto)
