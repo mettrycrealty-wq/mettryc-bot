@@ -25,7 +25,7 @@ HORARIOS_ACTUALIZACION_INVENTARIO = [0, 12]
 
 # Configuración de Modelos: Principal -> Respaldo 1 -> Respaldo 2
 MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite")
-MODELO_RESPALDO_1 = os.getenv("MODELO_RESPALDO_1", "anthropic/claude-3-haiku")
+MODELO_RESPALDO_1 = os.getenv("MODELO_RESPALDO_1", "anthropic/claude-3.5-haiku")
 MODELO_RESPALDO_2 = os.getenv("MODELO_RESPALDO_2", "openai/gpt-4o-mini")
 MAX_TOKENS_IA = int(os.getenv("MAX_TOKENS_IA", "600"))
 
@@ -83,10 +83,6 @@ def capitalizar_nombre(nombre: str) -> str:
 
 def limpiar_telefono(valor: str) -> str:
     return re.sub(r"\D", "", str(valor or ""))
-
-def convertir_entero_seguro(valor) -> int:
-    try: return 0 if valor in [None, "", "N/D"] else int(float(valor))
-    except Exception: return 0
 
 def formato_moneda(valor) -> str:
     try:
@@ -183,7 +179,7 @@ def obtener_estado_usuario(sender: str) -> dict:
     if sender not in estado_usuarios:
         estado_usuarios[sender] = {
             "estado": ESTADO_DIAGNOSTICO_IA, "rol": None,
-            "filtros": {"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": None, "habitaciones_min": None},
+            "filtros": {"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": None, "habitaciones": "", "caracteristicas": ""},
             "propiedades_enviadas": [], "lead": {"nombre": "", "correo": "", "whatsapp": ""},
             "ultima_respuesta": "", "mensaje_previo": "", "ultimo_mensaje_ts": 0.0
         }
@@ -302,7 +298,6 @@ def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
 # ============================================================
 
 def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str = "", modelos_personalizados: list = None) -> str:
-    """Implementa el flujo en cascada. Permite inyectar una cascada personalizada por capa."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key: return fallback
     
@@ -314,12 +309,10 @@ def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str 
         "X-Title": "Mettryc Bot"
     }
     
-    # Si la función no recibe una lista específica, usa el triple respaldo por defecto
     modelos_en_cascada = modelos_personalizados if modelos_personalizados else [MODELO_PRINCIPAL, MODELO_RESPALDO_1, MODELO_RESPALDO_2]
     
     for modelo in modelos_en_cascada:
         try:
-            logger.info(f"Intentando con modelo: {modelo}")
             resp = requests.post(url, headers=headers, json={
                 "model": modelo,
                 "messages": mensajes,
@@ -330,10 +323,8 @@ def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str 
             c = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
             if c: return c.strip()
         except Exception as e:
-            logger.warning(f"⚠️ Fallo al conectar con {modelo}: {e}. Pasando al siguiente modelo...")
             continue
             
-    logger.error("🚨 Fallaron TODOS los modelos de IA en esta capa.")
     return fallback
 
 def extraer_json_de_texto(texto: str) -> dict:
@@ -351,7 +342,6 @@ def extraer_json_de_texto(texto: str) -> dict:
 # ============================================================
 
 def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> dict:
-    """Capa 1: Extractor Silencioso de Entidades y Roles (Usa cascada completa)."""
     historial_breve = [{"role": h.get("role", "user"), "content": h.get("content", "")[:220]} for h in historial[-8:]]
     system = "Eres un analista experto. Responde UNICAMENTE con un objeto JSON válido según el esquema."
     user_prompt = f"""
@@ -360,69 +350,66 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
 
     Reglas:
     1. intencion: "saludo"|"buscar"|"mas_opciones"|"ajustar_busqueda"|"interes_propiedad"|"enviar_datos"|"objecion"
-    2. rol: "colega_inmobiliario" si se identifica como colega, asesor, broker o de otra inmobiliaria. De lo contrario "cliente".
+    2. rol: "colega_inmobiliario" si se identifica como colega. De lo contrario "cliente".
     3. lead: extrae nombre, correo, whatsapp si los provee explícitamente.
 
     Devuelve EXACTAMENTE este esquema JSON:
-    {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
+    {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null, "habitaciones": "", "caracteristicas": ""}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
     """
     return extraer_json_de_texto(consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}"))
 
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
-    """Capa 3: Motor de Paty blindado. Usa SOLO Claude y GPT (Cascada de Obediencia)."""
-    
     props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
-    mensaje_interno = contexto_sistema.get('mensaje_interno', '')
-    
-    # ---------------------------------------------------------
-    # CORRECCIÓN: Diferenciar Diagnóstico Inicial vs Búsqueda Fallida
-    # ---------------------------------------------------------
     if not props_encontradas:
-        if "No se encontraron" in mensaje_interno:
-            props_encontradas = "[Búsqueda realizada: 0 resultados exactos. Sugiere ajustar filtros suavemente.]"
+        if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
+            props_encontradas = "[Búsqueda realizada: 0 resultados. Ofrece ajustar filtros.]"
         else:
-            props_encontradas = "[Fase de diagnóstico inicial. NO pidas disculpas ni digas que no tienes propiedades. Solo da la bienvenida y pide el dato de búsqueda faltante.]"
+            props_encontradas = "[Fase de diagnóstico. Sigue preguntando el dato que falta.]"
             
     faltantes_busqueda = ", ".join(contexto_sistema.get('faltantes_busqueda', [])) or "Ninguno"
     faltantes_lead = ", ".join(contexto_sistema.get('faltantes_lead', [])) or "Ninguno"
     agente = contexto_sistema.get('agente_asignado', '') or "Ninguno"
     rol = contexto_sistema.get('rol_detectado', 'cliente')
+    mensaje_interno = contexto_sistema.get('mensaje_interno', '')
     
     instrucciones_contexto = f"""
-    --- INSTRUCCIONES ESTRICTAS PARA ESTA RESPUESTA ---
+    --- INSTRUCCIONES ESTRICTAS ---
     ROL DETECTADO: {rol}
-    DATOS DE BÚSQUEDA FALTANTES: {faltantes_busqueda}
+    DATOS DE BÚSQUEDA FALTANTES (Pregunta SOLO UNO a la vez): {faltantes_busqueda}
     DATOS DE CONTACTO FALTANTES PARA LEAD: {faltantes_lead}
     ASESOR ASIGNADO ACTUALMENTE: {agente}
     MENSAJE INTERNO: {mensaje_interno}
-    
-    PROPIEDADES A MOSTRAR:
-    {props_encontradas}
-    ---------------------------------------------------
+    PROPIEDADES A MOSTRAR: {props_encontradas}
+    -------------------------------
     """
 
     prompt_sistema = f"""
     Eres Paty, la especialista VIP de Mettryc Realty (Valencia, Venezuela).
-    
     {instrucciones_contexto}
     
-    REGLAS DE ORO (INQUEBRANTABLES):
-    1. BREVEDAD EXTREMA: Tu respuesta debe ser corta, natural y al grano. Haz UNA sola pregunta a la vez. Prohibido escribir párrafos largos.
-    2. CERO DISCULPAS INNECESARIAS: Si estás en "Fase de diagnóstico", NO digas que no tienes propiedades disponibles. Simplemente saluda y pregunta qué está buscando el cliente.
-    3. REGLA DE NO-REPETICIÓN: Si ya te has presentado en esta conversación (revisa el historial), tienes PROHIBIDO volver a decir "Hola soy Paty".
-    4. ROLES: 
-       - Si es "colega_inmobiliario": Muestra propiedades con datos del captador. NUNCA pidas sus datos personales.
-       - Si es "cliente": Si hay DATOS DE CONTACTO FALTANTES PARA LEAD, pide SOLO UNO amablemente para "abrir su ficha VIP".
-    5. CERO ALUCINACIONES: NUNCA inventes propiedades, zonas, ni nombres de captadores.
-    6. FORMATO: Usa negritas con un solo asterisco (*) y no uses llaves {{}}.
+    REGLAS Y GUION MAESTRO:
+    1. MEMORIA TOTAL: Si el usuario ya te dio un dato (ej. dijo "200 mil" o "Trigal"), no lo vuelvas a preguntar jamás.
+    2. FLUJO DE DIAGNÓSTICO: Si hay "DATOS DE BÚSQUEDA FALTANTES", haz UNA SOLA PREGUNTA corta. Sigue esta lógica de conversación amigable:
+       - Para Operación: "¿La buscas para comprar o alquilar?"
+       - Para Tipo: "¿Qué tipo de propiedad estás buscando? (casa, apartamento...)"
+       - Para Zona: "¿En qué zona o urbanización te gustaría?"
+       - Para Presupuesto: "¿Tienes un precio en mente o presupuesto máximo?"
+       - Para Habitaciones: "¿Cuántas habitaciones y baños son ideales para ti?"
+       - Para Características: "Por último, ¿hay algo más que sea importante que deba tener? (ej. vigilancia, calle cerrada)"
+    3. FLUJO DE CAPTURA DE LEAD (APLICA ESTE GUION EXACTO): Si el cliente se interesa por una propiedad, hay "DATOS DE CONTACTO FALTANTES PARA LEAD" y no tienes Asesor Asignado, pide la información PASO A PASO con estas frases exactas:
+       - Si falta Nombre: "¡Qué bien! Te voy a asignar uno de nuestros agentes para que te dé más información y puedas coordinar una visita sin compromiso. Por favor, dime ¿Cuál es tu nombre completo?"
+       - Si falta Correo: "¡Un gusto conocerte [Su Nombre]! Indícame tu correo electrónico para que nuestro sistema te siga enviando más opciones en la zona."
+       - Si falta WhatsApp: "¡Gracias! Por último, dime tu número de WhatsApp para que nuestro agente te contacte."
+    4. FLUJO DE DESPEDIDA: Si tienes "ASESOR ASIGNADO ACTUALMENTE", despídete con esta frase exacta: "¡Listo! Ya nuestro agente [Nombre del Asesor] tiene tu información y te estará contactando a tu número. ¿Hay algo más en lo que te pueda servir?"
+    5. CERO ALUCINACIONES Y CERO JSON: NO uses llaves {{}}. NO inventes propiedades que no estén en tu lista de "PROPIEDADES A MOSTRAR".
+    6. FORMATO DE ENLACES: Muestra los enlaces de forma PLANA (ej. https://mettryc.com/inmueble/123). No uses corchetes [Texto](url).
     """
     
     mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-8:] if len(historial) > 8 else historial)
-    
-    # CASCADA DE OBEDIENCIA: Obligamos a esta capa a usar Claude primero, y GPT como respaldo.
     cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
     
-    return consultar_ia(mensajes, max_tokens=200, modelos_personalizados=cascada_obediente)
+    return consultar_ia(mensajes, max_tokens=800, modelos_personalizados=cascada_obediente)
+
 # ============================================================
 # LÓGICA DE PYTHON (Filtros, Ranking y Fichas)
 # ============================================================
@@ -432,6 +419,9 @@ def fusionar_filtros(base: dict, nuevos: dict, mensaje: str) -> dict:
     if nuevos.get("tipo_propiedad"): out["tipo_propiedad"] = normalizar_tipo_propiedad(nuevos["tipo_propiedad"])
     if nuevos.get("tipo_operacion"): out["tipo_operacion"] = normalizar_operacion(nuevos["tipo_operacion"])
     if nuevos.get("zona"): out["zona"] = str(nuevos["zona"]).strip()
+    if nuevos.get("habitaciones"): out["habitaciones"] = str(nuevos["habitaciones"]).strip()
+    if nuevos.get("caracteristicas"): out["caracteristicas"] = str(nuevos["caracteristicas"]).strip()
+    
     if nuevos.get("presupuesto") not in [None, "", []]:
         try: out["presupuesto"] = float(nuevos["presupuesto"])
         except Exception: pass
@@ -516,18 +506,20 @@ def formatear_ficha_propiedad(propiedad: dict, es_colega=False) -> str:
     precio_str = formato_moneda(precio_val) if precio_val > 0 else propiedad.get("renta" if op == "alquiler" else "venta", "N/D")
     area = propiedad.get("area", "N/D")
     area_txt = f"{area} m²" if str(area).strip() not in {"", "N/D", "None"} else "N/D"
+    
+    enlace = propiedad.get('enlace', '#')
 
     lineas = [
         f"*{propiedad.get('titulo', 'Propiedad')}*",
         f"📍 Zona: {propiedad.get('zona', 'N/D')}, {propiedad.get('ciudad', 'N/D')}",
         f"💰 Precio: {precio_str}",
         f"📐 Área: {area_txt} | 🛏️ Habs: {propiedad.get('habitaciones', 'N/D')} | 🛁 Baños: {propiedad.get('banos', 'N/D')}",
-        f"🔗 Ver más: {propiedad.get('enlace', '#')}"
+        f"🔗 {enlace}"
     ]
     if es_colega:
         captador = propiedad.get("captador_propiedad", "N/D")
         tel = obtener_telefono_captador_de_sheet(captador)
-        lineas.extend([f"👤 Captador: {captador}", f"📲 WhatsApp Captador: {tel if tel != 'N/D' else propiedad.get('telefono_captador_wasi', 'N/D')}"])
+        lineas.extend([f"👤 Captador: {captador}", f"📲 WhatsApp: {tel if tel != 'N/D' else propiedad.get('telefono_captador_wasi', 'N/D')}"])
     return "\n".join(lineas)
 
 def construir_resumen_necesidad(filtros: dict) -> str:
@@ -536,6 +528,8 @@ def construir_resumen_necesidad(filtros: dict) -> str:
     if filtros.get("tipo_operacion"): p.append(f"- Operación: {filtros['tipo_operacion']}")
     if filtros.get("zona"): p.append(f"- Zona de interés: {filtros['zona']}")
     if filtros.get("presupuesto"): p.append(f"- Presupuesto máximo: {formato_moneda(filtros['presupuesto'])}")
+    if filtros.get("habitaciones"): p.append(f"- Habitaciones/Baños: {filtros['habitaciones']}")
+    if filtros.get("caracteristicas"): p.append(f"- Características Especiales: {filtros['caracteristicas']}")
     return "\n".join(p) if p else "- Búsqueda general o amplia"
 
 # ============================================================
@@ -584,7 +578,6 @@ async def handle_request(request: Request):
 
         if not mensaje_cliente: return {"replies": []}
 
-        # Capa 2: Detección Determinística Pre-IA
         palabras_colega = ["colega", "agente", "inmobiliaria", "inmobiliario", "broker", "asesor", "corredor", "realtor", "remax", "rentahouse"]
         es_colega = any(palabra in mensaje_cliente.lower() for palabra in palabras_colega)
 
@@ -614,7 +607,6 @@ async def handle_request(request: Request):
             elif necesita_actualizar_inventario(): asyncio.create_task(garantizar_inventario_actualizado(force=False))
             sincronizar_google_sheet()
 
-            # Capa 1: Extractor Analítico (Gemini Flash Lite -> Claude -> GPT)
             analisis = await asyncio.to_thread(analizar_mensaje_ia, mensaje_cliente, estado, memoria_conversaciones.get(sender, []))
             intencion = analisis.get("intencion", "otro")
 
@@ -622,7 +614,6 @@ async def handle_request(request: Request):
             if estado["estado"] != ESTADO_CAPTURANDO_LEAD and not mensaje_parece_contacto(mensaje_cliente):
                 estado["filtros"] = fusionar_filtros(estado["filtros"], analisis.get("filtros", {}), mensaje_cliente)
 
-            # Capa 2: Contexto Seguro para Capa 3
             contexto_sistema = {
                 "rol_detectado": estado["rol"], "faltantes_busqueda": [],
                 "propiedades_encontradas_texto": "", "faltantes_lead": [], "agente_asignado": "",
@@ -630,19 +621,22 @@ async def handle_request(request: Request):
             }
 
             if estado["estado"] == ESTADO_DIAGNOSTICO_IA:
-                faltantes = [k for k in ["tipo_propiedad", "zona", "tipo_operacion", "presupuesto"] if not estado["filtros"].get(k)]
-                if len(faltantes) > 1:
+                # SE IMPLEMENTA EL FLUJO PASO A PASO ESTRICTO DEL CLIENTE
+                filtros_requeridos = ["tipo_operacion", "tipo_propiedad", "zona", "presupuesto", "habitaciones", "caracteristicas"]
+                faltantes = [k for k in filtros_requeridos if not estado["filtros"].get(k)]
+                
+                if faltantes:
+                    # Siempre pedimos solo el primer dato que falte en el orden estricto
                     contexto_sistema["faltantes_busqueda"] = [faltantes[0]]
                 else:
+                    # Cuando ya tenemos todos los 6 datos, mostramos el inventario
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
                     if props:
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
                         contexto_sistema["propiedades_encontradas_texto"] = "\n\n".join([formatear_ficha_propiedad(p, estado["rol"] == "colega_inmobiliario") for p in props])
                         estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
                     else:
-                        if faltantes:
-                            contexto_sistema["faltantes_busqueda"] = [faltantes[0]]
-                        contexto_sistema["mensaje_interno"] = "No se encontraron propiedades con estos filtros exactos. Pide amablemente el dato faltante o sugiere ajustar zona/presupuesto."
+                        contexto_sistema["mensaje_interno"] = "No se encontraron propiedades con estos filtros exactos. Pide amablemente ajustar los requerimientos (ej. otra zona o mayor presupuesto)."
 
             elif estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES:
                 if intencion in ["mas_opciones", "ajustar_busqueda"]:
@@ -655,7 +649,8 @@ async def handle_request(request: Request):
 
             if estado["estado"] == ESTADO_CAPTURANDO_LEAD and estado["rol"] == "cliente":
                 faltante_lead = None
-                if not es_nombre_persona_valido(estado["lead"].get("nombre", "")): faltante_lead = "Nombre Completo (Nombre y Apellido)"
+                # ORDEN ESTRICTO DE CAPTURA DE LEAD
+                if not es_nombre_persona_valido(estado["lead"].get("nombre", "")): faltante_lead = "Nombre Completo"
                 elif not estado["lead"].get("correo"): faltante_lead = "Correo electrónico"
                 elif not estado["lead"].get("whatsapp"): faltante_lead = "Número de WhatsApp"
                 
@@ -668,7 +663,6 @@ async def handle_request(request: Request):
                     clientes_procesados.add(sender)
                     estado["estado"] = ESTADO_LEAD_COMPLETO
 
-            # Capa 3: PATY CONVERSACIONAL (Usa la Cascada de Obediencia: Claude -> GPT)
             respuesta_paty = await asyncio.to_thread(generar_respuesta_conversacional_paty, mensaje_cliente, contexto_sistema, memoria_conversaciones.get(sender, []))
 
             actualizar_memoria(sender, mensaje_cliente, respuesta_paty)
