@@ -25,7 +25,7 @@ HORARIOS_ACTUALIZACION_INVENTARIO = [0, 12]
 
 # Configuración de Modelos: Principal -> Respaldo 1 -> Respaldo 2
 MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite")
-MODELO_RESPALDO_1 = os.getenv("MODELO_RESPALDO_1", "anthropic/claude-3-haiku")
+MODELO_RESPALDO_1 = os.getenv("MODELO_RESPALDO_1", "anthropic/claude-3.5-haiku")
 MODELO_RESPALDO_2 = os.getenv("MODELO_RESPALDO_2", "openai/gpt-4o-mini")
 MAX_TOKENS_IA = int(os.getenv("MAX_TOKENS_IA", "600"))
 
@@ -342,7 +342,6 @@ def extraer_json_de_texto(texto: str) -> dict:
 # ============================================================
 
 def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> dict:
-    """Capa 1: Extractor. Ahora también extrae códigos de inmuebles (Ads)."""
     historial_breve = [{"role": h.get("role", "user"), "content": h.get("content", "")[:220]} for h in historial[-8:]]
     system = "Eres un analista experto. Responde UNICAMENTE con un objeto JSON válido según el esquema."
     user_prompt = f"""
@@ -352,7 +351,7 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     Reglas:
     1. intencion: "saludo"|"buscar"|"mas_opciones"|"ajustar_busqueda"|"interes_propiedad"|"enviar_datos"|"objecion"|"consulta_inmueble_especifico"
     2. rol: "colega_inmobiliario" si se identifica como colega. De lo contrario "cliente".
-    3. codigo_inmueble: Extrae el código si el usuario pregunta por un inmueble específico (ej. "ALM-12345" o "12345").
+    3. codigo_inmueble: Extrae el código si el usuario pregunta por un inmueble específico.
     4. lead: extrae nombre, correo, whatsapp si los provee explícitamente.
 
     Devuelve EXACTAMENTE este esquema JSON:
@@ -366,7 +365,7 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
         if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
             props_encontradas = "[Búsqueda realizada: 0 resultados. Ofrece ajustar filtros.]"
         else:
-            props_encontradas = "[Fase de diagnóstico. Sigue preguntando el dato que falta o saluda si es el primer mensaje.]"
+            props_encontradas = "[Fase de diagnóstico. Continúa la charla.]"
             
     faltantes_busqueda = ", ".join(contexto_sistema.get('faltantes_busqueda', [])) or "Ninguno"
     faltantes_lead = ", ".join(contexto_sistema.get('faltantes_lead', [])) or "Ninguno"
@@ -380,7 +379,7 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     --- INSTRUCCIONES ESTRICTAS ---
     ES PRIMER MENSAJE (OBLIGATORIO SALUDAR): {"SÍ" if es_inicio else "NO"}
     ROL DETECTADO: {rol}
-    DATOS DE BÚSQUEDA FALTANTES (Pregunta SOLO UNO a la vez): {faltantes_busqueda}
+    DATOS DE BÚSQUEDA FALTANTES (Pregunta UNO a la vez): {faltantes_busqueda}
     DATOS DE CONTACTO FALTANTES PARA LEAD: {faltantes_lead}
     ASESOR ASIGNADO ACTUALMENTE: {agente}
     MENSAJE INTERNO: {mensaje_interno}
@@ -389,45 +388,23 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     """
 
     prompt_sistema = f"""
-    Eres Paty, la especialista VIP de Mettryc Realty (Valencia, Venezuela).
+    Eres Paty, la especialista VIP de Mettryc Realty en Valencia, Venezuela.
     {instrucciones_contexto}
     
-    REGLAS Y GUIONES MAESTROS (INQUEBRANTABLES):
-    1. FLUJO 1: EL SALUDO OBLIGATORIO:
-       Si "ES PRIMER MENSAJE" es SÍ, TIENES QUE usar este saludo exacto:
-       "¡Hola! Mi nombre es Paty de Mettryc Realty La Primera Tecnoinmobiliaria de Venezuela. ¿Cómo te puedo ayudar?"
-       NO pases a preguntar datos hasta que el cliente te responda a este saludo.
+    ESTILO DE COMUNICACIÓN (GUION DE REFERENCIA Y ADAPTABILIDAD):
+    1. EMPATÍA Y NATURALIDAD: No eres un robot rígido. Adapta tu respuesta al tono y a las preguntas del cliente. Si el cliente hace un comentario fuera del guion, bromea o tiene una duda, respóndele con calidez y naturalidad antes de continuar con el proceso.
+    
+    2. FLUJO COMO REFERENCIA, NO COMO CAMISA DE FUERZA:
+       - Si es el primer mensaje, preséntate cálidamente como Paty de Mettryc Realty y pregunta cómo puedes ayudar hoy.
+       - Guíate por este embudo para tus preguntas, pero usa tus propias palabras: Operación > Tipo de inmueble > Zona > Presupuesto > Habitaciones > Características.
+       - Si estás capturando un lead (datos de contacto), sé amigable y explica que los pides para asignar un agente experto o abrir su ficha VIP.
        
-    2. FLUJO 2: EL CLIENTE (EMBUDO DE VENTAS):
-       Si "DATOS DE BÚSQUEDA FALTANTES" tiene información, haz UNA SOLA PREGUNTA siguiendo este guion:
-       - Operación: "¿La buscas para comprar o alquilar?"
-       - Tipo: "Ok... cuéntame ¿qué tipo de propiedad estás buscando?"
-       - Zona: "Perfecto, ¿en qué zona o urbanización te gustaría?"
-       - Presupuesto: "¡Buena zona! ¿Tienes un precio en mente o presupuesto máximo?"
-       - Habitaciones: "Entiendo. Me puedes decir ¿Cuántas habitaciones y baños son ideales para ti?"
-       - Características: "¡Excelente! Por último, ¿hay algo más que sea importante que debe tener tu próxima propiedad?"
-       IMPORTANTE: Si el cliente ya dio un dato en su mensaje (ej: "hasta 200 mil"), NO LO VUELVAS A PREGUNTAR.
-
-    3. FLUJO 3: CAPTURA DE LEAD PARA CLIENTES INTERESADOS:
-       Si el cliente se interesa en una propiedad y faltan "DATOS DE CONTACTO", usa estas frases:
-       - Faltando Nombre: "¡Qué bien! Te voy asignar uno de nuestros agentes para que te dé más información y puedas coordinar una visita sin compromiso. Por favor, dime ¿Cuál es tu nombre completo?"
-       - Faltando Correo: "¡Un gusto conocerte! Indícame tu correo electrónico para que nuestro sistema te siga enviando opciones similares."
-       - Faltando WhatsApp: "¡Gracias! Por último, dime tu número de WhatsApp para que nuestro agente te contacte."
-       - Si ya hay ASESOR ASIGNADO: "¡Listo! Ya nuestro agente [Nombre del Asesor] tiene tu información y te estará contactando a tu número. ¿Hay algo más en lo que te pueda servir?"
-
-    4. FLUJO 4: EL COLEGA INMOBILIARIO:
-       Si ROL DETECTADO es "colega_inmobiliario":
-       - Trátalo de profesional a profesional. ("Hola colega, con gusto te apoyo para tu cliente...").
-       - Muestra la ficha de la propiedad tal cual te llega (con los datos de nuestro captador).
-       - PROHIBIDO pedirle nombre, correo o WhatsApp. El Flujo de Captura de Lead NO APLICA para colegas.
-       
-    5. FLUJO 5: INMUEBLE ESPECÍFICO (ADS):
-       Si el "MENSAJE INTERNO" te indica que el cliente viene por un anuncio o código específico, entrega la propiedad de "PROPIEDADES A MOSTRAR" inmediatamente y pregúntale de forma entusiasta si desea agendar una visita.
-
-    6. REGLAS DE FORMATO:
-       - CERO ALUCINACIONES: NO inventes propiedades que no estén en tu lista.
-       - CERO JSON: Tienes prohibido usar llaves {{}}.
-       - ENLACES PLANOS: Muestra los enlaces de forma PLANA (ej. https://mettryc.com/inmueble/123). No uses corchetes de Markdown.
+    REGLAS DE ORO (ESTAS SÍ SON INQUEBRANTABLES):
+    1. LLAMADO A LA ACCIÓN (CTA) OBLIGATORIO: Sin importar qué tan amena o relajada sea la charla, SIEMPRE debes cerrar tu mensaje haciendo UNA (y solo una) pregunta para obtener el "DATO FALTANTE" que te indica el sistema. NUNCA te despidas sin intentar avanzar en el embudo.
+    2. MEMORIA TOTAL: Si el usuario ya te dio un dato, NUNCA lo vuelvas a preguntar. 
+    3. EL COLEGA INMOBILIARIO: Si el ROL DETECTADO es "colega_inmobiliario", habla de profesional a profesional. Muestra la ficha tal cual está y PROHIBIDO pedirle datos personales (Nombre, Correo o WhatsApp).
+    4. CERO ALUCINACIONES: NO inventes propiedades que no estén en tu lista de "PROPIEDADES A MOSTRAR". 
+    5. CERO JSON Y FORMATO DE ENLACES: NO uses llaves {{}}. Los enlaces web debes mostrarlos de forma PLANA (ej. https://mettryc.com/inmueble/123), sin corchetes de Markdown.
     """
     
     mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-8:] if len(historial) > 8 else historial)
@@ -628,7 +605,7 @@ async def handle_request(request: Request):
             elif necesita_actualizar_inventario(): asyncio.create_task(garantizar_inventario_actualizado(force=False))
             sincronizar_google_sheet()
 
-            # Capa 1: Extractor Analítico (Detecta intención, lead y códigos de Ads)
+            # Capa 1: Extractor Analítico
             analisis = await asyncio.to_thread(analizar_mensaje_ia, mensaje_cliente, estado, memoria_conversaciones.get(sender, []))
             intencion = analisis.get("intencion", "otro")
             codigo_inmueble = analisis.get("codigo_inmueble", "")
@@ -647,40 +624,34 @@ async def handle_request(request: Request):
             # RUTAS DE FLUJO (ENRUTAMIENTO PRINCIPAL)
             # =====================================================
             
-            # Búsqueda de Inmueble Específico (Ads / Mercadolibre / Código)
             propiedad_especifica = None
             if codigo_inmueble or "mercadolibre.com.ve" in mensaje_cliente.lower():
                 id_buscado = re.sub(r"\D", "", str(codigo_inmueble)) if codigo_inmueble else None
-                # Si el usuario mandó enlace crudo, buscamos el ID en el texto
                 if not id_buscado: 
                     match_ml = re.search(r"MLV-?(\d+)", mensaje_cliente.upper())
                     if match_ml: id_buscado = match_ml.group(1)
                 
                 if id_buscado:
                     for p in cache["inventario"]:
-                        # Wasi IDs o ML IDs simulados
                         if id_buscado in p["id"] or id_buscado in p.get("enlace", ""):
                             propiedad_especifica = p
                             break
 
             # --- RUTA 1: ADS / INMUEBLE ESPECÍFICO ---
             if propiedad_especifica and estado["estado"] == ESTADO_DIAGNOSTICO_IA:
-                # Saltar embudo diagnóstico, mostrar directo
                 estado["propiedades_enviadas"].append(propiedad_especifica["id"])
                 contexto_sistema["propiedades_encontradas_texto"] = formatear_ficha_propiedad(propiedad_especifica, estado["rol"] == "colega_inmobiliario")
                 estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
                 contexto_sistema["mensaje_interno"] = "El cliente preguntó por un inmueble específico. Se encontró y se muestra arriba. Ofrécele más información o agendar visita."
 
-            # --- RUTA 2: DIAGNÓSTICO (CLIENTE GENÉRICO O COLEGA) ---
+            # --- RUTA 2: DIAGNÓSTICO ---
             elif estado["estado"] == ESTADO_DIAGNOSTICO_IA:
                 filtros_requeridos = ["tipo_operacion", "tipo_propiedad", "zona", "presupuesto", "habitaciones", "caracteristicas"]
                 faltantes = [k for k in filtros_requeridos if not estado["filtros"].get(k)]
                 
                 if faltantes:
-                    # Obligamos a pedir paso a paso el embudo
                     contexto_sistema["faltantes_busqueda"] = [faltantes[0]]
                 else:
-                    # Todos los datos recopilados -> Buscar propiedades
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
                     if props:
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
@@ -697,13 +668,12 @@ async def handle_request(request: Request):
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
                         contexto_sistema["propiedades_encontradas_texto"] = "\n\n".join([formatear_ficha_propiedad(p, estado["rol"] == "colega_inmobiliario") for p in props])
                 elif (intencion in ["interes_propiedad", "enviar_datos"] or "interesa" in normalizar_texto(mensaje_cliente)):
-                    # RUTA 3: COLEGA NUNCA PASA A LEAD. CLIENTE SÍ.
                     if estado["rol"] == "cliente":
                         estado["estado"] = ESTADO_CAPTURANDO_LEAD
                     else:
                         contexto_sistema["mensaje_interno"] = "El colega mostró interés. Ofrécele coordinar una visita con el captador o enviarle más opciones. NO LE PIDAS DATOS PERSONALES."
 
-            # --- ESTADO: CAPTURANDO LEAD (SOLO CLIENTES) ---
+            # --- ESTADO: CAPTURANDO LEAD ---
             if estado["estado"] == ESTADO_CAPTURANDO_LEAD and estado["rol"] == "cliente":
                 faltante_lead = None
                 if not es_nombre_persona_valido(estado["lead"].get("nombre", "")): faltante_lead = "Nombre Completo"
@@ -719,7 +689,7 @@ async def handle_request(request: Request):
                     clientes_procesados.add(sender)
                     estado["estado"] = ESTADO_LEAD_COMPLETO
 
-            # Capa 3: PATY CONVERSACIONAL (Motor de Generación de Respuesta)
+            # Capa 3: PATY CONVERSACIONAL
             respuesta_paty = await asyncio.to_thread(generar_respuesta_conversacional_paty, mensaje_cliente, contexto_sistema, memoria_conversaciones.get(sender, []))
 
             actualizar_memoria(sender, mensaje_cliente, respuesta_paty)
