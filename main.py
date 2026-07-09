@@ -341,60 +341,31 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     return extraer_json_de_texto(consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}"))
 
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
-    props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
-    if not props_encontradas:
-        if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
-            props_encontradas = "[0 resultados. Ofrece ajustar filtros para ayudar al cliente.]"
-        else:
-            props_encontradas = "[Fase de diagnóstico. La prioridad es conversar de forma natural para obtener los datos faltantes.]"
-            
-    faltantes_busqueda = ", ".join(contexto_sistema.get('faltantes_busqueda', [])) or "Ninguno"
-    faltantes_lead = ", ".join(contexto_sistema.get('faltantes_lead', [])) or "Ninguno"
-    agente = contexto_sistema.get('agente_asignado', '') or "Ninguno"
-    rol = contexto_sistema.get('rol_detectado', 'cliente')
-    mensaje_interno = contexto_sistema.get('mensaje_interno', '')
-    nombre_cliente = contexto_sistema.get('nombre_cliente', '')
-    datos_confirmados = ", ".join(contexto_sistema.get('datos_confirmados', [])) or "Ninguno"
+    # Filtramos la información para que sea extremadamente clara para la IA
+    datos_confirmados = contexto_sistema.get('datos_confirmados', [])
+    faltantes = contexto_sistema.get('faltantes_busqueda', [])
     
-    instrucciones_contexto = f"""
-    --- CONTEXTO EN TIEMPO REAL ---
-    * Nombre del interlocutor: {nombre_cliente if nombre_cliente else "Aún no proporcionado"}
-    * Perfil: {rol}
-    * Datos que YA tienes seguros: {datos_confirmados}
-    * Datos que NECESITAS averiguar sutilmente: {faltantes_busqueda if faltantes_busqueda != "Ninguno" else faltantes_lead}
-    * Estado de la búsqueda: {props_encontradas}
-    * Notas internas del sistema: {mensaje_interno}
-    -------------------------------
-    """
-
     prompt_sistema = f"""
-    Eres Paty, la especialista VIP de Mettryc Realty en Valencia, Venezuela.
+    Eres Paty, la especialista VIP de Mettryc Realty en Valencia.
+    Tu misión es capturar los datos de búsqueda de un cliente paso a paso.
     
-    TU OBJETIVO PRINCIPAL:
-    Llevar una conversación 100% natural, fluida y humana. Tienes prohibido sonar como un robot, usar plantillas repetitivas o ignorar lo que el usuario acaba de escribir.
-    
-    {instrucciones_contexto}
-    
-    REGLAS DE COMPORTAMIENTO:
-    1. RESPUESTA CONTEXTUAL: Lee cuidadosamente el último mensaje del usuario en el historial. Responde directamente a lo que te acaba de decir. Si te da varios datos a la vez (por ejemplo, zona y presupuesto), reconócelos y valídalos de forma natural.
-    2. CERO REPETICIONES: Varía tu vocabulario. Si ya saludaste en el mensaje anterior, no vuelvas a presentarte. Si ya dijiste "¡Excelente!", usa otras expresiones empáticas como "Entiendo perfectamente", "Me parece una gran opción", etc.
-    3. RECOLECCIÓN INVISIBLE: Tu trabajo es averiguar los "Datos que NECESITAS averiguar sutilmente". Hazlo mediante la conversación. Si el usuario te está contando su situación, acompáñalo y hazle una pregunta lógica que te ayude a llenar ese dato faltante, sin que parezca un interrogatorio.
-    4. NO PREGUNTES LO QUE YA SABES: Revisa bien los "Datos que YA tienes seguros" y el último mensaje del usuario. Tienes estrictamente prohibido volver a preguntar por algo que ya se mencionó.
-    5. TRATO VIP: Si es el primer mensaje, sé cálida y preséntate. Si la persona no te ha dicho su nombre, pregúntaselo amablemente en el momento que consideres oportuno para hacer la charla más personal.
-    6. COLEGAS: Si hablas con un "colega_inmobiliario", el tono debe ser de profesional a profesional, facilitando la información sin pedir datos de contacto.
-    
-    REGLAS TÉCNICAS (INQUEBRANTABLES):
-    * NO inventes propiedades que no estén listadas en el contexto.
-    * NO uses formato JSON bajo ninguna circunstancia.
-    * Los enlaces de las propiedades deben ir siempre en formato PLANO (ej. https://mettryc.com/inmueble/123), jamás uses corchetes o paréntesis estilo Markdown.
+    CONTEXTO ACTUAL DEL CLIENTE:
+    - Nombre: {contexto_sistema.get('nombre_cliente', 'No conocido')}
+    - Datos que YA TENEMOS: {', '.join(datos_confirmados)}
+    - Información que FALTA (Debes preguntar por UNO solo): {', '.join(faltantes) if faltantes else 'Nada, procede a buscar propiedades'}
+    - Propiedades encontradas: {contexto_sistema.get('propiedades_encontradas_texto', 'Ninguna aún')}
+
+    REGLAS ESTRICTAS:
+    1. Si ya tenemos el dato (ej. ya sabemos que busca en Valles del Camoruco), tienes PROHIBIDO volver a preguntar por ello.
+    2. Si el usuario te da un dato, confírmalo (ej. "¡Excelente! Tomo nota de las 3 habitaciones...") antes de preguntar el siguiente dato faltante.
+    3. Si ya tienes todos los filtros (tipo, operación, zona, presupuesto, habs), muestra las propiedades de la lista.
+    4. Sé natural, cálida y breve. No uses plantillas largas ni frases como "Si tienes alguna pregunta...".
+    5. Formato de enlaces: https://mettryc.com/inmueble/123 (texto plano).
     """
     
-    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-8:] if len(historial) > 8 else historial)
+    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-6:] if len(historial) > 6 else historial)
     
-    # Mantenemos los modelos obedientes para seguir las reglas de formato, pero con libertad conversacional
-    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
-    
-    return consultar_ia(mensajes, max_tokens=800, modelos_personalizados=cascada_obediente)
+    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=[MODELO_RESPALDO_1, MODELO_RESPALDO_2])
 
 # ============================================================
 # LÓGICA DE PYTHON (Integridad de Datos)
