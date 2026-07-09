@@ -625,9 +625,9 @@ async def handle_request(request: Request):
             respuesta_paty = await asyncio.to_thread(generar_respuesta_conversacional_paty, mensaje_cliente, contexto_sistema, memoria_conversaciones.get(sender, []))
 
             actualizar_memoria(sender, mensaje_cliente, respuesta_paty)
-            return {"replies": [{"message": respuesta_paty.replace("**", "*")]}
+            return {"replies": [{"message": respuesta_paty.replace("**", "*")}]}
 
     except HTTPException: raise
     except Exception as e:
         logger.error(f"Error crítico webhook: {e}", exc_info=True)
-        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud... ¿Me repites por favor? 🙏"}]}}
+        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud... ¿Me repites por favor? 🙏"}]}
