@@ -1,4 +1,7 @@
-fastapi
-uvicorn
+flask
+twilio
+openai
 requests
-
+uvicorn
+gunicorn
+python-dotenv
