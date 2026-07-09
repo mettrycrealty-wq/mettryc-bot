@@ -630,4 +630,4 @@ async def handle_request(request: Request):
     except HTTPException: raise
     except Exception as e:
         logger.error(f"Error crítico webhook: {e}", exc_info=True)
-        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud... ¿Me repites por favor? 🙏"}]}
+        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud... ¿Me repites por favor? 🙏"}]}}
