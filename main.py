@@ -23,8 +23,8 @@ app = FastAPI()
 
 HORARIOS_ACTUALIZACION_INVENTARIO = [0, 12]
 
-MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite")
-MODELO_RESPALDO = os.getenv("MODELO_RESPALDO", "anthropic/claude-3.5-haiku")
+MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "openai/gpt-4o-mini")
+MODELO_RESPALDO = os.getenv("MODELO_RESPALDO", "google/gemini-2.5-flash-lite")
 MAX_TOKENS_IA = int(os.getenv("MAX_TOKENS_IA", "600"))
 
 INTERVALO_ACTUALIZACION_SHEETS = timedelta(hours=1)
