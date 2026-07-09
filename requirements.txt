@@ -1,7 +1,3 @@
-flask
-twilio
-openai
-requests
+fastapi
 uvicorn
-gunicorn
-python-dotenv
+requests
