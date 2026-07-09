@@ -18,13 +18,15 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN Y MODELOS EN CASCADA (TRIPLE RESPALDO)
 # ============================================================
 
 HORARIOS_ACTUALIZACION_INVENTARIO = [0, 12]
 
-MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "openai/gpt-4o-mini")
-MODELO_RESPALDO = os.getenv("MODELO_RESPALDO", "google/gemini-2.5-flash-lite")
+# Configuración de Modelos: Principal -> Respaldo 1 -> Respaldo 2
+MODELO_PRINCIPAL = os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite")
+MODELO_RESPALDO_1 = os.getenv("MODELO_RESPALDO_1", "anthropic/claude-3.5-haiku")
+MODELO_RESPALDO_2 = os.getenv("MODELO_RESPALDO_2", "openai/gpt-4o-mini")
 MAX_TOKENS_IA = int(os.getenv("MAX_TOKENS_IA", "600"))
 
 INTERVALO_ACTUALIZACION_SHEETS = timedelta(hours=1)
@@ -53,7 +55,7 @@ estado_usuarios: Dict[str, dict] = {}
 locks_usuarios: Dict[str, asyncio.Lock] = {}
 
 # ============================================================
-# ESTADOS
+# ESTADOS Y UTILIDADES
 # ============================================================
 
 ESTADO_DIAGNOSTICO_IA = "diagnostico_ia"
@@ -61,27 +63,10 @@ ESTADO_MOSTRANDO_PROPIEDADES = "mostrando_propiedades"
 ESTADO_CAPTURANDO_LEAD = "capturando_lead"
 ESTADO_LEAD_COMPLETO = "lead_completo"
 
-# ============================================================
-# UTILIDADES Y FORMATEO
-# ============================================================
-
-STOPWORDS_ZONA = {
-    "el", "la", "los", "las", "de", "del", "en", "y",
-    "urb", "urbanizacion", "urbanización", "sector", "zona",
-    "ciudad", "estado", "venezuela"
-}
+STOPWORDS_ZONA = {"el", "la", "los", "las", "de", "del", "en", "y", "urb", "urbanizacion", "urbanización", "sector", "zona", "ciudad", "estado", "venezuela"}
 TOKENS_DIRECCION_ZONA = {"norte", "sur", "este", "oeste", "centro"}
-
-SINONIMOS_TIPO = {
-    "tohouse": "townhouse", "towhouse": "townhouse", "twhouse": "townhouse", "town house": "townhouse",
-    "aparto quinta": "apartoquinta", "aptoquinta": "apartoquinta", "apartoquita": "apartoquinta"
-}
-
-STOPWORDS_NOMBRE_EXTRA = {
-    "la", "el", "que", "enviaste", "ultima", "última", "primera", "segunda", "tercera",
-    "opcion", "opción", "interesa", "quiero", "esa", "esta", "hola", "buenas", "soy",
-    "me", "llamo", "mi", "nombre", "es"
-}
+SINONIMOS_TIPO = {"tohouse": "townhouse", "towhouse": "townhouse", "twhouse": "townhouse", "town house": "townhouse", "aparto quinta": "apartoquinta", "aptoquinta": "apartoquinta", "apartoquita": "apartoquinta"}
+STOPWORDS_NOMBRE_EXTRA = {"la", "el", "que", "enviaste", "ultima", "última", "primera", "segunda", "tercera", "opcion", "opción", "interesa", "quiero", "esa", "esta", "hola", "buenas", "soy", "me", "llamo", "mi", "nombre", "es"}
 
 def normalizar_texto(texto: str) -> str:
     if not texto: return ""
@@ -209,7 +194,7 @@ def obtener_lock_usuario(sender: str) -> asyncio.Lock:
     return locks_usuarios[sender]
 
 # ============================================================
-# INVENTARIO WASI
+# INVENTARIO WASI Y GOOGLE SHEETS
 # ============================================================
 
 def calcular_proxima_actualizacion(ahora: datetime = None) -> datetime:
@@ -277,10 +262,6 @@ def actualizar_cache_inventario(force: bool = False):
 async def garantizar_inventario_actualizado(force: bool = False):
     await asyncio.to_thread(actualizar_cache_inventario, force)
 
-# ============================================================
-# GOOGLE SHEETS
-# ============================================================
-
 def sincronizar_google_sheet():
     script_url = os.getenv("GOOGLE_SHEET_TURNOS_URL")
     if not script_url or (datetime.now() - sheets_cache["ultima_actualizacion"] <= INTERVALO_ACTUALIZACION_SHEETS and sheets_cache["agentes"]): return
@@ -317,21 +298,42 @@ def obtener_telefono_captador_de_sheet(nombre_captador: str) -> str:
     return best_phone if best_score >= 2 else "N/D"
 
 # ============================================================
-# OPENROUTER IA CORRECCIONES
+# OPENROUTER IA CON SISTEMA DE TRIPLE RESPALDO FLEXIBLE
 # ============================================================
 
-def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str = "") -> str:
+def consultar_ia(mensajes: list, max_tokens: int = MAX_TOKENS_IA, fallback: str = "", modelos_personalizados: list = None) -> str:
+    """Implementa el flujo en cascada. Permite inyectar una cascada personalizada por capa."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key: return fallback
+    
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://www.mettryc.com", "X-Title": "Mettryc Bot"}
-    for modelo in [MODELO_PRINCIPAL, MODELO_RESPALDO]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://www.mettryc.com",
+        "X-Title": "Mettryc Bot"
+    }
+    
+    # Si la función no recibe una lista específica, usa el triple respaldo por defecto
+    modelos_en_cascada = modelos_personalizados if modelos_personalizados else [MODELO_PRINCIPAL, MODELO_RESPALDO_1, MODELO_RESPALDO_2]
+    
+    for modelo in modelos_en_cascada:
         try:
-            resp = requests.post(url, headers=headers, json={"model": modelo, "messages": mensajes, "max_tokens": max_tokens, "temperature": 0.2}, timeout=15)
+            logger.info(f"Intentando con modelo: {modelo}")
+            resp = requests.post(url, headers=headers, json={
+                "model": modelo,
+                "messages": mensajes,
+                "max_tokens": max_tokens,
+                "temperature": 0.2
+            }, timeout=15)
             resp.raise_for_status()
             c = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
             if c: return c.strip()
-        except Exception: pass
+        except Exception as e:
+            logger.warning(f"⚠️ Fallo al conectar con {modelo}: {e}. Pasando al siguiente modelo...")
+            continue
+            
+    logger.error("🚨 Fallaron TODOS los modelos de IA en esta capa.")
     return fallback
 
 def extraer_json_de_texto(texto: str) -> dict:
@@ -345,53 +347,71 @@ def extraer_json_de_texto(texto: str) -> dict:
     return {}
 
 # ============================================================
-# ARQUITECTURA DE DOS PASOS (IA DE ANÁLISIS + PATY CONVERSACIONAL)
+# ARQUITECTURA DE DOS PASOS (IA ANALÍTICA + IA CONVERSACIONAL)
 # ============================================================
 
 def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> dict:
+    """Capa 1: Extractor Silencioso de Entidades y Roles (Usa cascada completa)."""
     historial_breve = [{"role": h.get("role", "user"), "content": h.get("content", "")[:220]} for h in historial[-8:]]
     system = "Eres un analista experto. Responde UNICAMENTE con un objeto JSON válido según el esquema."
     user_prompt = f"""
-Estado actual: {json.dumps({"filtros": estado.get("filtros"), "lead": estado.get("lead"), "rol": estado.get("rol")}, ensure_ascii=False)}
-Mensaje actual del usuario: "{mensaje_usuario}"
+    Estado actual: {json.dumps({"filtros": estado.get("filtros"), "lead": estado.get("lead"), "rol": estado.get("rol")}, ensure_ascii=False)}
+    Mensaje actual del usuario: "{mensaje_usuario}"
 
-Reglas:
-1. intencion: "saludo"|"buscar"|"mas_opciones"|"ajustar_busqueda"|"interes_propiedad"|"enviar_datos"|"objecion"
-2. rol: "colega_inmobiliario" si se identifica como colega, asesor, broker o de otra inmobiliaria. De lo contrario "cliente".
-3. lead: extrae nombre, correo, whatsapp si los provee.
+    Reglas:
+    1. intencion: "saludo"|"buscar"|"mas_opciones"|"ajustar_busqueda"|"interes_propiedad"|"enviar_datos"|"objecion"
+    2. rol: "colega_inmobiliario" si se identifica como colega, asesor, broker o de otra inmobiliaria. De lo contrario "cliente".
+    3. lead: extrae nombre, correo, whatsapp si los provee explícitamente.
 
-Devuelve EXACTAMENTE este esquema JSON:
-{{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}"""
+    Devuelve EXACTAMENTE este esquema JSON:
+    {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
+    """
     return extraer_json_de_texto(consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}"))
 
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
-    """Prompt Maestro de Paty blindado contra alucinaciones."""
+    """Capa 3: Motor de Paty blindado. Usa SOLO Claude y GPT (Cascada de Obediencia)."""
     
-    # Preparamos el contexto para que sea una instrucción de mando, no un texto para conversar
+    props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
+    if not props_encontradas:
+        props_encontradas = "[No se han encontrado propiedades. Ofrece ajustar la búsqueda.]"
+        
+    faltantes_busqueda = ", ".join(contexto_sistema.get('faltantes_busqueda', [])) or "Ninguno"
+    faltantes_lead = ", ".join(contexto_sistema.get('faltantes_lead', [])) or "Ninguno"
+    agente = contexto_sistema.get('agente_asignado', '') or "Ninguno"
+    rol = contexto_sistema.get('rol_detectado', 'cliente')
+    
     instrucciones_contexto = f"""
-    SITUACIÓN ACTUAL (INSTRUCCIONES DE ACCIÓN):
-    - ROL DEL USUARIO: {contexto_sistema['rol_detectado']}
-    - TAREAS PENDIENTES: {', '.join(contexto_sistema['faltantes_busqueda']) if contexto_sistema['faltantes_busqueda'] else 'Ninguna'}
-    - PROPIEDADES ENCONTRADAS: {contexto_sistema['propiedades_encontradas_texto'] if contexto_sistema['propiedades_encontradas_texto'] else 'Ninguna'}
-    - DATOS FALTANTES PARA LEAD: {', '.join(contexto_sistema['faltantes_lead']) if contexto_sistema['faltantes_lead'] else 'Ninguno'}
-    - ASESOR ASIGNADO: {contexto_sistema['agente_asignado'] if contexto_sistema['agente_asignado'] else 'Ninguno'}
+    --- INSTRUCCIONES ESTRICTAS DEL SISTEMA PARA ESTA RESPUESTA ---
+    ROL DETECTADO: {rol}
+    DATOS DE BÚSQUEDA FALTANTES: {faltantes_busqueda}
+    DATOS DE CONTACTO FALTANTES PARA LEAD: {faltantes_lead}
+    ASESOR ASIGNADO ACTUALMENTE: {agente}
+    
+    PROPIEDADES A MOSTRAR (Cópialas íntegramente, NO INVENTES NADA):
+    {props_encontradas}
+    ----------------------------------------------------------------
     """
 
     prompt_sistema = f"""
     Eres Paty, la especialista VIP de Mettryc Realty (Valencia, Venezuela).
+    
     {instrucciones_contexto}
     
-    REGLAS DE ORO:
-    1. Si ROL es "colega_inmobiliario": Tu trato es 100% profesional. Si tienes "PROPIEDADES ENCONTRADAS", muéstralas íntegras (incluyen contacto del captador). NUNCA pidas nombre, correo o datos personales.
-    2. Si ROL es "cliente": Usa Chat Marketing, sé entusiasta y persuasiva. Si faltan datos de lead, pídelos amablemente (uno a la vez).
-    3. PROHIBICIONES: NUNCA escribas llaves {{}} ni la "SITUACIÓN ACTUAL". No imprimas el JSON que te pasé. Responde solo el mensaje de WhatsApp.
-    4. NO ALUCINES: Si no hay propiedades en "PROPIEDADES ENCONTRADAS", no las inventes.
-    5. FORMATO: Usa negritas con un solo asterisco (*) y enlaces crudos.
+    REGLAS DE ORO (INQUEBRANTABLES):
+    1. SI EL ROL ES "colega_inmobiliario": Eres un asesor hablando con otro asesor. Muestra las propiedades de la lista (que ya traen los datos del captador). NUNCA les pidas su nombre, correo ni WhatsApp para Fichas VIP.
+    2. SI EL ROL ES "cliente": Usa Chat Marketing (entusiasta, carismática). Si hay DATOS DE CONTACTO FALTANTES PARA LEAD, pide SOLO UNO amablemente para "abrir su ficha VIP". IMPORTANTE: NO saludes de nuevo si ya estás en fase de pedir datos.
+    3. CERO ALUCINACIONES: NUNCA inventes propiedades, zonas, ni nombres de captadores. Si el nombre del captador dice "N/D", debes decirle al colega: "No tengo el contacto directo a la mano".
+    4. CERO JSON: Tienes estrictamente prohibido usar llaves {{}}, imprimir las "Instrucciones del Sistema" o decir que eres una IA. Solo escribe el mensaje de WhatsApp.
+    5. FORMATO: Usa negritas con un solo asterisco (*) y mantén los enlaces crudos (sin corchetes).
     """
     
-    # Añadimos un mensaje de "sistema" que fuerza el rol y evita que la IA ignore los datos de captador si es colega
-    mensajes = [{"role": "system", "content": prompt_sistema}] + historial[-8:]
-    return consultar_ia(mensajes, max_tokens=800)
+    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-8:] if len(historial) > 8 else historial)
+    
+    # CASCADA DE OBEDIENCIA: Obligamos a esta capa a usar Claude primero, y GPT como respaldo.
+    # Excluimos a Gemini 2.5 Flash Lite de la conversación final.
+    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
+    
+    return consultar_ia(mensajes, max_tokens=800, modelos_personalizados=cascada_obediente)
 
 # ============================================================
 # LÓGICA DE PYTHON (Filtros, Ranking y Fichas)
@@ -554,9 +574,19 @@ async def handle_request(request: Request):
 
         if not mensaje_cliente: return {"replies": []}
 
+        # Capa 2: Detección Determinística Pre-IA
+        palabras_colega = ["colega", "agente", "inmobiliaria", "inmobiliario", "broker", "asesor", "corredor", "realtor", "remax", "rentahouse"]
+        es_colega = any(palabra in mensaje_cliente.lower() for palabra in palabras_colega)
+
         lock = obtener_lock_usuario(sender)
         async with lock:
             estado = obtener_estado_usuario(sender)
+            
+            if es_colega:
+                estado["rol"] = "colega_inmobiliario"
+            elif not estado.get("rol"):
+                estado["rol"] = "cliente"
+
             ahora_ts = time.time()
 
             if mensaje_cliente == estado.get("mensaje_previo", "") and (ahora_ts - float(estado.get("ultimo_mensaje_ts", 0.0))) <= VENTANA_MENSAJE_DUPLICADO_SEGUNDOS:
@@ -574,19 +604,15 @@ async def handle_request(request: Request):
             elif necesita_actualizar_inventario(): asyncio.create_task(garantizar_inventario_actualizado(force=False))
             sincronizar_google_sheet()
 
-            # PASO 1: EXTRACTOR
+            # Capa 1: Extractor Analítico (Gemini Flash Lite -> Claude -> GPT)
             analisis = await asyncio.to_thread(analizar_mensaje_ia, mensaje_cliente, estado, memoria_conversaciones.get(sender, []))
             intencion = analisis.get("intencion", "otro")
-            
-            if analisis.get("rol") in {"cliente", "colega_inmobiliario"}: estado["rol"] = analisis["rol"]
-            if not estado["rol"]: 
-                estado["rol"] = "colega_inmobiliario" if any(k in normalizar_texto(mensaje_cliente) for k in ["colega", "broker", "realtor", "asesor", "inmobiliaria"]) else "cliente"
 
             estado["lead"] = fusionar_lead(estado["lead"], analisis.get("lead", {}), mensaje_cliente, sender)
             if estado["estado"] != ESTADO_CAPTURANDO_LEAD and not mensaje_parece_contacto(mensaje_cliente):
                 estado["filtros"] = fusionar_filtros(estado["filtros"], analisis.get("filtros", {}), mensaje_cliente)
 
-            # PASO 2: CONTEXTO SEGURO
+            # Capa 2: Contexto Seguro para Capa 3
             contexto_sistema = {
                 "rol_detectado": estado["rol"], "faltantes_busqueda": [],
                 "propiedades_encontradas_texto": "", "faltantes_lead": [], "agente_asignado": ""
@@ -627,7 +653,7 @@ async def handle_request(request: Request):
                     clientes_procesados.add(sender)
                     estado["estado"] = ESTADO_LEAD_COMPLETO
 
-            # PASO 3: PATY CONVERSACIONAL
+            # Capa 3: PATY CONVERSACIONAL (Usa la Cascada de Obediencia: Claude -> GPT)
             respuesta_paty = await asyncio.to_thread(generar_respuesta_conversacional_paty, mensaje_cliente, contexto_sistema, memoria_conversaciones.get(sender, []))
 
             actualizar_memoria(sender, mensaje_cliente, respuesta_paty)
@@ -636,4 +662,4 @@ async def handle_request(request: Request):
     except HTTPException: raise
     except Exception as e:
         logger.error(f"Error crítico webhook: {e}", exc_info=True)
-        return {"replies": [{"message": "Lo siento, estamos procesando tu solicitud... ¿Me repites por favor? 🙏"}]}
+        return {"replies": [{"message": "Lo siento, mi sistema está procesando tu solicitud... 🙏"}]}
