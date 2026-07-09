@@ -372,26 +372,33 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     """Capa 3: Motor de Paty blindado. Usa SOLO Claude y GPT (Cascada de Obediencia)."""
     
     props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
+    mensaje_interno = contexto_sistema.get('mensaje_interno', '')
+    
+    # ---------------------------------------------------------
+    # CORRECCIÓN: Diferenciar Diagnóstico Inicial vs Búsqueda Fallida
+    # ---------------------------------------------------------
     if not props_encontradas:
-        props_encontradas = "[No se han encontrado propiedades en este momento.]"
-        
+        if "No se encontraron" in mensaje_interno:
+            props_encontradas = "[Búsqueda realizada: 0 resultados exactos. Sugiere ajustar filtros suavemente.]"
+        else:
+            props_encontradas = "[Fase de diagnóstico inicial. NO pidas disculpas ni digas que no tienes propiedades. Solo da la bienvenida y pide el dato de búsqueda faltante.]"
+            
     faltantes_busqueda = ", ".join(contexto_sistema.get('faltantes_busqueda', [])) or "Ninguno"
     faltantes_lead = ", ".join(contexto_sistema.get('faltantes_lead', [])) or "Ninguno"
     agente = contexto_sistema.get('agente_asignado', '') or "Ninguno"
     rol = contexto_sistema.get('rol_detectado', 'cliente')
-    mensaje_interno = contexto_sistema.get('mensaje_interno', '')
     
     instrucciones_contexto = f"""
-    --- INSTRUCCIONES ESTRICTAS DEL SISTEMA PARA ESTA RESPUESTA ---
+    --- INSTRUCCIONES ESTRICTAS PARA ESTA RESPUESTA ---
     ROL DETECTADO: {rol}
     DATOS DE BÚSQUEDA FALTANTES: {faltantes_busqueda}
     DATOS DE CONTACTO FALTANTES PARA LEAD: {faltantes_lead}
     ASESOR ASIGNADO ACTUALMENTE: {agente}
-    MENSAJE INTERNO DEL SISTEMA: {mensaje_interno}
+    MENSAJE INTERNO: {mensaje_interno}
     
-    PROPIEDADES A MOSTRAR (Cópialas íntegramente, NO INVENTES NADA):
+    PROPIEDADES A MOSTRAR:
     {props_encontradas}
-    ----------------------------------------------------------------
+    ---------------------------------------------------
     """
 
     prompt_sistema = f"""
@@ -400,22 +407,22 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     {instrucciones_contexto}
     
     REGLAS DE ORO (INQUEBRANTABLES):
-    1. REGLA DE NO-REPETICIÓN: Si ya te has presentado en esta conversación (revisa el historial), tienes PROHIBIDO volver a decir "Hola soy Paty" o mencionar tu cargo. Ve directo a pedir el dato que falta o a guiar al usuario.
-    2. SI EL ROL ES "colega_inmobiliario": Eres un asesor hablando con otro asesor. Muestra las propiedades de la lista (que ya traen los datos del captador). NUNCA les pidas su nombre, correo ni WhatsApp para Fichas VIP.
-    3. SI EL ROL ES "cliente": Usa Chat Marketing (entusiasta, carismática). Si hay DATOS DE CONTACTO FALTANTES PARA LEAD, pide SOLO UNO amablemente para "abrir su ficha VIP". 
-    4. CERO ALUCINACIONES: NUNCA inventes propiedades, zonas, ni nombres de captadores. Si el nombre del captador dice "N/D", debes decirle al colega: "No tengo el contacto directo a la mano".
-    5. CERO JSON: Tienes estrictamente prohibido usar llaves {{}}, imprimir las "Instrucciones del Sistema" o decir que eres una IA. Solo escribe el mensaje de WhatsApp.
-    6. FORMATO: Usa negritas con un solo asterisco (*) y mantén los enlaces crudos (sin corchetes).
+    1. BREVEDAD EXTREMA: Tu respuesta debe ser corta, natural y al grano. Haz UNA sola pregunta a la vez. Prohibido escribir párrafos largos.
+    2. CERO DISCULPAS INNECESARIAS: Si estás en "Fase de diagnóstico", NO digas que no tienes propiedades disponibles. Simplemente saluda y pregunta qué está buscando el cliente.
+    3. REGLA DE NO-REPETICIÓN: Si ya te has presentado en esta conversación (revisa el historial), tienes PROHIBIDO volver a decir "Hola soy Paty".
+    4. ROLES: 
+       - Si es "colega_inmobiliario": Muestra propiedades con datos del captador. NUNCA pidas sus datos personales.
+       - Si es "cliente": Si hay DATOS DE CONTACTO FALTANTES PARA LEAD, pide SOLO UNO amablemente para "abrir su ficha VIP".
+    5. CERO ALUCINACIONES: NUNCA inventes propiedades, zonas, ni nombres de captadores.
+    6. FORMATO: Usa negritas con un solo asterisco (*) y no uses llaves {{}}.
     """
     
     mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-8:] if len(historial) > 8 else historial)
     
     # CASCADA DE OBEDIENCIA: Obligamos a esta capa a usar Claude primero, y GPT como respaldo.
-    # Excluimos a Gemini 2.5 Flash Lite de la conversación final.
     cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
     
-    return consultar_ia(mensajes, max_tokens=800, modelos_personalizados=cascada_obediente)
-
+    return consultar_ia(mensajes, max_tokens=200, modelos_personalizados=cascada_obediente)
 # ============================================================
 # LÓGICA DE PYTHON (Filtros, Ranking y Fichas)
 # ============================================================
