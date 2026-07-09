@@ -481,6 +481,20 @@ def fusionar_lead(base: dict, nuevos: dict, mensaje: str, sender: str) -> dict:
     
     return out
 
+def coincide_tipo_propiedad(propiedad: dict, tipo_filtro: str) -> bool:
+    tipo = normalizar_tipo_propiedad(tipo_filtro)
+    titulo = normalizar_texto(propiedad.get("titulo", ""))
+    tipo_wasi = normalizar_texto(propiedad.get("tipo_propiedad_wasi", ""))
+
+    if not tipo: return True
+    if tipo == "townhouse": return "townhouse" in titulo
+    if tipo == "apartoquinta": return any(k in titulo for k in ["apartoquinta", "aparto quinta", "apartoquita"])
+    if tipo == "casa": return any(k in titulo or k in tipo_wasi for k in ["casa", "townhouse", "apartoquinta", "aparto quinta", "apartoquita"])
+    if tipo == "penthouse": return "penthouse" in titulo
+    if tipo == "apartamento": return any(k in titulo or k in tipo_wasi for k in ["apartamento", "penthouse"])
+
+    return (tipo in tipo_wasi) or (tipo in titulo)
+
 def elegir_top_n_propiedades(inventario: list, filtros: dict, n=3, excluir_ids=None):
     excluir_ids = set(str(x) for x in (excluir_ids or []))
     tipo_prop, tipo_op, zona = filtros.get("tipo_propiedad", ""), filtros.get("tipo_operacion", ""), filtros.get("zona", "")
