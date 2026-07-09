@@ -342,6 +342,7 @@ def extraer_json_de_texto(texto: str) -> dict:
 # ============================================================
 
 def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> dict:
+    """Capa 1: Extractor. Ahora también extrae códigos de inmuebles (Ads)."""
     historial_breve = [{"role": h.get("role", "user"), "content": h.get("content", "")[:220]} for h in historial[-8:]]
     system = "Eres un analista experto. Responde UNICAMENTE con un objeto JSON válido según el esquema."
     user_prompt = f"""
@@ -349,12 +350,13 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     Mensaje actual del usuario: "{mensaje_usuario}"
 
     Reglas:
-    1. intencion: "saludo"|"buscar"|"mas_opciones"|"ajustar_busqueda"|"interes_propiedad"|"enviar_datos"|"objecion"
+    1. intencion: "saludo"|"buscar"|"mas_opciones"|"ajustar_busqueda"|"interes_propiedad"|"enviar_datos"|"objecion"|"consulta_inmueble_especifico"
     2. rol: "colega_inmobiliario" si se identifica como colega. De lo contrario "cliente".
-    3. lead: extrae nombre, correo, whatsapp si los provee explícitamente.
+    3. codigo_inmueble: Extrae el código si el usuario pregunta por un inmueble específico (ej. "ALM-12345" o "12345").
+    4. lead: extrae nombre, correo, whatsapp si los provee explícitamente.
 
     Devuelve EXACTAMENTE este esquema JSON:
-    {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null, "habitaciones": "", "caracteristicas": ""}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
+    {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "codigo_inmueble": "", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null, "habitaciones": "", "caracteristicas": ""}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
     """
     return extraer_json_de_texto(consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}"))
 
@@ -364,7 +366,7 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
         if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
             props_encontradas = "[Búsqueda realizada: 0 resultados. Ofrece ajustar filtros.]"
         else:
-            props_encontradas = "[Fase de diagnóstico. Sigue preguntando el dato que falta.]"
+            props_encontradas = "[Fase de diagnóstico. Sigue preguntando el dato que falta o saluda si es el primer mensaje.]"
             
     faltantes_busqueda = ", ".join(contexto_sistema.get('faltantes_busqueda', [])) or "Ninguno"
     faltantes_lead = ", ".join(contexto_sistema.get('faltantes_lead', [])) or "Ninguno"
@@ -372,8 +374,11 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     rol = contexto_sistema.get('rol_detectado', 'cliente')
     mensaje_interno = contexto_sistema.get('mensaje_interno', '')
     
+    es_inicio = len(historial) <= 2
+    
     instrucciones_contexto = f"""
     --- INSTRUCCIONES ESTRICTAS ---
+    ES PRIMER MENSAJE (OBLIGATORIO SALUDAR): {"SÍ" if es_inicio else "NO"}
     ROL DETECTADO: {rol}
     DATOS DE BÚSQUEDA FALTANTES (Pregunta SOLO UNO a la vez): {faltantes_busqueda}
     DATOS DE CONTACTO FALTANTES PARA LEAD: {faltantes_lead}
@@ -387,22 +392,42 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     Eres Paty, la especialista VIP de Mettryc Realty (Valencia, Venezuela).
     {instrucciones_contexto}
     
-    REGLAS Y GUION MAESTRO:
-    1. MEMORIA TOTAL: Si el usuario ya te dio un dato (ej. dijo "200 mil" o "Trigal"), no lo vuelvas a preguntar jamás.
-    2. FLUJO DE DIAGNÓSTICO: Si hay "DATOS DE BÚSQUEDA FALTANTES", haz UNA SOLA PREGUNTA corta. Sigue esta lógica de conversación amigable:
-       - Para Operación: "¿La buscas para comprar o alquilar?"
-       - Para Tipo: "¿Qué tipo de propiedad estás buscando? (casa, apartamento...)"
-       - Para Zona: "¿En qué zona o urbanización te gustaría?"
-       - Para Presupuesto: "¿Tienes un precio en mente o presupuesto máximo?"
-       - Para Habitaciones: "¿Cuántas habitaciones y baños son ideales para ti?"
-       - Para Características: "Por último, ¿hay algo más que sea importante que deba tener? (ej. vigilancia, calle cerrada)"
-    3. FLUJO DE CAPTURA DE LEAD (APLICA ESTE GUION EXACTO): Si el cliente se interesa por una propiedad, hay "DATOS DE CONTACTO FALTANTES PARA LEAD" y no tienes Asesor Asignado, pide la información PASO A PASO con estas frases exactas:
-       - Si falta Nombre: "¡Qué bien! Te voy a asignar uno de nuestros agentes para que te dé más información y puedas coordinar una visita sin compromiso. Por favor, dime ¿Cuál es tu nombre completo?"
-       - Si falta Correo: "¡Un gusto conocerte [Su Nombre]! Indícame tu correo electrónico para que nuestro sistema te siga enviando más opciones en la zona."
-       - Si falta WhatsApp: "¡Gracias! Por último, dime tu número de WhatsApp para que nuestro agente te contacte."
-    4. FLUJO DE DESPEDIDA: Si tienes "ASESOR ASIGNADO ACTUALMENTE", despídete con esta frase exacta: "¡Listo! Ya nuestro agente [Nombre del Asesor] tiene tu información y te estará contactando a tu número. ¿Hay algo más en lo que te pueda servir?"
-    5. CERO ALUCINACIONES Y CERO JSON: NO uses llaves {{}}. NO inventes propiedades que no estén en tu lista de "PROPIEDADES A MOSTRAR".
-    6. FORMATO DE ENLACES: Muestra los enlaces de forma PLANA (ej. https://mettryc.com/inmueble/123). No uses corchetes [Texto](url).
+    REGLAS Y GUIONES MAESTROS (INQUEBRANTABLES):
+    1. FLUJO 1: EL SALUDO OBLIGATORIO:
+       Si "ES PRIMER MENSAJE" es SÍ, TIENES QUE usar este saludo exacto:
+       "¡Hola! Mi nombre es Paty de Mettryc Realty La Primera Tecnoinmobiliaria de Venezuela. ¿Cómo te puedo ayudar?"
+       NO pases a preguntar datos hasta que el cliente te responda a este saludo.
+       
+    2. FLUJO 2: EL CLIENTE (EMBUDO DE VENTAS):
+       Si "DATOS DE BÚSQUEDA FALTANTES" tiene información, haz UNA SOLA PREGUNTA siguiendo este guion:
+       - Operación: "¿La buscas para comprar o alquilar?"
+       - Tipo: "Ok... cuéntame ¿qué tipo de propiedad estás buscando?"
+       - Zona: "Perfecto, ¿en qué zona o urbanización te gustaría?"
+       - Presupuesto: "¡Buena zona! ¿Tienes un precio en mente o presupuesto máximo?"
+       - Habitaciones: "Entiendo. Me puedes decir ¿Cuántas habitaciones y baños son ideales para ti?"
+       - Características: "¡Excelente! Por último, ¿hay algo más que sea importante que debe tener tu próxima propiedad?"
+       IMPORTANTE: Si el cliente ya dio un dato en su mensaje (ej: "hasta 200 mil"), NO LO VUELVAS A PREGUNTAR.
+
+    3. FLUJO 3: CAPTURA DE LEAD PARA CLIENTES INTERESADOS:
+       Si el cliente se interesa en una propiedad y faltan "DATOS DE CONTACTO", usa estas frases:
+       - Faltando Nombre: "¡Qué bien! Te voy asignar uno de nuestros agentes para que te dé más información y puedas coordinar una visita sin compromiso. Por favor, dime ¿Cuál es tu nombre completo?"
+       - Faltando Correo: "¡Un gusto conocerte! Indícame tu correo electrónico para que nuestro sistema te siga enviando opciones similares."
+       - Faltando WhatsApp: "¡Gracias! Por último, dime tu número de WhatsApp para que nuestro agente te contacte."
+       - Si ya hay ASESOR ASIGNADO: "¡Listo! Ya nuestro agente [Nombre del Asesor] tiene tu información y te estará contactando a tu número. ¿Hay algo más en lo que te pueda servir?"
+
+    4. FLUJO 4: EL COLEGA INMOBILIARIO:
+       Si ROL DETECTADO es "colega_inmobiliario":
+       - Trátalo de profesional a profesional. ("Hola colega, con gusto te apoyo para tu cliente...").
+       - Muestra la ficha de la propiedad tal cual te llega (con los datos de nuestro captador).
+       - PROHIBIDO pedirle nombre, correo o WhatsApp. El Flujo de Captura de Lead NO APLICA para colegas.
+       
+    5. FLUJO 5: INMUEBLE ESPECÍFICO (ADS):
+       Si el "MENSAJE INTERNO" te indica que el cliente viene por un anuncio o código específico, entrega la propiedad de "PROPIEDADES A MOSTRAR" inmediatamente y pregúntale de forma entusiasta si desea agendar una visita.
+
+    6. REGLAS DE FORMATO:
+       - CERO ALUCINACIONES: NO inventes propiedades que no estén en tu lista.
+       - CERO JSON: Tienes prohibido usar llaves {{}}.
+       - ENLACES PLANOS: Muestra los enlaces de forma PLANA (ej. https://mettryc.com/inmueble/123). No uses corchetes de Markdown.
     """
     
     mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-8:] if len(historial) > 8 else historial)
@@ -557,7 +582,7 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
         if admin_id.lstrip("-").isdigit(): enviar(admin_id, f"👁️ REPORTE GLOBAL ADMIN\n🏢 Asesor Asignado: {nombre_agente}\n\n{base_msg}")
 
 # ============================================================
-# FASTAPI WEBHOOK CORE
+# FASTAPI WEBHOOK CORE - ENRUTADOR PRINCIPAL
 # ============================================================
 
 @app.on_event("startup")
@@ -578,6 +603,7 @@ async def handle_request(request: Request):
 
         if not mensaje_cliente: return {"replies": []}
 
+        # Detección Determinística Pre-IA (Protección para Colegas)
         palabras_colega = ["colega", "agente", "inmobiliaria", "inmobiliario", "broker", "asesor", "corredor", "realtor", "remax", "rentahouse"]
         es_colega = any(palabra in mensaje_cliente.lower() for palabra in palabras_colega)
 
@@ -598,17 +624,14 @@ async def handle_request(request: Request):
             estado["mensaje_previo"] = mensaje_cliente
             estado["ultimo_mensaje_ts"] = ahora_ts
 
-            if "mercadolibre.com.ve/mlv" in mensaje_cliente.lower():
-                msg = "¡Hola! 👋 Esta propiedad se encuentra disponible en el precio publicado. ¿Quieres agendar una visita?"
-                actualizar_memoria(sender, mensaje_cliente, msg)
-                return {"replies": [{"message": msg}]}
-
             if not cache["inventario"]: await garantizar_inventario_actualizado(force=True)
             elif necesita_actualizar_inventario(): asyncio.create_task(garantizar_inventario_actualizado(force=False))
             sincronizar_google_sheet()
 
+            # Capa 1: Extractor Analítico (Detecta intención, lead y códigos de Ads)
             analisis = await asyncio.to_thread(analizar_mensaje_ia, mensaje_cliente, estado, memoria_conversaciones.get(sender, []))
             intencion = analisis.get("intencion", "otro")
+            codigo_inmueble = analisis.get("codigo_inmueble", "")
 
             estado["lead"] = fusionar_lead(estado["lead"], analisis.get("lead", {}), mensaje_cliente, sender)
             if estado["estado"] != ESTADO_CAPTURANDO_LEAD and not mensaje_parece_contacto(mensaje_cliente):
@@ -620,16 +643,44 @@ async def handle_request(request: Request):
                 "mensaje_interno": ""
             }
 
-            if estado["estado"] == ESTADO_DIAGNOSTICO_IA:
-                # SE IMPLEMENTA EL FLUJO PASO A PASO ESTRICTO DEL CLIENTE
+            # =====================================================
+            # RUTAS DE FLUJO (ENRUTAMIENTO PRINCIPAL)
+            # =====================================================
+            
+            # Búsqueda de Inmueble Específico (Ads / Mercadolibre / Código)
+            propiedad_especifica = None
+            if codigo_inmueble or "mercadolibre.com.ve" in mensaje_cliente.lower():
+                id_buscado = re.sub(r"\D", "", str(codigo_inmueble)) if codigo_inmueble else None
+                # Si el usuario mandó enlace crudo, buscamos el ID en el texto
+                if not id_buscado: 
+                    match_ml = re.search(r"MLV-?(\d+)", mensaje_cliente.upper())
+                    if match_ml: id_buscado = match_ml.group(1)
+                
+                if id_buscado:
+                    for p in cache["inventario"]:
+                        # Wasi IDs o ML IDs simulados
+                        if id_buscado in p["id"] or id_buscado in p.get("enlace", ""):
+                            propiedad_especifica = p
+                            break
+
+            # --- RUTA 1: ADS / INMUEBLE ESPECÍFICO ---
+            if propiedad_especifica and estado["estado"] == ESTADO_DIAGNOSTICO_IA:
+                # Saltar embudo diagnóstico, mostrar directo
+                estado["propiedades_enviadas"].append(propiedad_especifica["id"])
+                contexto_sistema["propiedades_encontradas_texto"] = formatear_ficha_propiedad(propiedad_especifica, estado["rol"] == "colega_inmobiliario")
+                estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
+                contexto_sistema["mensaje_interno"] = "El cliente preguntó por un inmueble específico. Se encontró y se muestra arriba. Ofrécele más información o agendar visita."
+
+            # --- RUTA 2: DIAGNÓSTICO (CLIENTE GENÉRICO O COLEGA) ---
+            elif estado["estado"] == ESTADO_DIAGNOSTICO_IA:
                 filtros_requeridos = ["tipo_operacion", "tipo_propiedad", "zona", "presupuesto", "habitaciones", "caracteristicas"]
                 faltantes = [k for k in filtros_requeridos if not estado["filtros"].get(k)]
                 
                 if faltantes:
-                    # Siempre pedimos solo el primer dato que falte en el orden estricto
+                    # Obligamos a pedir paso a paso el embudo
                     contexto_sistema["faltantes_busqueda"] = [faltantes[0]]
                 else:
-                    # Cuando ya tenemos todos los 6 datos, mostramos el inventario
+                    # Todos los datos recopilados -> Buscar propiedades
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
                     if props:
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
@@ -638,18 +689,23 @@ async def handle_request(request: Request):
                     else:
                         contexto_sistema["mensaje_interno"] = "No se encontraron propiedades con estos filtros exactos. Pide amablemente ajustar los requerimientos (ej. otra zona o mayor presupuesto)."
 
+            # --- ESTADO: MOSTRANDO PROPIEDADES ---
             elif estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES:
                 if intencion in ["mas_opciones", "ajustar_busqueda"]:
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
                     if props:
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
                         contexto_sistema["propiedades_encontradas_texto"] = "\n\n".join([formatear_ficha_propiedad(p, estado["rol"] == "colega_inmobiliario") for p in props])
-                elif (intencion in ["interes_propiedad", "enviar_datos"] or "interesa" in normalizar_texto(mensaje_cliente)) and estado["rol"] == "cliente":
-                    estado["estado"] = ESTADO_CAPTURANDO_LEAD
+                elif (intencion in ["interes_propiedad", "enviar_datos"] or "interesa" in normalizar_texto(mensaje_cliente)):
+                    # RUTA 3: COLEGA NUNCA PASA A LEAD. CLIENTE SÍ.
+                    if estado["rol"] == "cliente":
+                        estado["estado"] = ESTADO_CAPTURANDO_LEAD
+                    else:
+                        contexto_sistema["mensaje_interno"] = "El colega mostró interés. Ofrécele coordinar una visita con el captador o enviarle más opciones. NO LE PIDAS DATOS PERSONALES."
 
+            # --- ESTADO: CAPTURANDO LEAD (SOLO CLIENTES) ---
             if estado["estado"] == ESTADO_CAPTURANDO_LEAD and estado["rol"] == "cliente":
                 faltante_lead = None
-                # ORDEN ESTRICTO DE CAPTURA DE LEAD
                 if not es_nombre_persona_valido(estado["lead"].get("nombre", "")): faltante_lead = "Nombre Completo"
                 elif not estado["lead"].get("correo"): faltante_lead = "Correo electrónico"
                 elif not estado["lead"].get("whatsapp"): faltante_lead = "Número de WhatsApp"
@@ -663,6 +719,7 @@ async def handle_request(request: Request):
                     clientes_procesados.add(sender)
                     estado["estado"] = ESTADO_LEAD_COMPLETO
 
+            # Capa 3: PATY CONVERSACIONAL (Motor de Generación de Respuesta)
             respuesta_paty = await asyncio.to_thread(generar_respuesta_conversacional_paty, mensaje_cliente, contexto_sistema, memoria_conversaciones.get(sender, []))
 
             actualizar_memoria(sender, mensaje_cliente, respuesta_paty)
