@@ -67,11 +67,6 @@ ESTADO_LEAD_COMPLETO = "lead_completo"
 TOKENS_DIRECCION_ZONA = {"norte", "sur", "este", "oeste", "centro"}
 SINONIMOS_TIPO = {"tohouse": "townhouse", "towhouse": "townhouse", "twhouse": "townhouse", "town house": "townhouse", "aparto quinta": "apartoquinta", "aptoquinta": "apartoquinta", "apartoquita": "apartoquinta"}
 
-def coincide_tipo_propiedad(propiedad: dict, tipo_buscado: str) -> bool:
-    tipo_wasi = normalizar_tipo_propiedad(propiedad.get("tipo_propiedad_wasi", ""))
-    tipo_buscado_norm = normalizar_tipo_propiedad(tipo_buscado)
-    return tipo_buscado_norm in tipo_wasi or tipo_wasi in tipo_buscado_norm
-
 def normalizar_texto(texto: str) -> str:
     if not texto: return ""
     texto = str(texto).lower().strip()
@@ -195,7 +190,7 @@ def obtener_lock_usuario(sender: str) -> asyncio.Lock:
     return locks_usuarios[sender]
 
 # ============================================================
-# INVENTARIO WASI Y GOOGLE SHEETS (Con protección Anti-Timeout)
+# INVENTARIO WASI Y GOOGLE SHEETS
 # ============================================================
 
 def calcular_proxima_actualizacion(ahora: datetime = None) -> datetime:
@@ -211,7 +206,7 @@ def necesita_actualizar_inventario(force: bool = False) -> bool:
     return datetime.now() >= cache.get("proxima_actualizacion", datetime.min)
 
 def obtener_inventario_desde_wasi():
-    propiedades, take, skip = [], 50, 0 # Modificado a 50 para evitar errores 502
+    propiedades, take, skip = [], 50, 0
     intentos_maximos = 3
     while True:
         params = {"wasi_token": os.getenv("WASI_TOKEN"), "id_company": os.getenv("WASI_COMPANY_ID"), "take": take, "skip": skip, "status": 1}
@@ -357,7 +352,6 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     respuesta_cruda = consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}")
     json_extraido = extraer_json_de_texto(respuesta_cruda)
     
-    # MODO RAYOS X (Logs Analíticos para Render)
     logger.info("\n" + "="*40)
     logger.info("🧠 ANALÍTICA IA (CAPA 1) 🧠")
     logger.info(f"Mensaje del Cliente: {mensaje_usuario}")
@@ -377,45 +371,64 @@ CONOCIMIENTO_METTRYC = """
 - Agradecimientos: Si el usuario dice "gracias", responde "¡Siempre a la orden! ☺️".
 """
 
-# ============================================================
-# SOLUCIÓN FINAL: Paty, la Asistente VIP Inteligente
-# ============================================================
-
-# [PEGA TODO TU CÓDIGO AQUÍ, PERO REEMPLAZA LA FUNCIÓN GENERAR_RESPUESTA_CONVERSACIONAL_PATY CON ESTA:]
-
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
-    # Preparamos los datos para la IA
+    props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
+    if not props_encontradas:
+        if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
+            props_encontradas = "[0 resultados. Ofrece ajustar filtros.]"
+        else:
+            props_encontradas = "[Fase de diagnóstico. Continúa la charla.]"
+            
     faltantes = contexto_sistema.get('faltantes_busqueda', [])
     faltantes_lead = contexto_sistema.get('faltantes_lead', [])
-    dato_a_preguntar = faltantes[0] if faltantes else (faltantes_lead[0] if faltantes_lead else "Ninguno")
+    
+    # LA CORRECCIÓN MAESTRA: Acción explícita para evitar que alucine preguntas
+    if faltantes:
+        accion_principal = f"PREGUNTA OBLIGATORIA: Pregunta amablemente por este dato: {faltantes[0]}"
+    elif faltantes_lead:
+        accion_principal = f"CAPTURA DE LEAD: Pide este dato para asignar un agente: {faltantes_lead[0]}"
+    else:
+        accion_principal = "MOSTRAR INVENTARIO: Ya tienes todos los datos. Tu ÚNICA tarea es mostrar la lista de propiedades disponibles (o avisar si hay 0 resultados) e invitar al usuario a revisarlas. NO hagas preguntas sobre requisitos."
+
+    rol = contexto_sistema.get('rol_detectado', 'cliente')
+    nombre_cliente = contexto_sistema.get('nombre_cliente', '')
+    datos_confirmados = ", ".join(contexto_sistema.get('datos_confirmados', [])) or "Ninguno"
     
     prompt_sistema = f"""
-    Eres Paty, asistente VIP de Mettryc Realty (Valencia).
+    Eres Paty, asistente VIP de Mettryc Realty (Valencia, Venezuela).
     
-    ESTADO DE LA CONVERSACIÓN:
-    - Cliente: {contexto_sistema.get('nombre_cliente', 'Desconocido')}
-    - Datos Confirmados: {', '.join(contexto_sistema.get('datos_confirmados', []))}
-    - DATO A PREGUNTAR AHORA: {dato_a_preguntar}
-    - Propiedades disponibles: {contexto_sistema.get('propiedades_encontradas_texto', 'Ninguna')}
+    BASE DE CONOCIMIENTOS DE METTRYC REALTY:
+    {CONOCIMIENTO_METTRYC}
+    
+    CONTEXTO ACTUAL:
+    - Cliente: {nombre_cliente if nombre_cliente else "Desconocido"} ({rol})
+    - Datos Confirmados: {datos_confirmados}
+    - Propiedades a mostrar: {props_encontradas}
 
-    REGLAS:
-    1. RESPUESTA LÓGICA: Si el usuario acaba de escribir algo (ej: "3 habitaciones"), confirma brevemente (Ej: "¡Entendido, 3 habitaciones!") antes de pedir el siguiente dato.
-    2. BREVEDAD: Máximo 30 palabras. No uses plantillas.
-    3. PROHIBIDO REPETIR: NUNCA preguntes por datos que ya están en "Datos Confirmados".
-    4. UNA PREGUNTA: Solo pregunta por el "DATO A PREGUNTAR AHORA".
-    5. INFO COMERCIAL: Si preguntan honorarios di 5% venta/1 mes alquiler. Dirección: CC Patio Trigal.
-    6. FORMATEO: Enlaces web en texto plano (sin corchetes).
+    TU OBJETIVO EN ESTE MENSAJE:
+    {accion_principal}
+
+    REGLAS ESTRICTAS DE CONVERSACIÓN (INQUEBRANTABLES):
+    1. VALIDA: Confirma brevemente lo que el usuario acaba de decir antes de seguir (Ej: "¡Entendido, 3 habitaciones!").
+    2. LÍMITE DE LONGITUD: Máximo 30 palabras de charla (no aplica a la lista de propiedades). Sé directa y amigable.
+    3. NO INVENTES PREGUNTAS: Limítate a cumplir TU OBJETIVO. Si el objetivo es Mostrar Inventario, no hagas más preguntas sobre la búsqueda.
+    4. MEMORIA: Tienes PROHIBIDO preguntar por información que ya está en "Datos Confirmados".
+    5. FORMATO: Enlaces web siempre en texto plano, sin corchetes de Markdown.
     """
     
-    # Reducimos el historial para que la IA no se confunda con mensajes de hace 10 minutos
-    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-4:] if len(historial) > 4 else historial)
+    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-6:] if len(historial) > 6 else historial)
+    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
     
-    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=[MODELO_RESPALDO_1, MODELO_RESPALDO_2])
-
+    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=cascada_obediente)
 
 # ============================================================
 # LÓGICA DE PYTHON (Integridad de Datos)
 # ============================================================
+
+def coincide_tipo_propiedad(propiedad: dict, tipo_buscado: str) -> bool:
+    tipo_wasi = normalizar_tipo_propiedad(propiedad.get("tipo_propiedad_wasi", ""))
+    tipo_buscado_norm = normalizar_tipo_propiedad(tipo_buscado)
+    return tipo_buscado_norm in tipo_wasi or tipo_wasi in tipo_buscado_norm
 
 def fusionar_filtros(base: dict, nuevos: dict, mensaje: str) -> dict:
     out = dict(base or {})
@@ -536,7 +549,7 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
 
 @app.on_event("startup")
 async def startup():
-    await garantizar_inventario_actualizado(force=False) # Modificado a False para evitar timeouts al reiniciar Render
+    await garantizar_inventario_actualizado(force=False)
     await asyncio.to_thread(sincronizar_google_sheet)
 
 @app.post("/webhook")
@@ -575,17 +588,17 @@ async def handle_request(request: Request):
             elif necesita_actualizar_inventario(): asyncio.create_task(garantizar_inventario_actualizado(force=False))
             sincronizar_google_sheet()
 
-            # 1. ANÁLISIS DE IA (Modo Rayos X incluido)
+            # 1. ANÁLISIS DE IA
             analisis = await asyncio.to_thread(analizar_mensaje_ia, mensaje_cliente, estado, memoria_conversaciones.get(sender, []))
             intencion = analisis.get("intencion", "otro")
             codigo_inmueble = analisis.get("codigo_inmueble", "")
 
-            # 2. BLOQUEO DE DATOS (Fusionamos protegiendo lo ya existente)
+            # 2. BLOQUEO DE DATOS
             estado["lead"] = fusionar_lead(estado["lead"], analisis.get("lead", {}), mensaje_cliente, sender)
             if estado["estado"] != ESTADO_CAPTURANDO_LEAD and not mensaje_parece_contacto(mensaje_cliente):
                 estado["filtros"] = fusionar_filtros(estado["filtros"], analisis.get("filtros", {}), mensaje_cliente)
 
-            # 3. LISTADO DE DATOS CONFIRMADOS PARA LA IA
+            # 3. LISTADO DE DATOS CONFIRMADOS
             datos_confirmados_lista = [k for k, v in estado["filtros"].items() if v]
             if estado["lead"].get("nombre"): datos_confirmados_lista.append("nombre")
             
@@ -599,7 +612,6 @@ async def handle_request(request: Request):
             # =====================================================
             # ENRUTADOR PRINCIPAL
             # =====================================================
-            
             propiedad_especifica = None
             if codigo_inmueble or "mercadolibre.com.ve" in mensaje_cliente.lower():
                 id_buscado = re.sub(r"\D", "", str(codigo_inmueble)) if codigo_inmueble else None
@@ -613,14 +625,14 @@ async def handle_request(request: Request):
                             propiedad_especifica = p
                             break
 
-            # --- RUTA 1: MODO INTERRUPCIÓN (ADS / CÓDIGO) ---
+            # --- RUTA 1: MODO INTERRUPCIÓN ---
             if propiedad_especifica and estado["estado"] == ESTADO_DIAGNOSTICO_IA:
                 estado["propiedades_enviadas"].append(propiedad_especifica["id"])
                 contexto_sistema["propiedades_encontradas_texto"] = formatear_ficha_propiedad(propiedad_especifica, estado["rol"] == "colega_inmobiliario")
                 estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
                 contexto_sistema["mensaje_interno"] = "MODO INTERRUPCIÓN: El cliente preguntó por un inmueble específico. Se muestra arriba. Ofrécele más información o agendar visita de inmediato."
 
-            # --- RUTA 2: MODO DIAGNÓSTICO (EMBUDO) ---
+            # --- RUTA 2: MODO DIAGNÓSTICO ---
             elif estado["estado"] == ESTADO_DIAGNOSTICO_IA:
                 filtros_requeridos = ["tipo_operacion", "tipo_propiedad", "zona", "presupuesto", "habitaciones", "caracteristicas"]
                 faltantes = [k for k in filtros_requeridos if not estado["filtros"].get(k)]
@@ -638,11 +650,14 @@ async def handle_request(request: Request):
 
             # --- RUTA 3: MODO MOSTRANDO PROPIEDADES ---
             elif estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES:
-                if intencion in ["mas_opciones", "ajustar_busqueda"]:
+                # Modificado para permitir nuevas búsquedas si agregan filtros
+                if intencion in ["mas_opciones", "ajustar_busqueda", "buscar"] or any(analisis.get("filtros", {}).values()):
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
                     if props:
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
                         contexto_sistema["propiedades_encontradas_texto"] = "\n\n".join([formatear_ficha_propiedad(p, estado["rol"] == "colega_inmobiliario") for p in props])
+                    else:
+                        contexto_sistema["mensaje_interno"] = "No se encontraron más propiedades con estos filtros. Sugiere cambiar algún requisito."
                 elif (intencion in ["interes_propiedad", "enviar_datos"] or "interesa" in normalizar_texto(mensaje_cliente)):
                     if estado["rol"] == "cliente":
                         estado["estado"] = ESTADO_CAPTURANDO_LEAD
