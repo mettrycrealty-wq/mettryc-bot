@@ -48,7 +48,7 @@ sheets_cache = {
     "ultima_actualizacion": datetime.min
 }
 
-# BASE DE DATOS SIMULADA PARA CLIENTES (Guarda el nombre permanentemente por número)
+# BASE DE DATOS SIMULADA PARA CLIENTES
 clientes_db: Dict[str, dict] = {}
 memoria_conversaciones: Dict[str, List[dict]] = {}
 clientes_procesados: Set[str] = set()
@@ -116,7 +116,7 @@ def mensaje_parece_contacto(mensaje: str) -> bool:
 def es_nombre_persona_valido(nombre: str) -> bool:
     if not nombre: return False
     n = normalizar_texto(nombre)
-    palabras = [p for p in re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", nombre) if normalizar_texto(p) not in STOPWORDS_NOMBRE_EXTRA and len(p) >= 2]
+    palabras = [p for p in re.findall(r"[A-Za-zÀ-ÖØ-ÿ'´-]+", nombre) if normalizar_texto(p) not in {"la", "el", "que", "hola", "soy", "me", "llamo", "mi", "nombre", "es"} and len(p) >= 2]
     return 2 <= len(palabras) <= 4
 
 def parsear_presupuesto_texto(texto: str):
@@ -175,7 +175,6 @@ def actualizar_memoria(sender: str, mensaje_usuario: str, respuesta_bot: str):
 
 def obtener_estado_usuario(sender: str) -> dict:
     if sender not in estado_usuarios:
-        # Carga el nombre si existe en la base de datos de clientes conocidos
         nombre_guardado = clientes_db.get(sender, {}).get("nombre", "")
         estado_usuarios[sender] = {
             "estado": ESTADO_DIAGNOSTICO_IA, "rol": None,
@@ -191,7 +190,7 @@ def obtener_lock_usuario(sender: str) -> asyncio.Lock:
     return locks_usuarios[sender]
 
 # ============================================================
-# INVENTARIO WASI Y GOOGLE SHEETS
+# INVENTARIO WASI Y GOOGLE SHEETS (Con protección Anti-Timeout)
 # ============================================================
 
 def calcular_proxima_actualizacion(ahora: datetime = None) -> datetime:
@@ -207,42 +206,53 @@ def necesita_actualizar_inventario(force: bool = False) -> bool:
     return datetime.now() >= cache.get("proxima_actualizacion", datetime.min)
 
 def obtener_inventario_desde_wasi():
-    propiedades, take, skip = [], 100, 0
+    propiedades, take, skip = [], 50, 0 # Modificado a 50 para evitar errores 502
+    intentos_maximos = 3
     while True:
         params = {"wasi_token": os.getenv("WASI_TOKEN"), "id_company": os.getenv("WASI_COMPANY_ID"), "take": take, "skip": skip, "status": 1}
-        try:
-            response = requests.get("https://api.wasi.co/v1/property/search", params=params, timeout=25)
-            response.raise_for_status()
-            data = response.json()
-            contador = 0
-            for key, value in data.items():
-                if isinstance(value, dict) and key.isdigit():
-                    contador += 1
-                    id_prop = value.get("id_property")
-                    user_data = value.get("user_data", {})
-                    propiedades.append({
-                        "id": str(id_prop),
-                        "titulo": value.get("title", "Propiedad sin título"),
-                        "ciudad": value.get("city_label", "N/D"),
-                        "zona": value.get("zone_label", "N/D"),
-                        "venta": value.get("sale_price_label", "N/D"),
-                        "renta": value.get("rent_price_label", "N/D"),
-                        "precio_venta_float": parsear_precio_wasi(value.get("sale_price"), value.get("sale_price_label")),
-                        "precio_renta_float": parsear_precio_wasi(value.get("rent_price"), value.get("rent_price_label")),
-                        "area": value.get("area", "N/D"),
-                        "habitaciones": value.get("bedrooms", "N/D"),
-                        "banos": value.get("bathrooms", "N/D"),
-                        "tipo_propiedad_wasi": value.get("type_label", "Indefinido"),
-                        "enlace": f"https://www.mettryc.com/inmueble/{id_prop}",
-                        "captador_propiedad": f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip() or "Asesor Mettryc",
-                        "telefono_captador_wasi": user_data.get("phone", "")
-                    })
-            if contador < take: break
-            skip += take
-            time.sleep(1.0)
-        except Exception as e:
-            logger.error(f"Error Wasi: {e}")
+        exito = False
+        
+        for intento in range(intentos_maximos):
+            try:
+                response = requests.get("https://api.wasi.co/v1/property/search", params=params, timeout=40)
+                response.raise_for_status()
+                data = response.json()
+                contador = 0
+                for key, value in data.items():
+                    if isinstance(value, dict) and key.isdigit():
+                        contador += 1
+                        id_prop = value.get("id_property")
+                        user_data = value.get("user_data", {})
+                        propiedades.append({
+                            "id": str(id_prop),
+                            "titulo": value.get("title", "Propiedad sin título"),
+                            "ciudad": value.get("city_label", "N/D"),
+                            "zona": value.get("zone_label", "N/D"),
+                            "venta": value.get("sale_price_label", "N/D"),
+                            "renta": value.get("rent_price_label", "N/D"),
+                            "precio_venta_float": parsear_precio_wasi(value.get("sale_price"), value.get("sale_price_label")),
+                            "precio_renta_float": parsear_precio_wasi(value.get("rent_price"), value.get("rent_price_label")),
+                            "area": value.get("area", "N/D"),
+                            "habitaciones": value.get("bedrooms", "N/D"),
+                            "banos": value.get("bathrooms", "N/D"),
+                            "tipo_propiedad_wasi": value.get("type_label", "Indefinido"),
+                            "enlace": f"https://www.mettryc.com/inmueble/{id_prop}",
+                            "captador_propiedad": f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip() or "Asesor Mettryc",
+                            "telefono_captador_wasi": user_data.get("phone", "")
+                        })
+                exito = True
+                if contador < take: return propiedades
+                skip += take
+                time.sleep(1.5)
+                break
+            except Exception as e:
+                logger.warning(f"Intento {intento+1} fallido para Wasi: {e}")
+                time.sleep(2 * (intento + 1))
+                
+        if not exito:
+            logger.error("Error definitivo tras varios intentos con Wasi.")
             break
+            
     return propiedades
 
 def actualizar_cache_inventario(force: bool = False):
@@ -339,13 +349,10 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "codigo_inmueble": "", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null, "habitaciones": "", "caracteristicas": ""}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
     """
     
-    # 1. Consultamos a la IA
     respuesta_cruda = consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}")
-    
-    # 2. Extraemos el JSON
     json_extraido = extraer_json_de_texto(respuesta_cruda)
     
-    # 3. LOG DE MONITOREO (Imprime en la consola de Render)
+    # MODO RAYOS X (Logs Analíticos para Render)
     logger.info("\n" + "="*40)
     logger.info("🧠 ANALÍTICA IA (CAPA 1) 🧠")
     logger.info(f"Mensaje del Cliente: {mensaje_usuario}")
@@ -353,6 +360,18 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     logger.info("="*40 + "\n")
     
     return json_extraido
+
+CONOCIMIENTO_METTRYC = """
+- Empresa: Mettryc Realty, Primera Tecnoinmobiliaria de Venezuela.
+- Ubicación: Valencia, Carabobo, CC Patio Trigal Local 300-6. GPS: https://maps.app.goo.gl/dSofuNmF89vNLv7X8
+- Honorarios: 5% venta, 1 mes alquiler (Según Cámara Inmobiliaria de Venezuela).
+- Reclutamiento: El ingreso cuesta 50$ (curso+credenciales). Formulario: https://forms.gle/SbLtHrey69fhf3Xt8
+- Negociación: Si preguntan si es negociable, responde: "Sería cuestión de que haga su mejor oferta y se la presentaremos al propietario".
+- Contacto Directo: NUNCA des información de contacto del propietario. Di que un agente le contactará.
+- Colegas Inmobiliarios: Si el rol es "colega_inmobiliario", NO pidas datos de sus clientes.
+- Agradecimientos: Si el usuario dice "gracias", responde "¡Siempre a la orden! ☺️".
+"""
+
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
     props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
     if not props_encontradas:
@@ -364,7 +383,6 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     faltantes_busqueda = contexto_sistema.get('faltantes_busqueda', [])
     faltantes_lead = contexto_sistema.get('faltantes_lead', [])
     
-    # Determinamos EXACTAMENTE qué debe preguntar la IA para evitar que haga 2 preguntas
     dato_a_preguntar = "Ninguno. Muestra las propiedades."
     if faltantes_busqueda:
         dato_a_preguntar = faltantes_busqueda[0]
@@ -378,29 +396,21 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     prompt_sistema = f"""
     Eres Paty, asistente VIP de Mettryc Realty (Valencia, Venezuela).
     
+    BASE DE CONOCIMIENTOS DE METTRYC REALTY:
+    {CONOCIMIENTO_METTRYC}
+    
     CONTEXTO ACTUAL:
     - Cliente: {nombre_cliente if nombre_cliente else "Desconocido"} ({rol})
     - Datos ya confirmados: {datos_confirmados}
-    - ÚNICO DATO QUE DEBES PREGUNTAR: {dato_a_preguntar}
+    - ÚNICO DATO QUE DEBES PREGUNTAR AL CLIENTE AHORA: {dato_a_preguntar}
     - Propiedades a mostrar: {props_encontradas}
 
     REGLAS ESTRICTAS DE CONVERSACIÓN (INQUEBRANTABLES):
-    1. LÍMITE DE LONGITUD: Tus respuestas no deben superar las 30 palabras (excepto cuando envíes fichas de propiedades). Sé directa y amigable.
-    2. UNA SOLA PREGUNTA: Tienes PROHIBIDO hacer más de una pregunta por mensaje.
-    3. COHERENCIA ABSOLUTA: Lee el último mensaje del usuario y valídalo. Si dice "un apartamento", responde "¡Excelente elección un apartamento!". Si dice "Valles del Camoruco", responde "Gran zona.".
-    4. MEMORIA: NUNCA preguntes por información que ya está en "Datos ya confirmados".
-    
-    BASE DE CONOCIMIENTOS DE METTRYC REALTY:
-    - Honorarios: 5% en venta o 1 mes de canon en alquiler (Cámara Inmobiliaria de Venezuela).
-    - Reclutamiento de agentes: El ingreso cuesta 50$ (curso y credenciales). Formulario: https://forms.gle/SbLtHrey69fhf3Xt8
-    - Negociación: Si preguntan si es negociable, responde: "Sería cuestión de que haga su mejor oferta y se la presentaremos al propietario".
-    - Contacto Directo: NUNCA des información de contacto del propietario. Di que un agente le contactará.
-    - Colegas Inmobiliarios: Si el rol es "colega_inmobiliario", NO pidas datos de sus clientes.
-    - Dirección: CC Patio Trigal Local 300-6. GPS: https://maps.app.goo.gl/dSofuNmF89vNLv7X8
-    - Agradecimientos: Si el usuario dice "gracias", responde "¡Siempre a la orden! ☺️".
-    
-    FORMATO:
-    - Enlaces web siempre en texto plano, sin corchetes de Markdown.
+    1. LÍMITE DE LONGITUD: Tus respuestas no deben superar las 30 palabras (excepto al enviar fichas de propiedades). Sé directa, cálida y humana.
+    2. UNA SOLA PREGUNTA: Tienes PROHIBIDO hacer más de una pregunta por mensaje. Cierra tu respuesta con la pregunta del "ÚNICO DATO QUE DEBES PREGUNTAR AL CLIENTE AHORA".
+    3. COHERENCIA ABSOLUTA: Lee el último mensaje del usuario y valídalo brevemente (Ej: si dice "un apartamento", inicia diciendo "¡Excelente elección un apartamento!").
+    4. MEMORIA: Tienes PROHIBIDO preguntar por información que ya está en la lista de "Datos ya confirmados".
+    5. FORMATO: Enlaces web siempre en texto plano, sin corchetes de Markdown.
     """
     
     mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-6:] if len(historial) > 6 else historial)
@@ -414,14 +424,12 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
 
 def fusionar_filtros(base: dict, nuevos: dict, mensaje: str) -> dict:
     out = dict(base or {})
-    # Regla de Bloqueo: Solo actualiza si el campo está vacío actualmente
     if nuevos.get("tipo_propiedad") and not out.get("tipo_propiedad"): out["tipo_propiedad"] = normalizar_tipo_propiedad(nuevos["tipo_propiedad"])
     if nuevos.get("tipo_operacion") and not out.get("tipo_operacion"): out["tipo_operacion"] = normalizar_operacion(nuevos["tipo_operacion"])
     if nuevos.get("zona") and not out.get("zona"): out["zona"] = str(nuevos["zona"]).strip()
     if nuevos.get("habitaciones") and not out.get("habitaciones"): out["habitaciones"] = str(nuevos["habitaciones"]).strip()
     if nuevos.get("caracteristicas") and not out.get("caracteristicas"): out["caracteristicas"] = str(nuevos["caracteristicas"]).strip()
     
-    # Análisis manual de precios por seguridad (Python sobreescribe a IA si está vacío)
     precio_txt = parsear_presupuesto_texto(mensaje)
     if precio_txt and not out.get("presupuesto"):
         out["presupuesto"] = precio_txt
@@ -434,12 +442,10 @@ def fusionar_filtros(base: dict, nuevos: dict, mensaje: str) -> dict:
 def fusionar_lead(base: dict, nuevos: dict, mensaje: str, sender: str) -> dict:
     out = dict(base or {})
     
-    # Extraer nombre solo si la IA está segura (Se elimina el fallback peligroso)
     if nuevos.get("nombre") and not out.get("nombre"):
         cand = capitalizar_nombre(str(nuevos["nombre"]).strip())
         if len(cand) > 2:
             out["nombre"] = cand
-            # Persistencia en base de datos de clientes
             clientes_db[sender] = {"nombre": cand}
             
     if nuevos.get("correo") and not out.get("correo"):
@@ -449,7 +455,6 @@ def fusionar_lead(base: dict, nuevos: dict, mensaje: str, sender: str) -> dict:
     if not out.get("whatsapp"):
         out["whatsapp"] = sender
 
-    # Fallback básico para correos en texto
     m_mail = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", mensaje, re.IGNORECASE)
     if m_mail and not out.get("correo"): out["correo"] = m_mail.group(0).strip().lower()
 
@@ -536,7 +541,7 @@ def enviar_notificaciones_telegram(agente, lead: dict, resumen_necesidad: str):
 
 @app.on_event("startup")
 async def startup():
-    await garantizar_inventario_actualizado(force=True)
+    await garantizar_inventario_actualizado(force=False) # Modificado a False para evitar timeouts al reiniciar Render
     await asyncio.to_thread(sincronizar_google_sheet)
 
 @app.post("/webhook")
@@ -575,7 +580,7 @@ async def handle_request(request: Request):
             elif necesita_actualizar_inventario(): asyncio.create_task(garantizar_inventario_actualizado(force=False))
             sincronizar_google_sheet()
 
-            # 1. ANÁLISIS DE IA
+            # 1. ANÁLISIS DE IA (Modo Rayos X incluido)
             analisis = await asyncio.to_thread(analizar_mensaje_ia, mensaje_cliente, estado, memoria_conversaciones.get(sender, []))
             intencion = analisis.get("intencion", "otro")
             codigo_inmueble = analisis.get("codigo_inmueble", "")
@@ -626,7 +631,6 @@ async def handle_request(request: Request):
                 faltantes = [k for k in filtros_requeridos if not estado["filtros"].get(k)]
                 
                 if faltantes:
-                    # El enrutador dicta estrictamente el siguiente paso
                     contexto_sistema["faltantes_busqueda"] = [faltantes[0]]
                 else:
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
