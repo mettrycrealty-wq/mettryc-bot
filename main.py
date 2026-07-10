@@ -687,6 +687,41 @@ def convertir_caracteristicas(valor: Any) -> str:
 
     return ""
 
+def verificar_caducidad_y_amnesia(estado: dict) -> dict:
+    """
+    Aplica las reglas de negocio de Mettryc Realty para el ciclo de vida de la memoria.
+    Colegas: Caducan por completo a las 24 horas.
+    Clientes: Mantienen filtros por 30 días, pero limpian historial de texto tras 24 horas (Amnesia Selectiva).
+    """
+    if not estado.get("actualizado_en"):
+        return estado
+
+    ahora = datetime.utcnow()
+    ultima_actualizacion = datetime.fromisoformat(estado["actualizado_en"])
+    tiempo_inactivo = ahora - ultima_actualizacion
+    
+    rol = estado.get("rol", "cliente")
+    numero_canal = estado.get("numero_canal", "")
+
+    # CASO 1: Es un COLEGA y pasaron más de 24 horas -> Borrón y cuenta nueva absoluto
+    if rol == "colega_inmobiliario" and tiempo_inactivo > timedelta(hours=24):
+        logger.info(f"⏳ Sesión de colega ({numero_canal}) caducada por inactividad (24h). Reiniciando estado.")
+        return crear_sesion(numero_canal)
+
+    # CASO 2: Es un CLIENTE y pasaron más de 30 días -> Se borra por completo
+    if rol == "cliente" and tiempo_inactivo > timedelta(days=30):
+        logger.info(f"⏳ Sesión de cliente ({numero_canal}) superó los 30 días. Reiniciando estado.")
+        return crear_sesion(numero_canal)
+
+    # CASO 3: AMNESIA SELECTIVA (Cliente inactivo por más de 24 horas pero menos de 30 días)
+    # Vaciamos el historial de mensajes para no pagar de más en OpenRouter, pero DEJAMOS los filtros intactos.
+    if rol == "cliente" and tiempo_inactivo > timedelta(hours=24):
+        if estado.get("historial"):
+            nombre_log = estado["lead"].get("nombre") or "Desconocido"
+            logger.info(f"🧠 Amnesia Selectiva Mettryc: Limpiando mensajes viejos de {nombre_log} (>24h). Filtros conservados.")
+            estado["historial"] = []  # Se limpia el chat viejo, pero Paty sigue recordando qué busca y su nombre.
+
+    return estado
 
 # ============================================================
 # SESIONES
@@ -2874,8 +2909,13 @@ async def procesar_mensaje(
     sender: str,
     mensaje: str,
 ) -> str:
+    # 1. Recuperamos el estado de la memoria RAM de Render
     estado = obtener_sesion(sender)
 
+    # 🚨 LA INYECCIÓN MAESTRA: Validamos el tiempo de inactividad antes de que intervenga la IA
+    estado = verificar_caducidad_y_amnesia(estado)
+
+    # 2. Procedemos con el flujo normal que ya tienes funcionando perfectamente
     decision = await decidir_con_ia(
         mensaje,
         estado,
@@ -2899,6 +2939,154 @@ async def procesar_mensaje(
 
     accion = decision.accion.tipo
 
+    if accion == "reiniciar_busqueda":
+        estado = reiniciar_busqueda(estado)
+        sesiones[sender] = estado
+
+        respuesta = (
+            decision.mensaje.strip()
+            or (
+                "¡Perfecto! Comencemos una nueva búsqueda. "
+                "Cuéntame qué propiedad tienes en mente."
+            )
+        )
+
+    elif accion == "buscar_por_codigo":
+        codigo = (
+            decision.accion.codigo
+            or extraer_codigo_inmueble(mensaje)
+        )
+
+        if not codigo:
+            estado["esperando_codigo"] = True
+            respuesta = (
+                decision.mensaje.strip()
+                or (
+                    "Envíame el código del inmueble o el enlace "
+                    "de la publicación para localizarlo."
+                )
+            )
+        else:
+            respuesta = (
+                await mostrar_inmueble_especifico(
+                    estado,
+                    codigo,
+                )
+            )
+
+    elif accion == "pedir_codigo_inmueble":
+        estado["esperando_codigo"] = True
+
+        respuesta = (
+            decision.mensaje.strip()
+            or (
+                "¡Claro! Envíame el código que aparece en el "
+                "anuncio o el enlace de la publicación y te "
+                "muestro la ficha exacta."
+            )
+        )
+
+    elif accion == "mostrar_mas_propiedades":
+        if not estado["propiedades_enviadas"]:
+            respuesta = (
+                "Todavía no te he mostrado propiedades. "
+                "Cuéntame qué tipo de inmueble buscas, la "
+                "operación y la zona o presupuesto."
+            )
+        else:
+            respuesta = await mostrar_propiedades(
+                estado
+            )
+
+    elif accion == "seleccionar_propiedad":
+        respuesta = await seleccionar_propiedad(
+            estado,
+            decision.accion.posicion,
+        )
+
+    elif accion == "buscar_propiedades":
+        if criterios_suficientes(estado):
+            respuesta = await mostrar_propiedades(
+                estado
+            )
+        else:
+            respuesta = (
+                decision.mensaje.strip()
+                or (
+                    "Tengo una idea inicial. Para buscar opciones "
+                    "relevantes, dime si deseas comprar o alquilar "
+                    "y qué zona o presupuesto tienes en mente."
+                )
+            )
+
+    else:
+        if (
+            hubo_cambio
+            and criterios_suficientes(estado)
+            and any(
+                frase in normalizar_texto(mensaje)
+                for frase in [
+                    "busca",
+                    "muestrame",
+                    "quiero ver",
+                    "ver opciones",
+                    "que tienes",
+                ]
+            )
+        ):
+            respuesta = await mostrar_propiedades(
+                estado
+            )
+        else:
+            respuesta = (
+                decision.mensaje.strip()
+                or (
+                    "Cuéntame un poco más y con gusto te ayudo."
+                )
+            )
+
+    if (
+        estado.get("objetivo")
+        == "captura_lead"
+    ):
+        if lead_completo(estado):
+            respuesta = (
+                await completar_y_assignar_lead(
+                    estado
+                )
+            )
+
+        elif accion not in {
+            "seleccionar_propiedad",
+            "buscar_por_codigo",
+        }:
+            faltantes = datos_lead_faltantes(
+                estado
+            )
+
+            if not decision.mensaje.strip():
+                respuesta = (
+                    "Gracias. Para completar la solicitud todavía "
+                    "necesito "
+                    + ", ".join(faltantes)
+                    + "."
+                )
+
+    agregar_historial(
+        estado,
+        "user",
+        mensaje,
+    )
+
+    agregar_historial(
+        estado,
+        "assistant",
+        respuesta,
+    )
+
+    guardar_sesion(sender, estado)
+
+    return respuesta
     if accion == "reiniciar_busqueda":
         estado = reiniciar_busqueda(estado)
         sesiones[sender] = estado
