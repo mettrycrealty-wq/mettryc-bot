@@ -338,8 +338,21 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     Devuelve EXACTAMENTE este JSON:
     {{ "intencion": "...", "rol": "cliente|colega_inmobiliario", "codigo_inmueble": "", "filtros": {{"tipo_propiedad": "", "tipo_operacion": "", "zona": "", "presupuesto": null, "habitaciones": "", "caracteristicas": ""}}, "lead": {{"nombre": "", "correo": "", "whatsapp": ""}} }}
     """
-    return extraer_json_de_texto(consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}"))
-
+    
+    # 1. Consultamos a la IA
+    respuesta_cruda = consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}")
+    
+    # 2. Extraemos el JSON
+    json_extraido = extraer_json_de_texto(respuesta_cruda)
+    
+    # 3. LOG DE MONITOREO (Imprime en la consola de Render)
+    logger.info("\n" + "="*40)
+    logger.info("🧠 ANALÍTICA IA (CAPA 1) 🧠")
+    logger.info(f"Mensaje del Cliente: {mensaje_usuario}")
+    logger.info(f"JSON Extraído:\n{json.dumps(json_extraido, ensure_ascii=False, indent=2)}")
+    logger.info("="*40 + "\n")
+    
+    return json_extraido
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
     props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
     if not props_encontradas:
