@@ -2792,14 +2792,15 @@ async def lifespan(app: FastAPI):
     global http_client
 
     http_client = httpx.AsyncClient(
-        limits=httpx.Limits(
-            max_connections=100,
-            max_keepalive_connections=20,
-        ),
-        headers={
-            "User-Agent": "Mettryc-Chatbot/1.0",
-        },
-    )
+    follow_redirects=True,
+    limits=httpx.Limits(
+        max_connections=100,
+        max_keepalive_connections=20,
+    ),
+    headers={
+        "User-Agent": "Mettryc-Chatbot/1.0",
+    },
+)
 
     if REDIS_URL and redis_async:
         try:
