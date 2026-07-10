@@ -32,6 +32,10 @@ logging.basicConfig(
 
 logger = logging.getLogger("mettryc-chatbot")
 
+# Evita mostrar credenciales incluidas en URLs externas.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # ============================================================
 # CONFIGURACIÓN
