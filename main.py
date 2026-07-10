@@ -2789,6 +2789,20 @@ async def procesar_conversacion(
 # ============================================================
 # FASTAPI
 # ============================================================
+async def inicializar_datos_en_segundo_plano() -> None:
+    resultados = await asyncio.gather(
+        actualizar_inventario(force=True),
+        sincronizar_google_sheet(force=True),
+        return_exceptions=True,
+    )
+
+    for resultado in resultados:
+        if isinstance(resultado, Exception):
+            logger.error(
+                "Error inicializando datos tipo=%s detalle=%s",
+                type(resultado).__name__,
+                str(resultado)[:200],
+            )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -2796,15 +2810,15 @@ async def lifespan(app: FastAPI):
     global http_client
 
     http_client = httpx.AsyncClient(
-    follow_redirects=True,
-    limits=httpx.Limits(
-        max_connections=100,
-        max_keepalive_connections=20,
-    ),
-    headers={
-        "User-Agent": "Mettryc-Chatbot/1.0",
-    },
-)
+        follow_redirects=True,
+        limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+        ),
+        headers={
+            "User-Agent": "Mettryc-Chatbot/1.0",
+        },
+    )
 
     if REDIS_URL and redis_async:
         try:
@@ -2826,21 +2840,19 @@ async def lifespan(app: FastAPI):
             "El estado funcionará solo en memoria."
         )
 
-    try:
-        await actualizar_inventario(force=True)
-    except Exception:
-        logger.exception(
-            "Error inicializando inventario."
-        )
-
-    try:
-        await sincronizar_google_sheet(force=True)
-    except Exception:
-        logger.exception(
-            "Error inicializando Google Sheets."
-        )
+    tarea_inicializacion = asyncio.create_task(
+        inicializar_datos_en_segundo_plano()
+    )
 
     yield
+
+    if not tarea_inicializacion.done():
+        tarea_inicializacion.cancel()
+
+        try:
+            await tarea_inicializacion
+        except asyncio.CancelledError:
+            pass
 
     if http_client:
         await http_client.aclose()
