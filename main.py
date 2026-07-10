@@ -341,31 +341,59 @@ def analizar_mensaje_ia(mensaje_usuario: str, estado: dict, historial: list) -> 
     return extraer_json_de_texto(consultar_ia([{"role": "system", "content": system}] + historial_breve + [{"role": "user", "content": user_prompt}], max_tokens=350, fallback="{}"))
 
 def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
-    # Filtramos la información para que sea extremadamente clara para la IA
-    datos_confirmados = contexto_sistema.get('datos_confirmados', [])
-    faltantes = contexto_sistema.get('faltantes_busqueda', [])
+    props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
+    if not props_encontradas:
+        if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
+            props_encontradas = "[0 resultados. Ofrece ajustar filtros.]"
+        else:
+            props_encontradas = "[Fase de diagnóstico. Continúa la charla.]"
+            
+    faltantes_busqueda = contexto_sistema.get('faltantes_busqueda', [])
+    faltantes_lead = contexto_sistema.get('faltantes_lead', [])
+    
+    # Determinamos EXACTAMENTE qué debe preguntar la IA para evitar que haga 2 preguntas
+    dato_a_preguntar = "Ninguno. Muestra las propiedades."
+    if faltantes_busqueda:
+        dato_a_preguntar = faltantes_busqueda[0]
+    elif faltantes_lead:
+        dato_a_preguntar = faltantes_lead[0]
+
+    rol = contexto_sistema.get('rol_detectado', 'cliente')
+    nombre_cliente = contexto_sistema.get('nombre_cliente', '')
+    datos_confirmados = ", ".join(contexto_sistema.get('datos_confirmados', [])) or "Ninguno"
     
     prompt_sistema = f"""
-    Eres Paty, la especialista VIP de Mettryc Realty en Valencia.
-    Tu misión es capturar los datos de búsqueda de un cliente paso a paso.
+    Eres Paty, asistente VIP de Mettryc Realty (Valencia, Venezuela).
     
-    CONTEXTO ACTUAL DEL CLIENTE:
-    - Nombre: {contexto_sistema.get('nombre_cliente', 'No conocido')}
-    - Datos que YA TENEMOS: {', '.join(datos_confirmados)}
-    - Información que FALTA (Debes preguntar por UNO solo): {', '.join(faltantes) if faltantes else 'Nada, procede a buscar propiedades'}
-    - Propiedades encontradas: {contexto_sistema.get('propiedades_encontradas_texto', 'Ninguna aún')}
+    CONTEXTO ACTUAL:
+    - Cliente: {nombre_cliente if nombre_cliente else "Desconocido"} ({rol})
+    - Datos ya confirmados: {datos_confirmados}
+    - ÚNICO DATO QUE DEBES PREGUNTAR: {dato_a_preguntar}
+    - Propiedades a mostrar: {props_encontradas}
 
-    REGLAS ESTRICTAS:
-    1. Si ya tenemos el dato (ej. ya sabemos que busca en Valles del Camoruco), tienes PROHIBIDO volver a preguntar por ello.
-    2. Si el usuario te da un dato, confírmalo (ej. "¡Excelente! Tomo nota de las 3 habitaciones...") antes de preguntar el siguiente dato faltante.
-    3. Si ya tienes todos los filtros (tipo, operación, zona, presupuesto, habs), muestra las propiedades de la lista.
-    4. Sé natural, cálida y breve. No uses plantillas largas ni frases como "Si tienes alguna pregunta...".
-    5. Formato de enlaces: https://mettryc.com/inmueble/123 (texto plano).
+    REGLAS ESTRICTAS DE CONVERSACIÓN (INQUEBRANTABLES):
+    1. LÍMITE DE LONGITUD: Tus respuestas no deben superar las 30 palabras (excepto cuando envíes fichas de propiedades). Sé directa y amigable.
+    2. UNA SOLA PREGUNTA: Tienes PROHIBIDO hacer más de una pregunta por mensaje.
+    3. COHERENCIA ABSOLUTA: Lee el último mensaje del usuario y valídalo. Si dice "un apartamento", responde "¡Excelente elección un apartamento!". Si dice "Valles del Camoruco", responde "Gran zona.".
+    4. MEMORIA: NUNCA preguntes por información que ya está en "Datos ya confirmados".
+    
+    BASE DE CONOCIMIENTOS DE METTRYC REALTY:
+    - Honorarios: 5% en venta o 1 mes de canon en alquiler (Cámara Inmobiliaria de Venezuela).
+    - Reclutamiento de agentes: El ingreso cuesta 50$ (curso y credenciales). Formulario: https://forms.gle/SbLtHrey69fhf3Xt8
+    - Negociación: Si preguntan si es negociable, responde: "Sería cuestión de que haga su mejor oferta y se la presentaremos al propietario".
+    - Contacto Directo: NUNCA des información de contacto del propietario. Di que un agente le contactará.
+    - Colegas Inmobiliarios: Si el rol es "colega_inmobiliario", NO pidas datos de sus clientes.
+    - Dirección: CC Patio Trigal Local 300-6. GPS: https://maps.app.goo.gl/dSofuNmF89vNLv7X8
+    - Agradecimientos: Si el usuario dice "gracias", responde "¡Siempre a la orden! ☺️".
+    
+    FORMATO:
+    - Enlaces web siempre en texto plano, sin corchetes de Markdown.
     """
     
     mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-6:] if len(historial) > 6 else historial)
+    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
     
-    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=[MODELO_RESPALDO_1, MODELO_RESPALDO_2])
+    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=cascada_obediente)
 
 # ============================================================
 # LÓGICA DE PYTHON (Integridad de Datos)
