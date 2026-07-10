@@ -67,6 +67,11 @@ ESTADO_LEAD_COMPLETO = "lead_completo"
 TOKENS_DIRECCION_ZONA = {"norte", "sur", "este", "oeste", "centro"}
 SINONIMOS_TIPO = {"tohouse": "townhouse", "towhouse": "townhouse", "twhouse": "townhouse", "town house": "townhouse", "aparto quinta": "apartoquinta", "aptoquinta": "apartoquinta", "apartoquita": "apartoquinta"}
 
+def coincide_tipo_propiedad(propiedad: dict, tipo_buscado: str) -> bool:
+    tipo_wasi = normalizar_tipo_propiedad(propiedad.get("tipo_propiedad_wasi", ""))
+    tipo_buscado_norm = normalizar_tipo_propiedad(tipo_buscado)
+    return tipo_buscado_norm in tipo_wasi or tipo_wasi in tipo_buscado_norm
+
 def normalizar_texto(texto: str) -> str:
     if not texto: return ""
     texto = str(texto).lower().strip()
@@ -372,51 +377,41 @@ CONOCIMIENTO_METTRYC = """
 - Agradecimientos: Si el usuario dice "gracias", responde "¡Siempre a la orden! ☺️".
 """
 
-def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
-    props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
-    if not props_encontradas:
-        if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
-            props_encontradas = "[0 resultados. Ofrece ajustar filtros.]"
-        else:
-            props_encontradas = "[Fase de diagnóstico. Continúa la charla.]"
-            
-    faltantes_busqueda = contexto_sistema.get('faltantes_busqueda', [])
-    faltantes_lead = contexto_sistema.get('faltantes_lead', [])
-    
-    dato_a_preguntar = "Ninguno. Muestra las propiedades."
-    if faltantes_busqueda:
-        dato_a_preguntar = faltantes_busqueda[0]
-    elif faltantes_lead:
-        dato_a_preguntar = faltantes_lead[0]
+# ============================================================
+# SOLUCIÓN FINAL: Paty, la Asistente VIP Inteligente
+# ============================================================
 
-    rol = contexto_sistema.get('rol_detectado', 'cliente')
-    nombre_cliente = contexto_sistema.get('nombre_cliente', '')
-    datos_confirmados = ", ".join(contexto_sistema.get('datos_confirmados', [])) or "Ninguno"
+# [PEGA TODO TU CÓDIGO AQUÍ, PERO REEMPLAZA LA FUNCIÓN GENERAR_RESPUESTA_CONVERSACIONAL_PATY CON ESTA:]
+
+def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema: dict, historial: list) -> str:
+    # Preparamos los datos para la IA
+    faltantes = contexto_sistema.get('faltantes_busqueda', [])
+    faltantes_lead = contexto_sistema.get('faltantes_lead', [])
+    dato_a_preguntar = faltantes[0] if faltantes else (faltantes_lead[0] if faltantes_lead else "Ninguno")
     
     prompt_sistema = f"""
-    Eres Paty, asistente VIP de Mettryc Realty (Valencia, Venezuela).
+    Eres Paty, asistente VIP de Mettryc Realty (Valencia).
     
-    BASE DE CONOCIMIENTOS DE METTRYC REALTY:
-    {CONOCIMIENTO_METTRYC}
-    
-    CONTEXTO ACTUAL:
-    - Cliente: {nombre_cliente if nombre_cliente else "Desconocido"} ({rol})
-    - Datos ya confirmados: {datos_confirmados}
-    - ÚNICO DATO QUE DEBES PREGUNTAR AL CLIENTE AHORA: {dato_a_preguntar}
-    - Propiedades a mostrar: {props_encontradas}
+    ESTADO DE LA CONVERSACIÓN:
+    - Cliente: {contexto_sistema.get('nombre_cliente', 'Desconocido')}
+    - Datos Confirmados: {', '.join(contexto_sistema.get('datos_confirmados', []))}
+    - DATO A PREGUNTAR AHORA: {dato_a_preguntar}
+    - Propiedades disponibles: {contexto_sistema.get('propiedades_encontradas_texto', 'Ninguna')}
 
-    REGLAS ESTRICTAS DE CONVERSACIÓN (INQUEBRANTABLES):
-    1. LÍMITE DE LONGITUD: Tus respuestas no deben superar las 30 palabras (excepto al enviar fichas de propiedades). Sé directa, cálida y humana.
-    2. UNA SOLA PREGUNTA: Tienes PROHIBIDO hacer más de una pregunta por mensaje. Cierra tu respuesta con la pregunta del "ÚNICO DATO QUE DEBES PREGUNTAR AL CLIENTE AHORA".
-    3. COHERENCIA ABSOLUTA: Lee el último mensaje del usuario y valídalo brevemente (Ej: si dice "un apartamento", inicia diciendo "¡Excelente elección un apartamento!").
-    4. MEMORIA: Tienes PROHIBIDO preguntar por información que ya está en la lista de "Datos ya confirmados".
-    5. FORMATO: Enlaces web siempre en texto plano, sin corchetes de Markdown.
+    REGLAS:
+    1. RESPUESTA LÓGICA: Si el usuario acaba de escribir algo (ej: "3 habitaciones"), confirma brevemente (Ej: "¡Entendido, 3 habitaciones!") antes de pedir el siguiente dato.
+    2. BREVEDAD: Máximo 30 palabras. No uses plantillas.
+    3. PROHIBIDO REPETIR: NUNCA preguntes por datos que ya están en "Datos Confirmados".
+    4. UNA PREGUNTA: Solo pregunta por el "DATO A PREGUNTAR AHORA".
+    5. INFO COMERCIAL: Si preguntan honorarios di 5% venta/1 mes alquiler. Dirección: CC Patio Trigal.
+    6. FORMATEO: Enlaces web en texto plano (sin corchetes).
     """
     
-    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-6:] if len(historial) > 6 else historial)
-    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
+    # Reducimos el historial para que la IA no se confunda con mensajes de hace 10 minutos
+    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-4:] if len(historial) > 4 else historial)
     
-    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=cascada_obediente)
+    return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=[MODELO_RESPALDO_1, MODELO_RESPALDO_2])
+
 
 # ============================================================
 # LÓGICA DE PYTHON (Integridad de Datos)
