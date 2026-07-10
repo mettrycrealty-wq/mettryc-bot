@@ -2867,6 +2867,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root():
+    return {
+        "service": "Mettryc Realty Chatbot",
+        "status": "online",
+    }
 
 @app.get("/health")
 async def health():
