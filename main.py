@@ -375,20 +375,22 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     props_encontradas = contexto_sistema.get('propiedades_encontradas_texto', '')
     if not props_encontradas:
         if "No se encontraron" in contexto_sistema.get('mensaje_interno', ''):
-            props_encontradas = "[0 resultados. Ofrece ajustar filtros.]"
+            props_encontradas = "[0 resultados en inventario.]"
         else:
             props_encontradas = "[Fase de diagnóstico. Continúa la charla.]"
             
     faltantes = contexto_sistema.get('faltantes_busqueda', [])
     faltantes_lead = contexto_sistema.get('faltantes_lead', [])
     
-    # LA CORRECCIÓN MAESTRA: Acción explícita para evitar que alucine preguntas
     if faltantes:
-        accion_principal = f"PREGUNTA OBLIGATORIA: Pregunta amablemente por este dato: {faltantes[0]}"
+        accion_principal = f"Pide amablemente este dato: {faltantes[0]}"
     elif faltantes_lead:
-        accion_principal = f"CAPTURA DE LEAD: Pide este dato para asignar un agente: {faltantes_lead[0]}"
+        if "0 resultados" in props_encontradas:
+            accion_principal = f"Dile con empatía que actualmente no hay propiedades exactas con esos filtros. Luego, pídele su {faltantes_lead[0]} para asignar un agente que busque opciones fuera de inventario."
+        else:
+            accion_principal = f"Invítalo a revisar las propiedades encontradas. Luego, pídele su {faltantes_lead[0]} para asignar un agente que gestione las visitas."
     else:
-        accion_principal = "MOSTRAR INVENTARIO: Ya tienes todos los datos. Tu ÚNICA tarea es mostrar la lista de propiedades disponibles (o avisar si hay 0 resultados) e invitar al usuario a revisarlas. NO hagas preguntas sobre requisitos."
+        accion_principal = "Despídete cordialmente y avisa que un Asesor de Mettryc Realty lo contactará muy pronto. NO hagas más preguntas."
 
     rol = contexto_sistema.get('rol_detectado', 'cliente')
     nombre_cliente = contexto_sistema.get('nombre_cliente', '')
@@ -409,16 +411,18 @@ def generar_respuesta_conversacional_paty(mensaje_usuario: str, contexto_sistema
     {accion_principal}
 
     REGLAS ESTRICTAS DE CONVERSACIÓN (INQUEBRANTABLES):
-    1. VALIDA: Confirma brevemente lo que el usuario acaba de decir antes de seguir (Ej: "¡Entendido, 3 habitaciones!").
-    2. LÍMITE DE LONGITUD: Máximo 30 palabras de charla (no aplica a la lista de propiedades). Sé directa y amigable.
-    3. NO INVENTES PREGUNTAS: Limítate a cumplir TU OBJETIVO. Si el objetivo es Mostrar Inventario, no hagas más preguntas sobre la búsqueda.
+    1. VALIDA: Confirma brevemente lo que el usuario acaba de decir en su mensaje antes de seguir.
+    2. LÍMITE DE LONGITUD: Máximo 30 palabras de charla (sin contar la lista de propiedades). Sé directa y amigable.
+    3. NO INVENTES PREGUNTAS: Limítate a cumplir TU OBJETIVO. Si tu objetivo es despedirte, NO HAGAS NINGUNA PREGUNTA.
     4. MEMORIA: Tienes PROHIBIDO preguntar por información que ya está en "Datos Confirmados".
     5. FORMATO: Enlaces web siempre en texto plano, sin corchetes de Markdown.
     """
     
-    mensajes = [{"role": "system", "content": prompt_sistema}] + (historial[-6:] if len(historial) > 6 else historial)
-    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
+    # ¡ARREGLO CRÍTICO!: Añadimos el mensaje actual del usuario para que la IA no se atrase un turno
+    historial_recortado = historial[-6:] if len(historial) > 6 else historial
+    mensajes = [{"role": "system", "content": prompt_sistema}] + historial_recortado + [{"role": "user", "content": mensaje_usuario}]
     
+    cascada_obediente = [MODELO_RESPALDO_1, MODELO_RESPALDO_2]
     return consultar_ia(mensajes, max_tokens=600, modelos_personalizados=cascada_obediente)
 
 # ============================================================
@@ -644,13 +648,18 @@ async def handle_request(request: Request):
                     if props:
                         estado["propiedades_enviadas"].extend([p.get("id") for p in props if p.get("id")])
                         contexto_sistema["propiedades_encontradas_texto"] = "\n\n".join([formatear_ficha_propiedad(p, estado["rol"] == "colega_inmobiliario") for p in props])
-                        estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
                     else:
-                        contexto_sistema["mensaje_interno"] = "No se encontraron propiedades con estos filtros exactos. Pide amablemente ajustar los requerimientos (ej. otra zona o mayor presupuesto)."
+                        contexto_sistema["propiedades_encontradas_texto"] = "[0 resultados]"
+                        contexto_sistema["mensaje_interno"] = "No se encontraron propiedades."
+                    
+                    # Avanza el embudo a la recolección del lead
+                    if estado["rol"] == "cliente":
+                        estado["estado"] = ESTADO_CAPTURANDO_LEAD
+                    else:
+                        estado["estado"] = ESTADO_MOSTRANDO_PROPIEDADES
 
             # --- RUTA 3: MODO MOSTRANDO PROPIEDADES ---
             elif estado["estado"] == ESTADO_MOSTRANDO_PROPIEDADES:
-                # Modificado para permitir nuevas búsquedas si agregan filtros
                 if intencion in ["mas_opciones", "ajustar_busqueda", "buscar"] or any(analisis.get("filtros", {}).values()):
                     props = elegir_top_n_propiedades(cache["inventario"], estado["filtros"], n=3, excluir_ids=estado["propiedades_enviadas"])
                     if props:
