@@ -3046,19 +3046,44 @@ async def procesar_mensaje(
         mensaje,
     )
 
-    # --- 🛡️ PARCHE DE COMPRENSIÓN RÁPIDA (Lectura de encabezados) ---
+    # --- 🛡️ PARCHE DE COMPRENSIÓN RÁPIDA (Lectura de encabezados y Zonas) ---
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
     
+    # 1. Parche de Operación
     if not filtros_actuales.get("tipo_operacion"):
-        # Si menciona venta o habla de presupuesto en $, asumimos Venta
         if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion", "presupuesto"]):
             filtros_actuales["tipo_operacion"] = "venta"
             hubo_cambio = True
-        # Si menciona alquiler o canon, asumimos Alquiler
         elif any(p in texto_normalizado for p in ["alquiler", "alquilar", "canon", "arrendar"]):
             filtros_actuales["tipo_operacion"] = "alquiler"
             hubo_cambio = True
+
+    # 2. 📍 NUEVO: CAZADOR DE ZONAS (Evita que la IA resuma u omita)
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+        zonas_encontradas = []
+
+        for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad_dict, zonas_dict in ciudades.items():
+                # Si menciona la ciudad exacta
+                if ciudad_dict in texto_normalizado:
+                    zonas_encontradas.append(ciudad_dict)
+                # Si menciona una zona exacta del diccionario
+                for zona in zonas_dict:
+                    if zona in texto_normalizado and len(zona) > 3:
+                        zonas_encontradas.append(zona)
+
+        if zonas_encontradas:
+            zona_forzada = ", ".join(zonas_encontradas)
+            zona_ia = str(filtros_actuales.get("zona", ""))
+            
+            # Si Python extrajo más detalle que la IA, Python GANA.
+            if not zona_ia or len(zona_forzada) > len(zona_ia):
+                filtros_actuales["zona"] = zona_forzada
+                hubo_cambio = True
+    except ImportError:
+        pass
     # -------------------------------------------------------------
 
     if not estado.get("rol"):
@@ -3147,9 +3172,8 @@ async def procesar_mensaje(
                 )
             )
 
-else:
-        # Si Python (El Director) ya recolectó todos los filtros necesarios,
-        # obligamos a Paty a mostrar las propiedades sin importar qué palabra usó el cliente.
+    else:
+        # Si Python ya recolectó todos los filtros necesarios, enviamos opciones directo
         if hubo_cambio and criterios_suficientes(estado):
             respuesta = await mostrar_propiedades(estado)
             
