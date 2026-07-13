@@ -231,7 +231,7 @@ http_client: Optional[httpx.AsyncClient] = None
 
 
 # ============================================================
-# UTILIDADES
+# UTILIDADES Y PARCHES AÑADIDOS
 # ============================================================
 
 def normalizar_texto(valor: Any) -> str:
@@ -500,7 +500,7 @@ def zona_coincide(
     if not disponibles:
         return False
 
-    # --- 🛡️ DETECTOR DE CHOQUE DE CIUDADES ---
+    # 🛡️ DETECTOR DE CHOQUE DE CIUDADES
     ciudades_mettryc = {
         "valencia", "naguanagua", "san diego", "guacara", 
         "barquisimeto", "cabudare", "caracas"
@@ -512,32 +512,25 @@ def zona_coincide(
         if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
             return False
 
-    # 1. Filtro Básico (Acepta coincidencias de palabra)
-    coincidencias = buscados.intersection(disponibles)
-    if len(coincidencias) >= 1:
-        return True
-
-    # 2. Filtro Inteligente: Jerarquía Geográfica con el Diccionario (Soporta Ñ y acentos)
+    # Diccionario Inteligente (Ignorando la Ñ)
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
-        
         for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
             for ciudad_dict, zonas_dict in ciudades.items():
                 ciudad_norm = normalizar_texto(ciudad_dict)
                 zonas_norm = [normalizar_texto(z) for z in zonas_dict]
                 
-                # Si la propiedad pertenece a esta ciudad o a una de sus zonas
                 if ciudad_prop_norm == ciudad_norm or ciudad_prop_norm in zonas_norm or zona_prop_norm in zonas_norm:
-                    
-                    # Revisamos si el usuario pidió una zona que pertenezca a esta misma ciudad
                     for palabra_buscada in buscados:
-                        if any(palabra_buscada in z_norm for z_norm in zonas_norm):
+                        # Buscamos si la palabra pedida pertenece al conjunto de zonas válidas o ciudad
+                        if any(palabra_buscada in z_norm for z_norm in zonas_norm) or palabra_buscada == ciudad_norm:
                             return True
-                            
     except ImportError:
         pass
 
-    return False
+    # Coincidencia flexible de tokens (Filtro Básico)
+    coincidencias = buscados.intersection(disponibles)
+    return len(coincidencias) >= 1
 
 def extraer_codigo_inmueble(
     mensaje: str,
@@ -792,17 +785,15 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
     }
     
     try:
-        import httpx
-        # Salvavidas: trust_env=False para evitar problemas de proxy internos
-        async with httpx.AsyncClient(trust_env=False) as client:
-            resp = await client.post(url, headers=headers, json=payload, timeout=15.0)
-            resp.raise_for_status()
-            contenido = resp.json()["choices"][0]["message"]["content"]
-            return contenido.strip() if contenido else instruccion_cruda
+        # Se aprovecha el motor global con trust_env=False para prevenir el error proxy de Render
+        resp = await http_client.post(url, headers=headers, json=payload, timeout=15.0)
+        resp.raise_for_status()
+        contenido = resp.json()["choices"][0]["message"]["content"]
+        return contenido.strip() if contenido else instruccion_cruda
     except Exception as e:
         logger.error(f"Error humanizando texto: {e}")
         return instruccion_cruda
-        
+
 
 # ============================================================
 # SESIONES
@@ -1297,9 +1288,6 @@ def cruzar_captador_con_sheet(
     """
     Cruza el nombre del captador recibido desde Wasi con el
     Google Sheet.
-
-    Primero intenta igualdad exacta normalizada. Si no encuentra,
-    calcula coincidencia por tokens del nombre.
     """
     nombre_normalizado = normalizar_texto(
         nombre_wasi
@@ -1470,7 +1458,6 @@ INMUEBLE ESPECÍFICO
   usa pedir_codigo_inmueble y solicítalo naturalmente.
 - No asumas que un código de Mercado Libre es el ID de Wasi.
 - Si te envian un mensaje como este "Hola, tengo algunas preguntas sobre tu publicación en Mercado Libre: https://inmueble.mercadolibre.com.ve/MLV-1014940508-local-comercial-en-venta-cc-metropolis-san-diego-wc-9687434-_JM" deberás tomar el numero que está antes de -_JM (en este caso 9686434) como el codigo de la propiedad. Pregunta que información adicional quiere saber de ella y busca la respuesta en el inventario.
-- Si recibes una solicitud tipo formato de "cadena" o broadcast y no especifica el tipo de operacion, puedes intuirlo viendo el precio, si no lo puedes intuir pregunta. Normalmente los alquileres tienen precios inferiores a los 10.000$ a menos que sean alquileres de inmuebles industriales como galpones o terrenos de mas de 10.000 m2.
 
 RESULTADOS
 
@@ -1890,7 +1877,7 @@ def decision_fallback(
 
 
 # ============================================================
-# ACTUALIZACIÓN DEL ESTADO
+# ACTUALIZACIÓN DEL ESTADO Y EXTRACCIONES DE EMERGENCIA
 # ============================================================
 
 def normalizar_campo_sin_preferencia(
@@ -2134,7 +2121,7 @@ def datos_lead_faltantes(
 
 
 # ============================================================
-# RANKING
+# RANKING Y EVALUACIÓN ESTRICTA
 # ============================================================
 
 def obtener_precio(
@@ -2257,10 +2244,8 @@ def evaluar_propiedad(
         ):
             score += 30
         else:
-            score -= 15
-            diferencias.append(
-                f"está en {propiedad.get('zona', 'otra zona')}"
-            )
+            # 🛡️ ELIMINACIÓN ESTRICTA: Si no es la zona solicitada, fuera de la lista final.
+            return None
 
     if presupuesto:
         if precio <= presupuesto:
@@ -2272,7 +2257,8 @@ def evaluar_propiedad(
             ) / presupuesto
 
             if exceso > MAX_EXCESO_PRESUPUESTO:
-                score -= 40
+                # 🛡️ ELIMINACIÓN POR PRESUPUESTO EXCESIVO: Fuera de lista.
+                return None
             else:
                 score -= exceso * 50
 
@@ -3005,8 +2991,6 @@ async def procesar_mensaje(
         estado,
     )
 
-    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros extraídos: {estado.get('filtros')}")
-
     decision = forzar_accion_evidente(
         decision,
         mensaje,
@@ -3019,20 +3003,12 @@ async def procesar_mensaje(
         mensaje,
     )
 
-    # --- 🛡️ PARCHE MEGA-CAZADOR DE PYTHON ---
+    # --- 🛡️ MEGA-CAZADOR DE PYTHON ---
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
     
-    # A. Cazador de Operación
-    if not filtros_actuales.get("tipo_operacion"):
-        if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion"]):
-            filtros_actuales["tipo_operacion"] = "venta"
-            hubo_cambio = True
-        elif any(p in texto_normalizado for p in ["alquiler", "alquilar", "canon", "arrendar"]):
-            filtros_actuales["tipo_operacion"] = "alquiler"
-            hubo_cambio = True
-
-    # B. Cazador de Presupuesto (Busca números con $)
+    # A. Cazador de Presupuesto (Busca números con $)
+    presupuesto_detectado = 0.0
     if not filtros_actuales.get("presupuesto_max"):
         match_precio = re.search(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?\s*(?:\$|usd|dolares)", texto_normalizado)
         if match_precio:
@@ -3042,9 +3018,26 @@ async def procesar_mensaje(
                 if "mil" in texto_normalizado or "k" in texto_normalizado:
                     precio_forzado *= 1000
                 filtros_actuales["presupuesto_max"] = precio_forzado
+                presupuesto_detectado = precio_forzado
                 hubo_cambio = True
             except ValueError:
                 pass
+
+    # B. Cazador de Operación (Inteligencia Financiera)
+    if not filtros_actuales.get("tipo_operacion"):
+        if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion"]):
+            filtros_actuales["tipo_operacion"] = "venta"
+            hubo_cambio = True
+        elif any(p in texto_normalizado for p in ["alquiler", "alquilar", "canon", "arrendar"]):
+            filtros_actuales["tipo_operacion"] = "alquiler"
+            hubo_cambio = True
+        elif presupuesto_detectado > 0:
+            # SENTIDO COMÚN: Si ofrece más de $4000 y no dijo la palabra, asumimos venta.
+            if presupuesto_detectado > 4000:
+                filtros_actuales["tipo_operacion"] = "venta"
+            else:
+                filtros_actuales["tipo_operacion"] = "alquiler"
+            hubo_cambio = True
 
     # C. Cazador de Tipo Inmueble
     if not filtros_actuales.get("tipo_propiedad"):
@@ -3055,7 +3048,7 @@ async def procesar_mensaje(
                 hubo_cambio = True
                 break
 
-    # D. Cazador de Zonas (Ignorando ñ para cruce)
+    # D. Cazador de Zonas (Ignorando Ñ)
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         zonas_encontradas = []
@@ -3074,14 +3067,14 @@ async def procesar_mensaje(
             zonas_unicas = list(dict.fromkeys(zonas_encontradas))
             zona_forzada = ", ".join(zonas_unicas)
             zona_ia = str(filtros_actuales.get("zona", ""))
+            
+            # Si Python extrajo más detalle que la IA, Python GANA.
             if not zona_ia or len(zona_forzada) > len(zona_ia):
                 filtros_actuales["zona"] = zona_forzada
                 hubo_cambio = True
     except ImportError:
         pass
     # -------------------------------------------------------------
-
-    logger.info(f"🔵 RADIOGRAFÍA [2 - PYTHON (PARCHES)]: Filtros finales: {estado.get('filtros')} | Rol: {estado.get('rol')} | Listos: {criterios_suficientes(estado)}")
 
     if not estado.get("rol"):
         estado["rol"] = "cliente"
@@ -3228,6 +3221,8 @@ async def procesar_mensaje(
     guardar_sesion(sender, estado)
 
     return respuesta
+
+
 # ============================================================
 # INICIALIZACIÓN
 # ============================================================
@@ -3254,7 +3249,7 @@ async def lifespan(app: FastAPI):
 
     http_client = httpx.AsyncClient(
         follow_redirects=True,
-        trust_env=False,  # 🚀 EL SALVAVIDAS: Ignora proxies basura de Render
+        trust_env=False,  # 🚀 FIX: Ignora proxies basura de Render para evitar UnsupportedProtocol
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=20,
