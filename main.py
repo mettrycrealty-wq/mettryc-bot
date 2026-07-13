@@ -3147,24 +3147,11 @@ async def procesar_mensaje(
                 )
             )
 
-    else:
-        if (
-            hubo_cambio
-            and criterios_suficientes(estado)
-            and any(
-                frase in normalizar_texto(mensaje)
-                for frase in [
-                    "busca",
-                    "muestrame",
-                    "quiero ver",
-                    "ver opciones",
-                    "que tienes",
-                ]
-            )
-        ):
-            respuesta = await mostrar_propiedades(
-                estado
-            )
+else:
+        # Si Python (El Director) ya recolectó todos los filtros necesarios,
+        # obligamos a Paty a mostrar las propiedades sin importar qué palabra usó el cliente.
+        if hubo_cambio and criterios_suficientes(estado):
+            respuesta = await mostrar_propiedades(estado)
             
         else:
             # 1. Python (El Director) decide qué falta
