@@ -469,19 +469,11 @@ def tokens_nombre(valor: Any) -> Set[str]:
 
 
 def tokens_zona(valor: Any) -> Set[str]:
+    # Agregamos 'san', 'santa', 'villa', 'valle' para evitar falsos positivos
     bloqueadas = {
-        "el",
-        "la",
-        "los",
-        "las",
-        "de",
-        "del",
-        "en",
-        "zona",
-        "sector",
-        "urbanizacion",
-        "ciudad",
-        "venezuela",
+        "el", "la", "los", "las", "de", "del", "en", "zona", 
+        "sector", "urbanizacion", "ciudad", "venezuela",
+        "san", "santa", "villa", "valle", "puerto"
     }
 
     return {
@@ -500,9 +492,7 @@ def zona_coincide(
         return True
 
     buscados = tokens_zona(buscada)
-    disponibles = tokens_zona(
-        f"{zona} {ciudad}"
-    )
+    disponibles = tokens_zona(f"{zona} {ciudad}")
 
     if not buscados:
         return True
@@ -510,13 +500,13 @@ def zona_coincide(
     if not disponibles:
         return False
 
-    coincidencias = buscados.intersection(
-        disponibles
-    )
+    coincidencias = buscados.intersection(disponibles)
 
-    return (
-        len(coincidencias) / len(buscados)
-    ) >= 0.60
+    # NUEVA LÓGICA MÚLTIPLE: 
+    # Si al menos UNA palabra fuerte coincide, es un Match exitoso.
+    # Así el cliente puede pedir 5 zonas y el inmueble solo necesita estar en 1.
+    return len(coincidencias) >= 1
+
 
 
 def extraer_codigo_inmueble(
