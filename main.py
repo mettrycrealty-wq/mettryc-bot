@@ -3046,6 +3046,21 @@ async def procesar_mensaje(
         mensaje,
     )
 
+    # --- 🛡️ PARCHE DE COMPRENSIÓN RÁPIDA (Lectura de encabezados) ---
+    texto_normalizado = normalizar_texto(mensaje)
+    filtros_actuales = estado.setdefault("filtros", {})
+    
+    if not filtros_actuales.get("tipo_operacion"):
+        # Si menciona venta o habla de presupuesto en $, asumimos Venta
+        if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion", "presupuesto"]):
+            filtros_actuales["tipo_operacion"] = "venta"
+            hubo_cambio = True
+        # Si menciona alquiler o canon, asumimos Alquiler
+        elif any(p in texto_normalizado for p in ["alquiler", "alquilar", "canon", "arrendar"]):
+            filtros_actuales["tipo_operacion"] = "alquiler"
+            hubo_cambio = True
+    # -------------------------------------------------------------
+
     if not estado.get("rol"):
         estado["rol"] = "cliente"
         estado["confianza_rol"] = 0.40
@@ -3163,8 +3178,6 @@ async def procesar_mensaje(
                 mensaje_usuario=mensaje
             )
 
-
-
     if (
         estado.get("objetivo")
         == "captura_lead"
@@ -3207,8 +3220,6 @@ async def procesar_mensaje(
     guardar_sesion(sender, estado)
 
     return respuesta
-
-
 # ============================================================
 # INICIALIZACIÓN
 # ============================================================
