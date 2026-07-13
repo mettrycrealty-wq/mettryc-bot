@@ -723,6 +723,30 @@ def verificar_caducidad_y_amnesia(estado: dict) -> dict:
 
     return estado
 
+def obtener_pregunta_faltante(estado: dict) -> str:
+    """
+    Revisa los filtros actuales y devuelve una pregunta específica 
+    para el dato más importante que falte.
+    """
+    filtros = estado.get("filtros", {})
+    
+    if not filtros.get("tipo_operacion"):
+        return "¿Buscas propiedades para compra o para alquiler?"
+        
+    if not filtros.get("tipo_propiedad"):
+        return "¿Qué tipo de inmueble tienes en mente? (Ej: apartamento, casa, townhouse)"
+        
+    if not filtros.get("zona"):
+        return "¿En qué zona o ciudad te gustaría buscar?"
+        
+    if not filtros.get("presupuesto"):
+        return "¿Cuál es tu presupuesto estimado o el presupuesto de tu cliente?"
+        
+    # Si por alguna razón extraña están todos los filtros pero no se buscó, 
+    # dejamos un paracaídas final suave.
+    return "¿Hay alguna característica especial adicional que deba tener el inmueble?"
+
+
 # ============================================================
 # SESIONES
 # ============================================================
