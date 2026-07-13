@@ -3115,161 +3115,18 @@ async def procesar_mensaje(
             )
             
         else:
+            # 1. Python (El Director) decide qué falta
             pregunta_dinamica = obtener_pregunta_faltante(estado)
-            respuesta = (
-                decision.mensaje.strip()
-                or pregunta_dinamica
+            texto_crudo = decision.mensaje.strip() or pregunta_dinamica
+            
+            # 2. Paty (La Actriz) lo humaniza
+            respuesta = await humanizar_texto_con_ia(
+                estado=estado, 
+                instruccion_cruda=texto_crudo, 
+                mensaje_usuario=mensaje
             )
 
 
-
-    if (
-        estado.get("objetivo")
-        == "captura_lead"
-    ):
-        if lead_completo(estado):
-            respuesta = (
-                await completar_y_assignar_lead(
-                    estado
-                )
-            )
-
-        elif accion not in {
-            "seleccionar_propiedad",
-            "buscar_por_codigo",
-        }:
-            faltantes = datos_lead_faltantes(
-                estado
-            )
-
-            if not decision.mensaje.strip():
-                respuesta = (
-                    "Gracias. Para completar la solicitud todavía "
-                    "necesito "
-                    + ", ".join(faltantes)
-                    + "."
-                )
-
-    agregar_historial(
-        estado,
-        "user",
-        mensaje,
-    )
-
-    agregar_historial(
-        estado,
-        "assistant",
-        respuesta,
-    )
-
-    guardar_sesion(sender, estado)
-
-    return respuesta
-    if accion == "reiniciar_busqueda":
-        estado = reiniciar_busqueda(estado)
-        sesiones[sender] = estado
-
-        respuesta = (
-            decision.mensaje.strip()
-            or (
-                "¡Perfecto! Comencemos una nueva búsqueda. "
-                "Cuéntame qué propiedad tienes en mente."
-            )
-        )
-
-    elif accion == "buscar_por_codigo":
-        codigo = (
-            decision.accion.codigo
-            or extraer_codigo_inmueble(mensaje)
-        )
-
-        if not codigo:
-            estado["esperando_codigo"] = True
-            respuesta = (
-                decision.mensaje.strip()
-                or (
-                    "Envíame el código del inmueble o el enlace "
-                    "de la publicación para localizarlo."
-                )
-            )
-        else:
-            respuesta = (
-                await mostrar_inmueble_especifico(
-                    estado,
-                    codigo,
-                )
-            )
-
-    elif accion == "pedir_codigo_inmueble":
-        estado["esperando_codigo"] = True
-
-        respuesta = (
-            decision.mensaje.strip()
-            or (
-                "¡Claro! Envíame el código que aparece en el "
-                "anuncio o el enlace de la publicación y te "
-                "muestro la ficha exacta."
-            )
-        )
-
-    elif accion == "mostrar_mas_propiedades":
-        if not estado["propiedades_enviadas"]:
-            respuesta = (
-                "Todavía no te he mostrado propiedades. "
-                "Cuéntame qué tipo de inmueble buscas, la "
-                "operación y la zona o presupuesto."
-            )
-        else:
-            respuesta = await mostrar_propiedades(
-                estado
-            )
-
-    elif accion == "seleccionar_propiedad":
-        respuesta = await seleccionar_propiedad(
-            estado,
-            decision.accion.posicion,
-        )
-
-    elif accion == "buscar_propiedades":
-        if criterios_suficientes(estado):
-            respuesta = await mostrar_propiedades(
-                estado
-            )
-        else:
-            respuesta = (
-                decision.mensaje.strip()
-                or (
-                    "Tengo una idea inicial. Para buscar opciones "
-                    "relevantes, dime si deseas comprar o alquilar "
-                    "y qué zona o presupuesto tienes en mente."
-                )
-            )
-
-    else:
-        if (
-            hubo_cambio
-            and criterios_suficientes(estado)
-            and any(
-                frase in normalizar_texto(mensaje)
-                for frase in [
-                    "busca",
-                    "muestrame",
-                    "quiero ver",
-                    "ver opciones",
-                    "que tienes",
-                ]
-            )
-        ):
-            respuesta = await mostrar_propiedades(
-                estado
-            )
-        else:
-            respuesta = (
-                decision.mensaje.strip()
-                or (
-                    "Cuéntame un poco más y con gusto te ayudo."
-                )
-            )
 
     if (
         estado.get("objetivo")
@@ -3290,8 +3147,6 @@ async def procesar_mensaje(
                 estado
             )
 
-            # La IA conserva su respuesta natural. Solo se usa
-            # fallback si no produjo un mensaje útil.
             if not decision.mensaje.strip():
                 respuesta = (
                     "Gracias. Para completar la solicitud todavía "
