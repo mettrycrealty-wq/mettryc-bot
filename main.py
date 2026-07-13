@@ -3034,6 +3034,8 @@ async def procesar_mensaje(
         estado,
     )
 
+logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: IA decidió Acción: {decision.accion.tipo} | Filtros: {estado.get('filtros')}")
+
     decision = forzar_accion_evidente(
         decision,
         mensaje,
@@ -3085,6 +3087,8 @@ async def procesar_mensaje(
     except ImportError:
         pass
     # -------------------------------------------------------------
+
+logger.info(f"🔵 RADIOGRAFÍA [2 - PYTHON (PARCHES)]: Filtros finales: {estado.get('filtros')} | Rol actual: {estado.get('rol')} | Criterios listos: {criterios_suficientes(estado)}")
 
     if not estado.get("rol"):
         estado["rol"] = "cliente"
