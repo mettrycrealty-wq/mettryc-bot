@@ -1462,6 +1462,7 @@ INMUEBLE ESPECÍFICO
   usa pedir_codigo_inmueble y solicítalo naturalmente.
 - No asumas que un código de Mercado Libre es el ID de Wasi.
 - Si te envian un mensaje como este "Hola, tengo algunas preguntas sobre tu publicación en Mercado Libre: https://inmueble.mercadolibre.com.ve/MLV-1014940508-local-comercial-en-venta-cc-metropolis-san-diego-wc-9687434-_JM" deberás tomar el numero que está antes de -_JM (en este caso 9686434) como el codigo de la propiedad. Pregunta que información adicional quiere saber de ella y busca la respuesta en el inventario.
+- Si recibes una solicitud tipo formato de "cadena" o broadcast y no especifica el tipo de operacion, puedes intuirlo viendo el precio, si no lo puedes intuir pregunta. Normalmente los alquileres tienen precios inferiores a los 10.000$ a menos que sean alquileres de inmuebles industriales como galpones o terrenos de mas de 10.000 m2.
 
 RESULTADOS
 
