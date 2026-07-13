@@ -628,6 +628,15 @@ def detectar_rol_explicito(
         r"\bbusco\s+para\s+un\s+cliente\b",
         r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
         r"\bcomparto\s+comision\b",
+        # --- NUEVOS PATRONES: HUELLAS DE CADENAS DE WHATSAPP ---
+        r"\bcliente\s+evaluando\b",
+        r"\bperfil\s+juridico\b",
+        r"\b(asesor|asesora)\s+inmobiliari[oa]\b",
+        r"\breal\s+estate\b",
+        r"\brealty\b",
+        r"\brealtor\b",
+        r"\bbroker\b",
+        r"@[a-z0-9_.-]+(realty|realtor|inmuebles|inmobiliaria)", # Detecta Instagrams inmobiliarios
     ]
 
     patrones_cliente = [
@@ -637,20 +646,20 @@ def detectar_rol_explicito(
         r"\bbusco\s+para\s+mi\b",
     ]
 
-    if any(
-        re.search(patron, texto)
-        for patron in patrones_cliente
-    ):
+    if any(re.search(patron, texto) for patron in patrones_cliente):
         return "cliente"
 
-    if any(
-        re.search(patron, texto)
-        for patron in patrones_colega
-    ):
+    # 1. Busca frases exactas de colegas o firmas
+    if any(re.search(patron, texto) for patron in patrones_colega):
         return "colega_inmobiliario"
 
-    return None
+    # 2. Busca la estructura combinada: "Solicito..." + Jerga inmobiliaria
+    if any(palabra in texto for palabra in ["solicito", "solicitud", "requiero"]):
+        jerga = ["canon", "perfil", "cliente", "asesor", "inmobiliaria", "realty", "realtor", "broker", "real estate", "negociacion", "hagamos negocios", "comision"]
+        if any(palabra in texto for palabra in jerga):
+            return "colega_inmobiliario"
 
+    return None
 
 def convertir_caracteristicas(valor: Any) -> str:
     if isinstance(valor, str):
