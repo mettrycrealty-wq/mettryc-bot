@@ -752,7 +752,7 @@ def obtener_pregunta_faltante(estado: dict) -> str:
     if not filtros.get("zona"):
         return "¿En qué zona o ciudad buscas?"
         
-    if not filtros.get("presupuesto"):
+    if not filtros.get("presupuesto_max"):
         return "¿Cuál es tu presupuesto estimado?"
         
     return "¿Hay alguna característica adicional?"
@@ -1297,6 +1297,9 @@ def cruzar_captador_con_sheet(
     """
     Cruza el nombre del captador recibido desde Wasi con el
     Google Sheet.
+
+    Primero intenta igualdad exacta normalizada. Si no encuentra,
+    calcula coincidencia por tokens del nombre.
     """
     nombre_normalizado = normalizar_texto(
         nombre_wasi
@@ -3002,7 +3005,7 @@ async def procesar_mensaje(
         estado,
     )
 
-    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros: {estado.get('filtros')}")
+    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros extraídos: {estado.get('filtros')}")
 
     decision = forzar_accion_evidente(
         decision,
@@ -3016,11 +3019,11 @@ async def procesar_mensaje(
         mensaje,
     )
 
-    # --- 🛡️ PARCHE DE COMPRENSIÓN RÁPIDA (Lectura de encabezados y Zonas) ---
+    # --- 🛡️ PARCHE MEGA-CAZADOR DE PYTHON ---
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
     
-    # 1. Parche de Operación (Quitamos "presupuesto" de venta)
+    # A. Cazador de Operación
     if not filtros_actuales.get("tipo_operacion"):
         if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion"]):
             filtros_actuales["tipo_operacion"] = "venta"
@@ -3029,7 +3032,30 @@ async def procesar_mensaje(
             filtros_actuales["tipo_operacion"] = "alquiler"
             hubo_cambio = True
 
-    # 2. 📍 NUEVO: CAZADOR DE ZONAS CON Ñ (Evita que la IA resuma u omita)
+    # B. Cazador de Presupuesto (Busca números con $)
+    if not filtros_actuales.get("presupuesto_max"):
+        match_precio = re.search(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?\s*(?:\$|usd|dolares)", texto_normalizado)
+        if match_precio:
+            try:
+                num_str = match_precio.group(1).replace(".", "").replace(",", "")
+                precio_forzado = float(num_str)
+                if "mil" in texto_normalizado or "k" in texto_normalizado:
+                    precio_forzado *= 1000
+                filtros_actuales["presupuesto_max"] = precio_forzado
+                hubo_cambio = True
+            except ValueError:
+                pass
+
+    # C. Cazador de Tipo Inmueble
+    if not filtros_actuales.get("tipo_propiedad"):
+        tipos_posibles = ["apartamento", "townhouse", "casa", "local", "galpon", "oficina", "terreno", "apartoquinta"]
+        for t in tipos_posibles:
+            if t in texto_normalizado:
+                filtros_actuales["tipo_propiedad"] = t
+                hubo_cambio = True
+                break
+
+    # D. Cazador de Zonas (Ignorando ñ para cruce)
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         zonas_encontradas = []
@@ -3040,18 +3066,14 @@ async def procesar_mensaje(
                 if ciudad_norm in texto_normalizado:
                     zonas_encontradas.append(ciudad_dict)
                 for zona in zonas_dict:
-                    # Aplicamos normalizar_texto a la zona del diccionario para comparar manzanas con manzanas
                     zona_norm = normalizar_texto(zona)
                     if zona_norm in texto_normalizado and len(zona_norm) > 3:
                         zonas_encontradas.append(zona)
 
         if zonas_encontradas:
-            # Eliminamos duplicados
             zonas_unicas = list(dict.fromkeys(zonas_encontradas))
             zona_forzada = ", ".join(zonas_unicas)
             zona_ia = str(filtros_actuales.get("zona", ""))
-            
-            # Si Python extrajo más detalle que la IA, Python GANA.
             if not zona_ia or len(zona_forzada) > len(zona_ia):
                 filtros_actuales["zona"] = zona_forzada
                 hubo_cambio = True
