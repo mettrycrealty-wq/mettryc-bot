@@ -469,7 +469,6 @@ def tokens_nombre(valor: Any) -> Set[str]:
 
 
 def tokens_zona(valor: Any) -> Set[str]:
-    # Agregamos 'san', 'santa', 'villa', 'valle' para evitar falsos positivos
     bloqueadas = {
         "el", "la", "los", "las", "de", "del", "en", "zona", 
         "sector", "urbanizacion", "ciudad", "venezuela",
@@ -491,40 +490,54 @@ def zona_coincide(
     if not buscada:
         return True
 
-    # Normalización estricta
-    zona_busc_norm = normalizar_texto(buscada)
-    zona_prop_norm = normalizar_texto(zona_prop)
     ciudad_prop_norm = normalizar_texto(ciudad_prop)
-
-    # 🛡️ FILTRO BLINDADO: 
-    # Si el usuario pidió zonas específicas (como trigaleña), 
-    # la propiedad DEBE tener esa palabra en su zona o ciudad.
-    try:
-        from geografia import DICCIONARIO_GEOGRAFICO
-        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
-            for ciudad, zonas in ciudades.items():
-                for z in zonas:
-                    if z in zona_busc_norm or zona_busc_norm in z:
-                        # Usuario pidió una zona específica que existe en el diccionario
-                        if z in zona_prop_norm or ciudad in ciudad_prop_norm:
-                            return True
-                        else:
-                            return False # Si existe pero no coincide, RECHAZADO
-    except ImportError:
-        pass
-
-    # Coincidencia flexible de tokens si no usa el diccionario
+    zona_prop_norm = normalizar_texto(zona_prop)
     buscados = tokens_zona(buscada)
     disponibles = tokens_zona(f"{zona_prop} {ciudad_prop}")
 
     if not buscados:
         return True
-
     if not disponibles:
         return False
 
+    # --- 🛡️ DETECTOR DE CHOQUE DE CIUDADES ---
+    ciudades_mettryc = {
+        "valencia", "naguanagua", "san diego", "guacara", 
+        "barquisimeto", "cabudare", "caracas"
+    }
+    
+    ciudades_pedidas = buscados.intersection(ciudades_mettryc)
+    
+    if ciudades_pedidas:
+        if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
+            return False
+
+    # 1. Filtro Básico (Acepta coincidencias de palabra)
     coincidencias = buscados.intersection(disponibles)
-    return len(coincidencias) >= 1
+    if len(coincidencias) >= 1:
+        return True
+
+    # 2. Filtro Inteligente: Jerarquía Geográfica con el Diccionario (Soporta Ñ y acentos)
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+        
+        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad_dict, zonas_dict in ciudades.items():
+                ciudad_norm = normalizar_texto(ciudad_dict)
+                zonas_norm = [normalizar_texto(z) for z in zonas_dict]
+                
+                # Si la propiedad pertenece a esta ciudad o a una de sus zonas
+                if ciudad_prop_norm == ciudad_norm or ciudad_prop_norm in zonas_norm or zona_prop_norm in zonas_norm:
+                    
+                    # Revisamos si el usuario pidió una zona que pertenezca a esta misma ciudad
+                    for palabra_buscada in buscados:
+                        if any(palabra_buscada in z_norm for z_norm in zonas_norm):
+                            return True
+                            
+    except ImportError:
+        pass
+
+    return False
 
 def extraer_codigo_inmueble(
     mensaje: str,
@@ -645,7 +658,6 @@ def detectar_rol_explicito(
         r"\bbusco\s+para\s+un\s+cliente\b",
         r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
         r"\bcomparto\s+comision\b",
-        # --- NUEVOS PATRONES: HUELLAS DE CADENAS DE WHATSAPP ---
         r"\bcliente\s+evaluando\b",
         r"\bperfil\s+juridico\b",
         r"\b(asesor|asesora)\s+inmobiliari[oa]\b",
@@ -653,7 +665,7 @@ def detectar_rol_explicito(
         r"\brealty\b",
         r"\brealtor\b",
         r"\bbroker\b",
-        r"@[a-z0-9_.-]+(realty|realtor|inmuebles|inmobiliaria)", # Detecta Instagrams inmobiliarios
+        r"@[a-z0-9_.-]+(realty|realtor|inmuebles|inmobiliaria)", 
     ]
 
     patrones_cliente = [
@@ -666,11 +678,9 @@ def detectar_rol_explicito(
     if any(re.search(patron, texto) for patron in patrones_cliente):
         return "cliente"
 
-    # 1. Busca frases exactas de colegas o firmas
     if any(re.search(patron, texto) for patron in patrones_colega):
         return "colega_inmobiliario"
 
-    # 2. Busca la estructura combinada: "Solicito..." + Jerga inmobiliaria
     if any(palabra in texto for palabra in ["solicito", "solicitud", "requiero"]):
         jerga = ["canon", "perfil", "cliente", "asesor", "inmobiliaria", "realty", "realtor", "broker", "real estate", "negociacion", "hagamos negocios", "comision"]
         if any(palabra in texto for palabra in jerga):
@@ -704,11 +714,6 @@ def convertir_caracteristicas(valor: Any) -> str:
     return ""
 
 def verificar_caducidad_y_amnesia(estado: dict) -> dict:
-    """
-    Aplica las reglas de negocio de Mettryc Realty para el ciclo de vida de la memoria.
-    Colegas: Caducan por completo a las 24 horas.
-    Clientes: Mantienen filtros por 30 días, pero limpian historial de texto tras 24 horas (Amnesia Selectiva).
-    """
     if not estado.get("actualizado_en"):
         return estado
 
@@ -719,31 +724,23 @@ def verificar_caducidad_y_amnesia(estado: dict) -> dict:
     rol = estado.get("rol", "cliente")
     numero_canal = estado.get("numero_canal", "")
 
-    # CASO 1: Es un COLEGA y pasaron más de 24 horas -> Borrón y cuenta nueva absoluto
     if rol == "colega_inmobiliario" and tiempo_inactivo > timedelta(hours=24):
         logger.info(f"⏳ Sesión de colega ({numero_canal}) caducada por inactividad (24h). Reiniciando estado.")
         return crear_sesion(numero_canal)
 
-    # CASO 2: Es un CLIENTE y pasaron más de 30 días -> Se borra por completo
     if rol == "cliente" and tiempo_inactivo > timedelta(days=30):
         logger.info(f"⏳ Sesión de cliente ({numero_canal}) superó los 30 días. Reiniciando estado.")
         return crear_sesion(numero_canal)
 
-    # CASO 3: AMNESIA SELECTIVA (Cliente inactivo por más de 24 horas pero menos de 30 días)
-    # Vaciamos el historial de mensajes para no pagar de más en OpenRouter, pero DEJAMOS los filtros intactos.
     if rol == "cliente" and tiempo_inactivo > timedelta(hours=24):
         if estado.get("historial"):
             nombre_log = estado["lead"].get("nombre") or "Desconocido"
             logger.info(f"🧠 Amnesia Selectiva Mettryc: Limpiando mensajes viejos de {nombre_log} (>24h). Filtros conservados.")
-            estado["historial"] = []  # Se limpia el chat viejo, pero Paty sigue recordando qué busca y su nombre.
+            estado["historial"] = []
 
     return estado
 
 def obtener_pregunta_faltante(estado: dict) -> str:
-    """
-    Revisa los filtros actuales y devuelve una pregunta específica 
-    para el dato más importante que falte.
-    """
     filtros = estado.get("filtros", {})
     
     if not filtros.get("tipo_operacion"):
@@ -758,14 +755,9 @@ def obtener_pregunta_faltante(estado: dict) -> str:
     if not filtros.get("presupuesto"):
         return "¿Cuál es tu presupuesto estimado?"
         
-    # Si por alguna razón extraña están todos los filtros pero no se buscó, 
-    # dejamos un paracaídas final suave.
     return "¿Hay alguna característica adicional?"
 
 async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_usuario: str) -> str:
-    """
-    Toma una instrucción rígida de Python y hace que Paty la reescriba de forma natural.
-    """
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     
     prompt_sistema = f"""
@@ -782,13 +774,11 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
     
     mensajes = [{"role": "system", "content": prompt_sistema}]
     
-    # Le damos a Paty un poco de memoria corta para que sepa de qué están hablando
     for msg in estado.get("historial", [])[-4:]:
         mensajes.append({"role": msg["role"], "content": msg["content"]})
         
     mensajes.append({"role": "user", "content": mensaje_usuario})
     
-    # Llamada asíncrona estándar a OpenRouter
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -803,14 +793,15 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
     
     try:
         import httpx
-        async with httpx.AsyncClient() as client:
+        # Salvavidas: trust_env=False para evitar problemas de proxy internos
+        async with httpx.AsyncClient(trust_env=False) as client:
             resp = await client.post(url, headers=headers, json=payload, timeout=15.0)
             resp.raise_for_status()
             contenido = resp.json()["choices"][0]["message"]["content"]
             return contenido.strip() if contenido else instruccion_cruda
     except Exception as e:
         logger.error(f"Error humanizando texto: {e}")
-        return instruccion_cruda # Si falla la IA, usamos el paracaídas de Python
+        return instruccion_cruda
         
 
 # ============================================================
@@ -1306,9 +1297,6 @@ def cruzar_captador_con_sheet(
     """
     Cruza el nombre del captador recibido desde Wasi con el
     Google Sheet.
-
-    Primero intenta igualdad exacta normalizada. Si no encuentra,
-    calcula coincidencia por tokens del nombre.
     """
     nombre_normalizado = normalizar_texto(
         nombre_wasi
@@ -2750,8 +2738,6 @@ async def notificar_lead(
 async def mostrar_propiedades(
     estado: dict,
 ) -> str:
-    logger.info(f"DEBUG WASI: Buscando con filtros: {estado.get('filtros', {})}")
-    
     propiedades = buscar_mejores_propiedades(
         estado,
         MAX_PROPIEDADES_POR_LOTE,
@@ -3016,7 +3002,7 @@ async def procesar_mensaje(
         estado,
     )
 
-    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros extraídos: {decision.actualizaciones.model_dump(exclude_unset=True)}")
+    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros: {estado.get('filtros')}")
 
     decision = forzar_accion_evidente(
         decision,
@@ -3034,33 +3020,38 @@ async def procesar_mensaje(
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
     
-    # 1. Parche de Operación
+    # 1. Parche de Operación (Quitamos "presupuesto" de venta)
     if not filtros_actuales.get("tipo_operacion"):
-        if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion", "presupuesto"]):
+        if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion"]):
             filtros_actuales["tipo_operacion"] = "venta"
             hubo_cambio = True
         elif any(p in texto_normalizado for p in ["alquiler", "alquilar", "canon", "arrendar"]):
             filtros_actuales["tipo_operacion"] = "alquiler"
             hubo_cambio = True
 
-    # 2. 📍 NUEVO: CAZADOR DE ZONAS (Evita que la IA resuma u omita)
+    # 2. 📍 NUEVO: CAZADOR DE ZONAS CON Ñ (Evita que la IA resuma u omita)
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         zonas_encontradas = []
 
         for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
             for ciudad_dict, zonas_dict in ciudades.items():
-                if ciudad_dict in texto_normalizado:
+                ciudad_norm = normalizar_texto(ciudad_dict)
+                if ciudad_norm in texto_normalizado:
                     zonas_encontradas.append(ciudad_dict)
                 for zona in zonas_dict:
-                    if zona in texto_normalizado and len(zona) > 3:
+                    # Aplicamos normalizar_texto a la zona del diccionario para comparar manzanas con manzanas
+                    zona_norm = normalizar_texto(zona)
+                    if zona_norm in texto_normalizado and len(zona_norm) > 3:
                         zonas_encontradas.append(zona)
 
         if zonas_encontradas:
-            zona_forzada = ", ".join(zonas_encontradas)
+            # Eliminamos duplicados
+            zonas_unicas = list(dict.fromkeys(zonas_encontradas))
+            zona_forzada = ", ".join(zonas_unicas)
             zona_ia = str(filtros_actuales.get("zona", ""))
             
-            # Si Python extrajo más detalle, Python GANA.
+            # Si Python extrajo más detalle que la IA, Python GANA.
             if not zona_ia or len(zona_forzada) > len(zona_ia):
                 filtros_actuales["zona"] = zona_forzada
                 hubo_cambio = True
@@ -3160,6 +3151,7 @@ async def procesar_mensaje(
         # Si Python ya recolectó todos los filtros necesarios, enviamos opciones directo
         if hubo_cambio and criterios_suficientes(estado):
             respuesta = await mostrar_propiedades(estado)
+            
         else:
             # 1. Python (El Director) decide qué falta
             pregunta_dinamica = obtener_pregunta_faltante(estado)
@@ -3240,6 +3232,7 @@ async def lifespan(app: FastAPI):
 
     http_client = httpx.AsyncClient(
         follow_redirects=True,
+        trust_env=False,  # 🚀 EL SALVAVIDAS: Ignora proxies basura de Render
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=20,
