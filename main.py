@@ -3063,13 +3063,15 @@ async def procesar_mensaje(
             respuesta = await mostrar_propiedades(
                 estado
             )
+            
         else:
+            pregunta_dinamica = obtener_pregunta_faltante(estado)
             respuesta = (
                 decision.mensaje.strip()
-                or (
-                    "Cuéntame un poco más y con gusto te ayudo."
-                )
+                or pregunta_dinamica
             )
+
+
 
     if (
         estado.get("objetivo")
