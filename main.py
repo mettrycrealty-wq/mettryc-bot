@@ -491,7 +491,29 @@ def zona_coincide(
     if not buscada:
         return True
 
+    # Normalización estricta
+    zona_busc_norm = normalizar_texto(buscada)
+    zona_prop_norm = normalizar_texto(zona_prop)
     ciudad_prop_norm = normalizar_texto(ciudad_prop)
+
+    # 🛡️ FILTRO BLINDADO: 
+    # Si el usuario pidió zonas específicas (como trigaleña), 
+    # la propiedad DEBE tener esa palabra en su zona o ciudad.
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad, zonas in ciudades.items():
+                for z in zonas:
+                    if z in zona_busc_norm or zona_busc_norm in z:
+                        # Usuario pidió una zona específica que existe en el diccionario
+                        if z in zona_prop_norm or ciudad in ciudad_prop_norm:
+                            return True
+                        else:
+                            return False # Si existe pero no coincide, RECHAZADO
+    except ImportError:
+        pass
+
+    # Coincidencia flexible de tokens si no usa el diccionario
     buscados = tokens_zona(buscada)
     disponibles = tokens_zona(f"{zona_prop} {ciudad_prop}")
 
@@ -501,50 +523,8 @@ def zona_coincide(
     if not disponibles:
         return False
 
-    # --- 🛡️ NUEVO: DETECTOR DE CHOQUE DE CIUDADES ---
-    # Ciudades donde opera Mettryc Realty (Agrega más si es necesario)
-    ciudades_mettryc = {
-        "valencia", "naguanagua", "san diego", "guacara", 
-        "barquisimeto", "cabudare", "caracas"
-    }
-    
-    # ¿El usuario mencionó alguna ciudad en su mensaje?
-    ciudades_pedidas = buscados.intersection(ciudades_mettryc)
-    
-    if ciudades_pedidas:
-        # Si el usuario especificó una ciudad (ej. "Trigaleña, Valencia"),
-        # la ciudad de la propiedad DEBE coincidir con la solicitada.
-        # Si la propiedad es de "Cabudare", se rechaza inmediatamente.
-        if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
-            return False
-    # ------------------------------------------------
-
-    # 1. Filtro Básico: Coincidencia de palabras exactas
     coincidencias = buscados.intersection(disponibles)
-    if len(coincidencias) >= 1:
-        return True
-
-    # 2. Filtro Inteligente: Jerarquía Geográfica con el Diccionario
-    try:
-        from geografia import DICCIONARIO_GEOGRAFICO
-        
-        zona_prop_norm = normalizar_texto(zona_prop)
-        
-        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
-            for ciudad_dict, zonas_dict in ciudades.items():
-                
-                # Si la propiedad pertenece a esta ciudad del diccionario
-                if ciudad_prop_norm == ciudad_dict or ciudad_prop_norm in zonas_dict:
-                    
-                    # Revisamos si el usuario pidió una zona que pertenezca a esta misma ciudad
-                    for palabra_buscada in buscados:
-                        if any(palabra_buscada in z for z in zonas_dict):
-                            return True
-                            
-    except ImportError:
-        pass # Si no encuentra el archivo geografia.py, sigue funcionando normal
-
-    return False
+    return len(coincidencias) >= 1
 
 def extraer_codigo_inmueble(
     mensaje: str,
@@ -1581,7 +1561,7 @@ async def llamar_openrouter_json(
             f"Bearer {OPENROUTER_API_KEY}"
         ),
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://www.mettryc.com",
+        "HTTP-Referer": "[https://www.mettryc.com](https://www.mettryc.com)",
         "X-Title": "Mettryc Realty Paty",
     }
 
@@ -1616,7 +1596,7 @@ async def llamar_openrouter_json(
 
             try:
                 respuesta = await http_client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
+                    "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
                     headers=headers,
                     json=payload,
                     timeout=OPENROUTER_TIMEOUT,
@@ -2560,7 +2540,7 @@ async def formatear_ficha(
         if telefono:
             lineas.append(
                 f"📲 *WhatsApp captador:* "
-                f"https://wa.me/{telefono}"
+                f"[https://wa.me/](https://wa.me/){telefono}"
             )
         else:
             lineas.append(
@@ -2633,7 +2613,7 @@ async def enviar_telegram(
     try:
         respuesta = await http_client.post(
             (
-                "https://api.telegram.org/bot"
+                "[https://api.telegram.org/bot](https://api.telegram.org/bot)"
                 f"{TELEGRAM_BOT_TOKEN}/sendMessage"
             ),
             json={
@@ -2727,7 +2707,7 @@ async def notificar_lead(
         f"Nombre: {lead.get('nombre')}\n"
         f"Correo: {lead.get('correo')}\n"
         f"WhatsApp: {whatsapp}\n"
-        f"Contacto: https://wa.me/{whatsapp}\n\n"
+        f"Contacto: [https://wa.me/](https://wa.me/){whatsapp}\n\n"
         "📋 BÚSQUEDA\n"
         f"{resumen_filtros(estado)}\n\n"
         "⭐ PROPIEDAD DE INTERÉS\n"
@@ -2770,6 +2750,8 @@ async def notificar_lead(
 async def mostrar_propiedades(
     estado: dict,
 ) -> str:
+    logger.info(f"DEBUG WASI: Buscando con filtros: {estado.get('filtros', {})}")
+    
     propiedades = buscar_mejores_propiedades(
         estado,
         MAX_PROPIEDADES_POR_LOTE,
@@ -2909,7 +2891,7 @@ async def seleccionar_propiedad(
             return (
                 "Perfecto, colega. El captador de esa propiedad "
                 f"es {cruce['nombre']}. Puedes comunicarte por "
-                f"WhatsApp aquí: https://wa.me/{cruce['telefono']}. "
+                f"WhatsApp aquí: [https://wa.me/](https://wa.me/){cruce['telefono']}. "
                 "Si quieres, también puedo revisar otras opciones."
             )
 
@@ -3034,7 +3016,7 @@ async def procesar_mensaje(
         estado,
     )
 
-logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: IA decidió Acción: {decision.accion.tipo} | Filtros: {estado.get('filtros')}")
+    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros extraídos: {decision.actualizaciones.model_dump(exclude_unset=True)}")
 
     decision = forzar_accion_evidente(
         decision,
@@ -3068,10 +3050,8 @@ logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: IA decidió Acción: {decisio
 
         for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
             for ciudad_dict, zonas_dict in ciudades.items():
-                # Si menciona la ciudad exacta
                 if ciudad_dict in texto_normalizado:
                     zonas_encontradas.append(ciudad_dict)
-                # Si menciona una zona exacta del diccionario
                 for zona in zonas_dict:
                     if zona in texto_normalizado and len(zona) > 3:
                         zonas_encontradas.append(zona)
@@ -3080,7 +3060,7 @@ logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: IA decidió Acción: {decisio
             zona_forzada = ", ".join(zonas_encontradas)
             zona_ia = str(filtros_actuales.get("zona", ""))
             
-            # Si Python extrajo más detalle que la IA, Python GANA.
+            # Si Python extrajo más detalle, Python GANA.
             if not zona_ia or len(zona_forzada) > len(zona_ia):
                 filtros_actuales["zona"] = zona_forzada
                 hubo_cambio = True
@@ -3088,7 +3068,7 @@ logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: IA decidió Acción: {decisio
         pass
     # -------------------------------------------------------------
 
-logger.info(f"🔵 RADIOGRAFÍA [2 - PYTHON (PARCHES)]: Filtros finales: {estado.get('filtros')} | Rol actual: {estado.get('rol')} | Criterios listos: {criterios_suficientes(estado)}")
+    logger.info(f"🔵 RADIOGRAFÍA [2 - PYTHON (PARCHES)]: Filtros finales: {estado.get('filtros')} | Rol: {estado.get('rol')} | Listos: {criterios_suficientes(estado)}")
 
     if not estado.get("rol"):
         estado["rol"] = "cliente"
@@ -3180,7 +3160,6 @@ logger.info(f"🔵 RADIOGRAFÍA [2 - PYTHON (PARCHES)]: Filtros finales: {estado
         # Si Python ya recolectó todos los filtros necesarios, enviamos opciones directo
         if hubo_cambio and criterios_suficientes(estado):
             respuesta = await mostrar_propiedades(estado)
-            
         else:
             # 1. Python (El Director) decide qué falta
             pregunta_dinamica = obtener_pregunta_faltante(estado)
