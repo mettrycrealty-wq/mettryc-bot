@@ -746,6 +746,56 @@ def obtener_pregunta_faltante(estado: dict) -> str:
     # dejamos un paracaídas final suave.
     return "¿Hay alguna característica adicional?"
 
+async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_usuario: str) -> str:
+    """
+    Toma una instrucción rígida de Python y hace que Paty la reescriba de forma natural.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    
+    prompt_sistema = f"""
+    Eres Paty, la asistente VIP de Mettryc Realty.
+    Tu sistema interno acaba de determinar que necesitas pedirle este dato al usuario:
+    "{instruccion_cruda}"
+    
+    TU TAREA:
+    Traduce esa orden rígida a tu personalidad natural, cálida y profesional.
+    1. Si el usuario acaba de dar un dato, valídalo brevemente (ej. "¡Excelente zona!").
+    2. Luego, haz la pregunta que se te ordenó.
+    3. NO hagas más preguntas aparte de la indicada. Sé muy breve (máximo 30 palabras).
+    """
+    
+    mensajes = [{"role": "system", "content": prompt_sistema}]
+    
+    # Le damos a Paty un poco de memoria corta para que sepa de qué están hablando
+    for msg in estado.get("historial", [])[-4:]:
+        mensajes.append({"role": msg["role"], "content": msg["content"]})
+        
+    mensajes.append({"role": "user", "content": mensaje_usuario})
+    
+    # Llamada asíncrona estándar a OpenRouter
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite"),
+        "messages": mensajes,
+        "max_tokens": 150,
+        "temperature": 0.4
+    }
+    
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, headers=headers, json=payload, timeout=15.0)
+            resp.raise_for_status()
+            contenido = resp.json()["choices"][0]["message"]["content"]
+            return contenido.strip() if contenido else instruccion_cruda
+    except Exception as e:
+        logger.error(f"Error humanizando texto: {e}")
+        return instruccion_cruda # Si falla la IA, usamos el paracaídas de Python
+        
 
 # ============================================================
 # SESIONES
