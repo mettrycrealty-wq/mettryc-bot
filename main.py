@@ -485,14 +485,15 @@ def tokens_zona(valor: Any) -> Set[str]:
 
 def zona_coincide(
     buscada: str,
-    zona: str,
-    ciudad: str,
+    zona_prop: str,
+    ciudad_prop: str,
 ) -> bool:
     if not buscada:
         return True
 
+    ciudad_prop_norm = normalizar_texto(ciudad_prop)
     buscados = tokens_zona(buscada)
-    disponibles = tokens_zona(f"{zona} {ciudad}")
+    disponibles = tokens_zona(f"{zona_prop} {ciudad_prop}")
 
     if not buscados:
         return True
@@ -500,14 +501,50 @@ def zona_coincide(
     if not disponibles:
         return False
 
+    # --- 🛡️ NUEVO: DETECTOR DE CHOQUE DE CIUDADES ---
+    # Ciudades donde opera Mettryc Realty (Agrega más si es necesario)
+    ciudades_mettryc = {
+        "valencia", "naguanagua", "san diego", "guacara", 
+        "barquisimeto", "cabudare", "caracas"
+    }
+    
+    # ¿El usuario mencionó alguna ciudad en su mensaje?
+    ciudades_pedidas = buscados.intersection(ciudades_mettryc)
+    
+    if ciudades_pedidas:
+        # Si el usuario especificó una ciudad (ej. "Trigaleña, Valencia"),
+        # la ciudad de la propiedad DEBE coincidir con la solicitada.
+        # Si la propiedad es de "Cabudare", se rechaza inmediatamente.
+        if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
+            return False
+    # ------------------------------------------------
+
+    # 1. Filtro Básico: Coincidencia de palabras exactas
     coincidencias = buscados.intersection(disponibles)
+    if len(coincidencias) >= 1:
+        return True
 
-    # NUEVA LÓGICA MÚLTIPLE: 
-    # Si al menos UNA palabra fuerte coincide, es un Match exitoso.
-    # Así el cliente puede pedir 5 zonas y el inmueble solo necesita estar en 1.
-    return len(coincidencias) >= 1
+    # 2. Filtro Inteligente: Jerarquía Geográfica con el Diccionario
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+        
+        zona_prop_norm = normalizar_texto(zona_prop)
+        
+        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad_dict, zonas_dict in ciudades.items():
+                
+                # Si la propiedad pertenece a esta ciudad del diccionario
+                if ciudad_prop_norm == ciudad_dict or ciudad_prop_norm in zonas_dict:
+                    
+                    # Revisamos si el usuario pidió una zona que pertenezca a esta misma ciudad
+                    for palabra_buscada in buscados:
+                        if any(palabra_buscada in z for z in zonas_dict):
+                            return True
+                            
+    except ImportError:
+        pass # Si no encuentra el archivo geografia.py, sigue funcionando normal
 
-
+    return False
 
 def extraer_codigo_inmueble(
     mensaje: str,
