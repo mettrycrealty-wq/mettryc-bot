@@ -231,7 +231,7 @@ http_client: Optional[httpx.AsyncClient] = None
 
 
 # ============================================================
-# UTILIDADES Y PARCHES AÑADIDOS
+# UTILIDADES
 # ============================================================
 
 def normalizar_texto(valor: Any) -> str:
@@ -500,7 +500,6 @@ def zona_coincide(
     if not disponibles:
         return False
 
-    # 🛡️ DETECTOR DE CHOQUE DE CIUDADES
     ciudades_mettryc = {
         "valencia", "naguanagua", "san diego", "guacara", 
         "barquisimeto", "cabudare", "caracas"
@@ -512,7 +511,10 @@ def zona_coincide(
         if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
             return False
 
-    # Diccionario Inteligente (Ignorando la Ñ)
+    coincidencias = buscados.intersection(disponibles)
+    if len(coincidencias) >= 1:
+        return True
+
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
@@ -522,15 +524,12 @@ def zona_coincide(
                 
                 if ciudad_prop_norm == ciudad_norm or ciudad_prop_norm in zonas_norm or zona_prop_norm in zonas_norm:
                     for palabra_buscada in buscados:
-                        # Buscamos si la palabra pedida pertenece al conjunto de zonas válidas o ciudad
                         if any(palabra_buscada in z_norm for z_norm in zonas_norm) or palabra_buscada == ciudad_norm:
                             return True
     except ImportError:
         pass
 
-    # Coincidencia flexible de tokens (Filtro Básico)
-    coincidencias = buscados.intersection(disponibles)
-    return len(coincidencias) >= 1
+    return False
 
 def extraer_codigo_inmueble(
     mensaje: str,
@@ -775,17 +774,18 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://www.mettryc.com",
+        "X-Title": "Mettryc Realty Paty",
     }
     payload = {
-        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite"),
+        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash"),
         "messages": mensajes,
         "max_tokens": 150,
         "temperature": 0.4
     }
     
     try:
-        # Se aprovecha el motor global con trust_env=False para prevenir el error proxy de Render
         resp = await http_client.post(url, headers=headers, json=payload, timeout=15.0)
         resp.raise_for_status()
         contenido = resp.json()["choices"][0]["message"]["content"]
@@ -1877,7 +1877,7 @@ def decision_fallback(
 
 
 # ============================================================
-# ACTUALIZACIÓN DEL ESTADO Y EXTRACCIONES DE EMERGENCIA
+# ACTUALIZACIÓN DEL ESTADO
 # ============================================================
 
 def normalizar_campo_sin_preferencia(
@@ -2244,7 +2244,7 @@ def evaluar_propiedad(
         ):
             score += 30
         else:
-            # 🛡️ ELIMINACIÓN ESTRICTA: Si no es la zona solicitada, fuera de la lista final.
+            # 🛡️ ELIMINACIÓN ESTRICTA: Si no es la zona solicitada, fuera.
             return None
 
     if presupuesto:
@@ -2257,7 +2257,7 @@ def evaluar_propiedad(
             ) / presupuesto
 
             if exceso > MAX_EXCESO_PRESUPUESTO:
-                # 🛡️ ELIMINACIÓN POR PRESUPUESTO EXCESIVO: Fuera de lista.
+                # 🛡️ ELIMINACIÓN POR PRESUPUESTO EXCESIVO: Fuera.
                 return None
             else:
                 score -= exceso * 50
@@ -2991,6 +2991,8 @@ async def procesar_mensaje(
         estado,
     )
 
+    logger.info(f"🟢 RADIOGRAFÍA [1 - IA ORIGINAL]: Acción: {decision.accion.tipo} | Filtros extraídos: {estado.get('filtros')}")
+
     decision = forzar_accion_evidente(
         decision,
         mensaje,
@@ -3075,6 +3077,8 @@ async def procesar_mensaje(
     except ImportError:
         pass
     # -------------------------------------------------------------
+
+    logger.info(f"🔵 RADIOGRAFÍA [2 - PYTHON (PARCHES)]: Filtros finales: {estado.get('filtros')} | Rol: {estado.get('rol')} | Listos: {criterios_suficientes(estado)}")
 
     if not estado.get("rol"):
         estado["rol"] = "cliente"
@@ -3249,7 +3253,6 @@ async def lifespan(app: FastAPI):
 
     http_client = httpx.AsyncClient(
         follow_redirects=True,
-        trust_env=False,  # 🚀 FIX: Ignora proxies basura de Render para evitar UnsupportedProtocol
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=20,
