@@ -314,6 +314,142 @@ def normalizar_telefono(valor: Any) -> Optional[str]:
 
     return None
 
+# =========================
+# PARCHE EXTRACCIÓN + TIPOS
+# =========================
+import re
+from typing import Any, Dict, List, Optional
+
+def _txt(v: Any) -> str:
+    return "" if v is None else str(v).strip()
+
+def _to_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    s = str(v).strip().lower().replace(" ", "")
+    # 200.000 / 200,000 / 200.000,50 / 200,000.50
+    if re.match(r"^\d{1,3}(?:\.\d{3})+(?:,\d+)?$", s):
+        s = s.replace(".", "").replace(",", ".")
+    elif re.match(r"^\d{1,3}(?:,\d{3})+(?:\.\d+)?$", s):
+        s = s.replace(",", "")
+    else:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def _to_int(v: Any) -> Optional[int]:
+    f = _to_float(v)
+    if f is None:
+        return None
+    try:
+        return int(f)
+    except Exception:
+        return None
+
+RE_PRECIO_MAX = re.compile(
+    r"(?:hasta|máximo|maximo|tope|no\s+supere|que\s+no\s+supere)?\s*"
+    r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*(?:\$|usd|dolares|dólares)?",
+    flags=re.IGNORECASE
+)
+
+def extraer_filtros_python(mensaje: str) -> Dict[str, Any]:
+    t = normalizar_texto(mensaje or "")
+    out = {
+        "tipo_operacion": None,
+        "tipo_propiedad": None,
+        "zona": None,
+        "presupuesto_max": None,
+        "habitaciones_min": None,
+        "banos_min": None,
+        "garajes_min": None,
+        "caracteristicas": [],
+    }
+
+    # operación
+    if re.search(r"\b(comprar|compra|venta|en venta)\b", t):
+        out["tipo_operacion"] = "venta"
+    elif re.search(r"\b(alquilar|alquiler|arrendar|renta)\b", t):
+        out["tipo_operacion"] = "alquiler"
+
+    # tipo propiedad
+    if re.search(r"\b(apartamento|apto|departamento)\b", t):
+        out["tipo_propiedad"] = "apartamento"
+    elif re.search(r"\b(casa|quinta)\b", t):
+        out["tipo_propiedad"] = "casa"
+    elif re.search(r"\b(townhouse)\b", t):
+        out["tipo_propiedad"] = "townhouse"
+    elif re.search(r"\b(local)\b", t):
+        out["tipo_propiedad"] = "local"
+    elif re.search(r"\b(oficina)\b", t):
+        out["tipo_propiedad"] = "oficina"
+
+    # zona (usa tus helpers ya creados)
+    zonas = detectar_zonas_en_texto(mensaje)
+    if zonas:
+        out["zona"] = ", ".join(zonas)
+
+    # presupuesto (toma el último número relevante del texto)
+    nums = [m.group(1) for m in RE_PRECIO_MAX.finditer(mensaje or "")]
+    if nums:
+        out["presupuesto_max"] = _to_float(nums[-1])
+
+    # habitaciones / baños / garajes
+    mh = re.search(r"\b(\d+)\s*(?:hab(?:itaciones?)?|cuartos?|dormitorios?)\b", t)
+    if mh:
+        out["habitaciones_min"] = int(mh.group(1))
+
+    mb = re.search(r"\b(\d+)\s*(?:banos?|baños?)\b", t)
+    if mb:
+        out["banos_min"] = int(mb.group(1))
+
+    mg = re.search(r"\b(\d+)\s*(?:puestos?|estacionamientos?|garajes?)\b", t)
+    if mg:
+        out["garajes_min"] = int(mg.group(1))
+
+    # características
+    feats = []
+    if "calle cerrada" in t:
+        feats.append("calle cerrada")
+    if "jardin" in t or "jardín" in (mensaje or "").lower():
+        feats.append("jardin")
+    out["caracteristicas"] = feats
+
+    return out
+
+
+def merge_filtros(f_prev: Dict[str, Any], f_ia: Dict[str, Any], f_py: Dict[str, Any], mensaje: str) -> Dict[str, Any]:
+    final = dict(f_prev or {})
+    campos = [
+        "tipo_operacion", "tipo_propiedad", "zona",
+        "presupuesto_max", "habitaciones_min", "banos_min", "garajes_min",
+        "caracteristicas"
+    ]
+
+    for c in campos:
+        v_py = f_py.get(c)
+        v_ia = f_ia.get(c)
+
+        nuevo = None
+        if v_py not in (None, "", []):
+            nuevo = v_py
+        elif v_ia not in (None, "", []):
+            nuevo = v_ia
+
+        if nuevo is None:
+            continue
+
+        if c == "zona":
+            final[c] = fusionar_zonas(final.get("zona"), nuevo, mensaje)
+        elif c == "caracteristicas":
+            prev = final.get("caracteristicas") or []
+            final[c] = list(dict.fromkeys([*prev, *nuevo]))
+        else:
+            final[c] = nuevo
+
+    return final
+
 
 def extraer_telefono(texto: str) -> Optional[str]:
     coincidencia = re.search(
