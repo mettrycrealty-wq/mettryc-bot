@@ -1590,66 +1590,57 @@ async def llamar_openrouter_json(
             {"type": "json_object"},
         ]
 
-        for response_format in formatos:
-            payload = {
-                "model": modelo,
-                "messages": mensajes,
-                "temperature": temperatura,
-                "max_tokens": 900,
-                "response_format": response_format,
-            }
+       for response_format in formatos:
+                payload = {
+                    "model": modelo,
+                    "messages": mensajes,
+                    "temperature": temperatura,
+                    "max_tokens": 900,
+                    "response_format": response_format,
+                }
 
-            try:
-                # 🚀 Enlace limpio, IA Resucitada
-                respuesta = await http_client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=OPENROUTER_TIMEOUT,
-                )
-                respuesta.raise_for_status()
+                try:
+                    # 🚀 Enlace limpio, IA Resucitada
+                    respuesta = await http_client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=OPENROUTER_TIMEOUT,
+                    )
+                    respuesta.raise_for_status()
 
-                contenido = (
-                    respuesta.json()
-                    .get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-
-                if isinstance(contenido, list):
-                    contenido = "".join(
-                        elemento.get("text", "")
-                        for elemento in contenido
-                        if isinstance(elemento, dict)
+                    contenido = (
+                        respuesta.json()
+                        .get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
                     )
 
-                contenido = limpiar_json_modelo(
-                    contenido
-                )
+                    if isinstance(contenido, list):
+                        contenido = "".join(
+                            elemento.get("text", "")
+                            for elemento in contenido
+                            if isinstance(elemento, dict)
+                        )
 
-                return modelo_pydantic.model_validate_json(
-                    contenido
-                )
+                    # 🌟 LOG DE RAYOS X 1: IA RAW RESPONSE
+                    logger.info(f"🤖 [IA RAW RESPONSE] Éxito con {modelo}: {contenido[:200]}...")
 
-            except (
-                ValidationError,
-                ValueError,
-                httpx.HTTPError,
-            ) as exc:
-                logger.warning(
-                    "OpenRouter JSON modelo=%s formato=%s tipo=%s",
-                    modelo,
-                    response_format.get("type"),
-                    type(exc).__name__,
-                )
+                    contenido = limpiar_json_modelo(
+                        contenido
+                    )
 
-            except Exception as exc:
-                logger.warning(
-                    "OpenRouter modelo=%s tipo=%s detalle=%s",
-                    modelo,
-                    type(exc).__name__,
-                    str(exc)[:150],
-                )
+                    return modelo_pydantic.model_validate_json(
+                        contenido
+                    )
+
+                except ValidationError as exc:
+                    # 🌟 LOG DE RAYOS X 2: IA ERROR FORMATO
+                    logger.warning(f"🤖 [IA ERROR FORMATO] JSON de la IA inválido: {exc}")
+                    
+                except Exception as exc:
+                    # 🌟 LOG DE RAYOS X 3: IA ERROR DE RED
+                    logger.warning(f"🤖 [IA ERROR RED/API] Falla con {modelo}: {type(exc).__name__} - {str(exc)[:150]}")
 
     return None
 
@@ -2397,83 +2388,48 @@ def evaluar_propiedad(
     return propiedad
 
 
-def buscar_mejores_propiedades(
-    estado: dict,
-    cantidad: int = 3,
-) -> tuple[List[dict], str]:
-    excluir = {
-        str(property_id)
-        for property_id
-        in estado["propiedades_enviadas"]
-    }
-
-    evaluadas = []
+def buscar_mejores_propiedades(estado: dict, cantidad: int = 3) -> tuple[List[dict], str]:
+    excluir = {str(pid) for pid in estado.get("propiedades_enviadas", [])}
+    exactas = []
+    tolerancia = []
     pasaron_zona_tipo = 0
-
+    
+    # 🌟 NUEVO: Diccionario para estadísticas de los logs
+    stats = {
+        "rechazada_operacion": 0, "rechazada_tipo": 0, "rechazada_zona": 0, 
+        "rechazada_precio": 0, "rechazada_habs": 0, "rechazada_banos": 0, "rechazada_garajes": 0
+    }
+    
     for original in inventory_cache["inventario"]:
-        property_id = str(
-            original.get("id", "")
-        )
-
-        if not property_id or property_id in excluir:
+        if str(original.get("id", "")) in excluir:
             continue
             
-        filtros = estado.get("filtros", {})
-        tipo = filtros.get("tipo_propiedad")
-        zona = filtros.get("zona")
-
-        tipo_ok = coincide_tipo(original, tipo) if tipo else True
-        zona_ok = zona_coincide(zona, original.get("zona", ""), original.get("ciudad", "")) if zona else True
+        is_match, category, prop = evaluar_propiedad_estricta(original, estado["filtros"])
         
-        if tipo_ok and zona_ok:
-            pasaron_zona_tipo += 1
-
-        propiedad = evaluar_propiedad(
-            original,
-            estado["filtros"],
-        )
-
-        if propiedad:
-            evaluadas.append(propiedad)
-
-    exactas = sorted(
-        [
-            propiedad
-            for propiedad in evaluadas
-            if propiedad["_coincidencia"]
-            == "exacta"
-        ],
-        key=lambda propiedad: propiedad["_score"],
-        reverse=True,
-    )
-
-    aproximadas = sorted(
-        [
-            propiedad
-            for propiedad in evaluadas
-            if propiedad["_coincidencia"]
-            == "aproximada"
-        ],
-        key=lambda propiedad: propiedad["_score"],
-        reverse=True,
-    )
-
-    resultado = exactas[:cantidad]
-
-    if len(resultado) < cantidad:
-        resultado.extend(
-            aproximadas[
-                :cantidad - len(resultado)
-            ]
-        )
-        
-    motivo_falla = ""
-    if not resultado:
-        if pasaron_zona_tipo > 0:
-            motivo_falla = "precio_o_caracs"
+        if is_match:
+            if category == "exacta": exactas.append(prop)
+            else: tolerancia.append(prop)
         else:
-            motivo_falla = "zona_o_tipo"
+            # Sumamos al contador del motivo de rechazo
+            stats[category] = stats.get(category, 0) + 1
+            if category in ["rechazada_precio", "rechazada_habs", "rechazada_banos", "rechazada_garajes"]:
+                pasaron_zona_tipo += 1
 
+    op = estado["filtros"].get("tipo_operacion", "venta")
+    exactas = sorted(exactas, key=lambda p: obtener_precio(p, op))
+    tolerancia = sorted(tolerancia, key=lambda p: obtener_precio(p, op))
+    
+    resultado = exactas[:cantidad]
+    if len(resultado) < cantidad:
+        resultado.extend(tolerancia[:cantidad - len(resultado)])
+        
+    motivo_falla = "precio_o_caracteristicas" if not resultado and pasaron_zona_tipo > 0 else "zona_o_tipo"
+    
+    # 🌟 LOG DE RAYOS X 4: ESTADÍSTICAS DEL MOTOR
+    logger.info(f"📊 [MOTOR DE BÚSQUEDA] Evaluadas: {len(inventory_cache['inventario'])}")
+    logger.info(f"📊 [MOTOR DE BÚSQUEDA] Descartadas -> Zona: {stats.get('rechazada_zona',0)} | Tipo: {stats.get('rechazada_tipo',0)} | Operación: {stats.get('rechazada_operacion',0)} | Precio: {stats.get('rechazada_precio',0)} | Habs/Baños/Puestos: {stats.get('rechazada_habs',0)+stats.get('rechazada_banos',0)+stats.get('rechazada_garajes',0)}")
+    logger.info(f"📊 [MOTOR DE BÚSQUEDA] Encontradas -> Exactas: {len(exactas)} | Tolerancia: {len(tolerancia)}")
+    
     return resultado, motivo_falla
 
 
@@ -3063,6 +3019,10 @@ async def procesar_mensaje(
     sender: str,
     mensaje: str,
 ) -> str:
+    # 🌟 LOG DE RAYOS X 5: INPUT DEL USUARIO
+    logger.info(f"📨 [INPUT] Recibido de {sender[-4:]}: '{mensaje}'")
+    estado = obtener_sesion(sender)
+
     # 1. Recuperamos el estado de la memoria RAM de Render
     estado = obtener_sesion(sender)
 
@@ -3070,10 +3030,10 @@ async def procesar_mensaje(
     estado = verificar_caducidad_y_amnesia(estado)
 
     # 2. Procedemos con el flujo normal que ya tienes funcionando perfectamente
-    decision = await decidir_con_ia(
-        mensaje,
-        estado,
-    )
+    decision = await decidir_con_ia(mensaje, estado)
+    
+    # 🌟 LOG DE RAYOS X 6: EXTRACCIÓN DE LA IA
+    logger.info(f"🧠 [IA EXTRACCIÓN] Decisión: {decision.accion.tipo} | Filtros extraídos: {decision.actualizaciones.model_dump(exclude_unset=True)}")
 
     decision = forzar_accion_evidente(
         decision,
@@ -3158,6 +3118,12 @@ async def procesar_mensaje(
                 hubo_cambio = True
     except ImportError:
         pass
+        
+    # 🌟 LOG DE RAYOS X 7: EXTRACCIÓN DE PYTHON Y FILTROS FINALES
+    logger.info(f"🐍 [PYTHON EXTRACCIÓN] Forzados -> Op: {filtros_actuales.get('tipo_operacion')} | Tipo: {filtros_actuales.get('tipo_propiedad')} | Ppto: {filtros_actuales.get('presupuesto_max')} | Zona: {filtros_actuales.get('zona')}")
+    logger.info(f"🎯 [FILTROS FINALES] {estado.get('filtros')} | Listos para buscar: {criterios_suficientes(estado)}")
+
+
     # -------------------------------------------------------------
 
     if not estado.get("rol"):
@@ -3303,7 +3269,9 @@ async def procesar_mensaje(
     )
 
     guardar_sesion(sender, estado)
-
+    
+    # 🌟 LOG DE RAYOS X 8: ACCIÓN FINAL
+    logger.info(f"🏁 [SALIDA] Acción final ejecutada: {accion}")
     return respuesta
 
 
