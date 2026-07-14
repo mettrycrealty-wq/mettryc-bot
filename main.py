@@ -492,46 +492,35 @@ def tokens_zona(valor: Any) -> Set[str]:
     }
 
 
-def zona_coincide(
-    buscada: str,
-    zona_prop: str,
-    ciudad_prop: str,
-) -> bool:
-    if not buscada:
-        return True
-
+def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
+    if not buscada: return True
     ciudad_prop_norm = normalizar_texto(ciudad_prop)
     zona_prop_norm = normalizar_texto(zona_prop)
     buscados = tokens_zona(buscada)
     disponibles = tokens_zona(f"{zona_prop} {ciudad_prop}")
 
-    if not buscados:
-        return True
-    if not disponibles:
-        return False
+    if not buscados: return True
+    if not disponibles: return False
 
-    # 1. 🛡️ FILTRO DE CIUDAD: Si pide una ciudad exacta, debe coincidir.
-    ciudades_mettryc = {
-        "valencia", "naguanagua", "san diego", "guacara", 
-        "barquisimeto", "cabudare", "caracas"
-    }
+    # 1. 🛡️ FILTRO DE CIUDAD: Si pide una ciudad específica, la propiedad DEBE estar ahí.
+    ciudades_mettryc = {"valencia", "naguanagua", "san diego", "guacara", "barquisimeto", "cabudare", "caracas"}
     ciudades_pedidas = buscados.intersection(ciudades_mettryc)
-    
     if ciudades_pedidas:
         if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
             return False
 
-    # 2. 🛡️ FILTRO ESTRICTO DE ZONA: Intersección exacta de palabras.
+    # 2. 🛡️ FILTRO ESTRICTO DE TOKENS: Tienen que hacer match las palabras.
     coincidencias = buscados.intersection(disponibles)
-    if len(coincidencias) >= 1:
+    if len(coincidencias) >= 1: 
         return True
 
-    # 3. 🛡️ FILTRO DE SUBCADENAS: Por si la zona en Wasi está escrita diferente.
-    for b in buscados:
-        if b in zona_prop_norm or b in ciudad_prop_norm:
+    # 3. 🛡️ FILTRO DE SUBCADENAS: Por si en Wasi está escrito compuesto.
+    texto_completo_prop = f"{zona_prop_norm} {ciudad_prop_norm}"
+    for palabra in buscados:
+        if palabra in texto_completo_prop:
             return True
 
-    # Si no pasa ninguna de las pruebas de arriba, SE ELIMINA LA PROPIEDAD.
+    # 🚫 Si la propiedad no pasó ninguna de las 3 pruebas anteriores, SE ELIMINA.
     return False
 
 
