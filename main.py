@@ -1590,7 +1590,7 @@ async def llamar_openrouter_json(
             {"type": "json_object"},
         ]
 
-       for response_format in formatos:
+    for response_format in formatos:
                 payload = {
                     "model": modelo,
                     "messages": mensajes,
