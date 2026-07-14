@@ -138,7 +138,7 @@ INTERVALO_ACTUALIZACION_WASI = timedelta(
 
 class ActualizacionesConversacion(BaseModel):
     tipo_operacion: Optional[
-        Literal["venta", "alquiler"]
+        Literal["venta", "alquiler", "compra"]
     ] = None
 
     tipo_propiedad: Optional[str] = None
@@ -2011,6 +2011,10 @@ def aplicar_decision(
 
         if valor in [None, "", []]:
             continue
+            
+        # 🚀 FIX: Traducción silenciosa de Compra -> Venta
+        if campo == "tipo_operacion" and valor == "compra":
+            valor = "venta"
 
         if campo == "tipo_propiedad":
             valor = normalizar_tipo_propiedad(
