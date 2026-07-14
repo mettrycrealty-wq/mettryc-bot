@@ -3104,12 +3104,16 @@ async def procesar_mensaje(
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         zonas_encontradas = []
-        for est, ciu in DICCIONARIO_GEOGRAFICO.items():
-            for c_dict, z_dict in ciu.items():
-                if normalizar_texto(c_dict) in texto_normalizado: zonas_encontradas.append(c_dict)
-                for z in z_dict:
-                    zn = normalizar_texto(z)
-                    if zn in texto_normalizado and len(zn) > 3: zonas_encontradas.append(z)
+
+        for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad_dict, zonas_dict in ciudades.items():
+                ciudad_norm = normalizar_texto(ciudad_dict)
+                if ciudad_norm in texto_normalizado:
+                    zonas_encontradas.append(ciudad_dict)
+                for zona in zonas_dict:
+                    zona_norm = normalizar_texto(zona)
+                    if zona_norm in texto_normalizado and len(zona_norm) > 3:
+                        zonas_encontradas.append(zona)
 
         if zonas_encontradas:
             zonas_unicas = list(dict.fromkeys(zonas_encontradas))
@@ -3121,17 +3125,7 @@ async def procesar_mensaje(
                 zona_forzada = " o ".join(zonas_unicas)
                 filtros_actuales["zona"] = zona_forzada
                 hubo_cambio = True
-    except ImportError: pass
 
-        if zonas_encontradas:
-            zonas_unicas = list(dict.fromkeys(zonas_encontradas))
-            zona_forzada = ", ".join(zonas_unicas)
-            zona_ia = str(filtros_actuales.get("zona", ""))
-            
-            # Si Python extrajo más detalle que la IA, Python GANA.
-            if not zona_ia or len(zona_forzada) > len(zona_ia):
-                filtros_actuales["zona"] = zona_forzada
-                hubo_cambio = True
     except ImportError:
         pass
         
