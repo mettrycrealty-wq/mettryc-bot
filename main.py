@@ -2912,7 +2912,7 @@ async def seleccionar_propiedad(
             return (
                 "Perfecto, colega. El captador de esa propiedad "
                 f"es {cruce['nombre']}. Puedes comunicarte por "
-                f"WhatsApp aquí: [https://wa.me/](https://wa.me/){cruce['telefono']}. "
+                f"WhatsApp aquí: https://wa.me/{cruce['telefono']}. "
                 "Si quieres, también puedo revisar otras opciones."
             )
 
