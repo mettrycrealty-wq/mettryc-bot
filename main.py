@@ -1777,7 +1777,8 @@ async def redactar_resultado_ia(
             "content": (
                 "Eres Paty de Mettryc Realty. Redacta el texto "
                 "que acompaña fichas generadas por el sistema. "
-                "Devuelve exclusivamente el JSON solicitado."
+                "DEBES devolver EXCLUSIVAMENTE un objeto JSON con dos claves exactas: "
+                "'introduccion' y 'cierre'. NINGUNA OTRA CLAVE ESTÁ PERMITIDA."
             ),
         },
         {
