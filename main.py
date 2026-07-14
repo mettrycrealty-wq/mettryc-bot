@@ -2896,23 +2896,37 @@ async def procesar_mensaje(
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
     
-    # A. Cazador de Presupuesto (Mejorado para detectar números sueltos si son lógicos)
+    # A. Cazador de Presupuesto (Mejorado para "USD 65.000" y evitar teléfonos)
+    presupuesto_detectado = 0.0
     if not filtros_actuales.get("presupuesto_max"):
-        # Primero busca con símbolo de moneda
+        match_precio = None
+        
+        # Patrón 1: Símbolo de moneda al FINAL (ej: 65.000 usd, 400$)
         match_precio = re.search(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?\s*(?:\$|usd|dolares|dls)", texto_normalizado)
-        # Si no lo encuentra, busca un número entre 100 y 999999 que parezca presupuesto
+        
+        # Patrón 2: Símbolo de moneda al INICIO (ej: usd 65.000, $400)
         if not match_precio:
-            match_precio = re.search(r"\b([1-9]\d{2,5})\b", texto_normalizado)
+            match_precio = re.search(r"(?:\$|usd|dolares|dls)\s*(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?", texto_normalizado)
+            
+        # Patrón 3: Número suelto estricto (Evita atrapar el '122' del teléfono 0412.122.44.78)
+        if not match_precio:
+            match_precio = re.search(r"(?<![\d.-])([1-9]\d{2,5})(?![\d.-])", texto_normalizado)
             
         if match_precio:
             try:
                 num_str = match_precio.group(1).replace(".", "").replace(",", "")
                 precio_forzado = float(num_str)
-                if "mil" in texto_normalizado or "k" in texto_normalizado: precio_forzado *= 1000
+                
+                # Multiplica por mil solo si "mil" o "k" está cerca del número
+                texto_cercano = texto_normalizado[max(0, match_precio.start()-5) : min(len(texto_normalizado), match_precio.end()+5)]
+                if "mil" in texto_cercano or "k" in texto_cercano:
+                    precio_forzado *= 1000
+                    
                 filtros_actuales["presupuesto_max"] = precio_forzado
                 presupuesto_detectado = precio_forzado
                 hubo_cambio = True
-            except ValueError: pass
+            except ValueError:
+                pass
 
     # B. Cazador de Operación (Inteligencia Financiera)
     if not filtros_actuales.get("tipo_operacion"):
