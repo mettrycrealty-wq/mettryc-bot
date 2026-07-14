@@ -642,20 +642,10 @@ def menciona_anuncio_sin_codigo(
     )
 
 
-def detectar_rol_explicito(
-    mensaje: str,
-) -> Optional[str]:
+def detectar_rol_explicito(mensaje: str) -> Optional[str]:
     texto = normalizar_texto(mensaje)
 
-    patrones_colega = [
-        r"\bsoy\s+(asesor|asesora|agente|corredor|corredora|broker|realtor)\b",
-        r"\bsoy\s+colega\b",
-        r"\btengo\s+un\s+cliente\b",
-        r"\bbusco\s+para\s+un\s+cliente\b",
-        r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
-        r"\bcomparto\s+comision\b",
-    ]
-
+    # 1. Filtro estricto para clientes (Si dicen explícitamente que no son asesores)
     patrones_cliente = [
         r"\bno\s+soy\s+(asesor|agente|corredor|broker|realtor)\b",
         r"\bsoy\s+cliente\b",
@@ -663,20 +653,38 @@ def detectar_rol_explicito(
         r"\bbusco\s+para\s+mi\b",
     ]
 
-    if any(
-        re.search(patron, texto)
-        for patron in patrones_cliente
-    ):
+    if any(re.search(patron, texto) for patron in patrones_cliente):
         return "cliente"
 
-    if any(
-        re.search(patron, texto)
-        for patron in patrones_colega
-    ):
+    # 2. Patrones exactos y Firmas de Colegas
+    patrones_colega = [
+        r"\bsoy\s+(asesor|asesora|agente|corredor|corredora|broker|realtor|asociado)\b",
+        r"\bsoy\s+colega\b",
+        r"\btengo\s+un\s+cliente\b",
+        r"\bbusco\s+para\s+un\s+cliente\b",
+        r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
+        r"\bcomparto\s+comision\b",
+        r"\bmettryc\s+realty\b",  # Detecta firmas de tus propios asociados
+        r"perfil\s+juridico",    # Jerga 100% de colegas
+        r"perfil\s+natural",
+        r"dinero\s+en\s+mano",
+    ]
+
+    if any(re.search(patron, texto) for patron in patrones_colega):
+        return "colega_inmobiliario"
+
+    # 3. Detector de "Cadenas" y Solicitudes
+    palabras_solicitud = ["solicito", "solicitud", "requerimiento", "requiero"]
+    palabras_jerga = [
+        "canon", "perfil", "cliente", "asesor", "asociado", "inmobiliaria", 
+        "realty", "realtor", "broker", "real estate", "negociacion", 
+        "comision", "colega", "aliado"
+    ]
+    
+    if any(palabra in texto for palabra in palabras_solicitud) and any(jerga in texto for jerga in palabras_jerga):
         return "colega_inmobiliario"
 
     return None
-
 
 def convertir_caracteristicas(valor: Any) -> str:
     if isinstance(valor, str):
