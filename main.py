@@ -2937,9 +2937,8 @@ async def procesar_mensaje(
 
         if zonas_encontradas:
             zonas_unicas = list(dict.fromkeys(zonas_encontradas))
-            # 🚀 FIX: Si la IA sí logró extraer "Prebo o Trigaleña", la respetamos.
-            # Solo sobrescribimos si la IA falló o si Python encontró MÁS zonas.
-            zona_ia = str(filtros_actuales.get("zona", ""))
+            # 🚀 FIX: Evitamos que Python lea 'None' como si fuera la palabra "None"
+            zona_ia = str(filtros_actuales.get("zona") or "")
             
             if not zona_ia or len(zonas_unicas) > len(zona_ia.split(" o ")):
                 zona_forzada = " o ".join(zonas_unicas)
