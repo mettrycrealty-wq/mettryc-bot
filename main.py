@@ -46,7 +46,7 @@ MODELO_AGENTE_PRINCIPAL = os.getenv(
     "MODELO_AGENTE_PRINCIPAL",
     os.getenv(
         "MODELO_ANALISIS_PRINCIPAL",
-        "google/gemini-2.5-flash-lite",
+        "google/gemini-2.5-flash",
     ),
 )
 
@@ -146,6 +146,7 @@ class ActualizacionesConversacion(BaseModel):
     presupuesto_max: Optional[float] = None
     habitaciones_min: Optional[int] = None
     banos_min: Optional[int] = None
+    garajes_min: Optional[int] = None
     caracteristicas: List[str] = Field(
         default_factory=list
     )
@@ -493,30 +494,52 @@ def tokens_zona(valor: Any) -> Set[str]:
 
 def zona_coincide(
     buscada: str,
-    zona: str,
-    ciudad: str,
+    zona_prop: str,
+    ciudad_prop: str,
 ) -> bool:
     if not buscada:
         return True
 
+    ciudad_prop_norm = normalizar_texto(ciudad_prop)
+    zona_prop_norm = normalizar_texto(zona_prop)
     buscados = tokens_zona(buscada)
-    disponibles = tokens_zona(
-        f"{zona} {ciudad}"
-    )
+    disponibles = tokens_zona(f"{zona_prop} {ciudad_prop}")
 
     if not buscados:
         return True
-
     if not disponibles:
         return False
 
-    coincidencias = buscados.intersection(
-        disponibles
-    )
+    ciudades_mettryc = {
+        "valencia", "naguanagua", "san diego", "guacara", 
+        "barquisimeto", "cabudare", "caracas"
+    }
+    
+    ciudades_pedidas = buscados.intersection(ciudades_mettryc)
+    
+    if ciudades_pedidas:
+        if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
+            return False
 
-    return (
-        len(coincidencias) / len(buscados)
-    ) >= 0.60
+    coincidencias = buscados.intersection(disponibles)
+    if len(coincidencias) >= 1:
+        return True
+
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad_dict, zonas_dict in ciudades.items():
+                ciudad_norm = normalizar_texto(ciudad_dict)
+                zonas_norm = [normalizar_texto(z) for z in zonas_dict]
+                
+                if ciudad_prop_norm == ciudad_norm or ciudad_prop_norm in zonas_norm or zona_prop_norm in zonas_norm:
+                    for palabra_buscada in buscados:
+                        if any(palabra_buscada in z_norm for z_norm in zonas_norm) or palabra_buscada == ciudad_norm:
+                            return True
+    except ImportError:
+        pass
+
+    return False
 
 
 def extraer_codigo_inmueble(
@@ -704,6 +727,7 @@ def crear_sesion(sender: str) -> dict:
             "presupuesto_max": None,
             "habitaciones_min": None,
             "banos_min": None,
+            "garajes_min": None,
             "caracteristicas": [],
         },
         "sin_preferencia": [],
@@ -1329,6 +1353,7 @@ COMPORTAMIENTO CONVERSACIONAL
     registra el campo correcto en campos_sin_preferencia.
 11. Interpreta números según el contexto de la conversación.
 12. No repitas saludos en todos los mensajes.
+13. No respondas el mismo mensaje que recibas. ej: si te dicen "Hola esta casa esta disponible?" no respondas "Hola esta casa esta disponible?"
 
 ROL
 
@@ -1352,6 +1377,7 @@ INMUEBLE ESPECÍFICO
   Facebook o portal, pero no proporciona código ni enlace identificable,
   usa pedir_codigo_inmueble y solicítalo naturalmente.
 - No asumas que un código de Mercado Libre es el ID de Wasi.
+- Si te envian un mensaje como este "Hola, tengo algunas preguntas sobre tu publicación en Mercado Libre: https://inmueble.mercadolibre.com.ve/MLV-1014940508-local-comercial-en-venta-cc-metropolis-san-diego-wc-9687434-_JM" deberás tomar el numero que está antes de -_JM (en este caso 9686434) como el codigo de la propiedad. Pregunta que información adicional quiere saber de ella y busca la respuesta en el inventario.
 
 RESULTADOS
 
@@ -1467,6 +1493,7 @@ async def llamar_openrouter_json(
             }
 
             try:
+                # 🚀 Enlace limpio, IA Resucitada
                 respuesta = await http_client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers=headers,
@@ -1790,6 +1817,9 @@ def normalizar_campo_sin_preferencia(
         "cuartos": "habitaciones_min",
         "banos": "banos_min",
         "bano": "banos_min",
+        "garajes": "garajes_min",
+        "garaje": "garajes_min",
+        "puestos": "garajes_min",
         "caracteristica": "caracteristicas",
         "caracteristicas_especiales": "caracteristicas",
         "ubicacion": "zona",
@@ -1805,6 +1835,7 @@ def normalizar_campo_sin_preferencia(
         "presupuesto_max",
         "habitaciones_min",
         "banos_min",
+        "garajes_min",
         "caracteristicas",
     }
 
@@ -1851,6 +1882,7 @@ def aplicar_decision(
         "presupuesto_max",
         "habitaciones_min",
         "banos_min",
+        "garajes_min",
         "caracteristicas",
     ]
 
@@ -2015,7 +2047,7 @@ def datos_lead_faltantes(
 
 
 # ============================================================
-# RANKING
+# RANKING Y EVALUACIÓN ESTRICTA
 # ============================================================
 
 def obtener_precio(
@@ -2106,6 +2138,7 @@ def evaluar_propiedad(
 
     score = 0.0
     diferencias = []
+    es_exacta = True
 
     tipo = filtros.get("tipo_propiedad")
     zona = filtros.get("zona")
@@ -2116,20 +2149,22 @@ def evaluar_propiedad(
         "habitaciones_min"
     )
     banos_min = filtros.get("banos_min")
+    garajes_min = filtros.get(
+        "garajes_min"
+    )
     caracteristicas = filtros.get(
         "caracteristicas",
         [],
     )
 
+    # 1. 🛡️ FILTRO ESTRICTO: TIPO INMUEBLE Y OPERACIÓN
     if tipo:
         if coincide_tipo(propiedad, tipo):
             score += 35
         else:
-            score -= 25
-            diferencias.append(
-                f"tipo diferente a {tipo}"
-            )
+            return None
 
+    # 2. 🛡️ FILTRO ESTRICTO Y MÚLTIPLE: ZONAS
     if zona:
         if zona_coincide(
             zona,
@@ -2138,58 +2173,71 @@ def evaluar_propiedad(
         ):
             score += 30
         else:
-            score -= 15
-            diferencias.append(
-                f"está en {propiedad.get('zona', 'otra zona')}"
-            )
+            return None
 
+    # 3. 🛡️ TOLERANCIA 20%: PRESUPUESTO
     if presupuesto:
         if precio <= presupuesto:
             proporcion = precio / presupuesto
             score += 20 * proporcion
-        else:
-            exceso = (
-                precio - presupuesto
-            ) / presupuesto
-
-            if exceso > MAX_EXCESO_PRESUPUESTO:
-                score -= 40
-            else:
-                score -= exceso * 50
-
+        elif precio <= presupuesto * 1.20:
+            score += 5
+            es_exacta = False
             diferencias.append(
-                "supera el presupuesto por "
-                + formato_moneda(
-                    precio - presupuesto
-                )
+                "Inversión " + formato_moneda(precio)
             )
+        else:
+            return None
 
+    # 4. 🛡️ TOLERANCIA +1/-1: HABITACIONES
     habitaciones = convertir_entero(
         propiedad.get("habitaciones")
     )
-
-    if habitaciones_min is not None:
-        if habitaciones >= habitaciones_min:
+    if habitaciones_min is not None and habitaciones_min > 0:
+        if habitaciones == habitaciones_min:
             score += 10
-        else:
-            score -= 15
+        elif habitaciones_min - 1 <= habitaciones <= habitaciones_min + 1:
+            score += 5
+            es_exacta = False
             diferencias.append(
                 f"tiene {habitaciones} habitaciones"
             )
+        else:
+            return None
 
+    # 5. 🛡️ TOLERANCIA +1/-1: BAÑOS
     banos = convertir_entero(
         propiedad.get("banos")
     )
-
-    if banos_min is not None:
-        if banos >= banos_min:
+    if banos_min is not None and banos_min > 0:
+        if banos == banos_min:
             score += 5
-        else:
-            score -= 8
+        elif banos_min - 1 <= banos <= banos_min + 1:
+            score += 2
+            es_exacta = False
             diferencias.append(
                 f"tiene {banos} baños"
             )
+        else:
+            return None
+            
+    # 6. 🛡️ TOLERANCIA +1/-1: GARAJES
+    garajes = convertir_entero(
+        propiedad.get("garajes")
+    )
+    if garajes_min is not None and garajes_min > 0:
+        if garajes == garajes_min:
+            score += 5
+        elif garajes_min - 1 <= garajes <= garajes_min + 1:
+            score += 2
+            es_exacta = False
+            diferencias.append(
+                f"tiene {garajes} puestos"
+            )
+        else:
+            return None
 
+    # 7. 🛡️ RECONOCIMIENTO DE PALABRAS CLAVE
     texto_propiedad = normalizar_texto(
         " ".join([
             str(propiedad.get("titulo", "")),
@@ -2206,32 +2254,33 @@ def evaluar_propiedad(
     no_confirmadas = []
 
     for caracteristica in caracteristicas:
-        caracteristica = normalizar_texto(
+        car_norm = normalizar_texto(
             caracteristica
         )
 
         if (
-            caracteristica
-            and caracteristica in texto_propiedad
+            car_norm
+            and car_norm in texto_propiedad
         ):
             score += 5
 
-        elif caracteristica:
+        elif car_norm:
             no_confirmadas.append(
                 caracteristica
             )
 
     if no_confirmadas:
         diferencias.append(
-            "no se confirmaron: "
+            "no especifica: "
             + ", ".join(no_confirmadas)
         )
+        es_exacta = False
 
     propiedad["_score"] = round(score, 2)
     propiedad["_diferencias"] = diferencias
     propiedad["_coincidencia"] = (
         "exacta"
-        if not diferencias
+        if es_exacta and not diferencias
         else "aproximada"
     )
     propiedad["operacion_buscada"] = (
@@ -2244,7 +2293,7 @@ def evaluar_propiedad(
 def buscar_mejores_propiedades(
     estado: dict,
     cantidad: int = 3,
-) -> List[dict]:
+) -> tuple[List[dict], str]:
     excluir = {
         str(property_id)
         for property_id
@@ -2252,6 +2301,7 @@ def buscar_mejores_propiedades(
     }
 
     evaluadas = []
+    pasaron_zona_tipo = 0
 
     for original in inventory_cache["inventario"]:
         property_id = str(
@@ -2260,6 +2310,16 @@ def buscar_mejores_propiedades(
 
         if not property_id or property_id in excluir:
             continue
+            
+        filtros = estado.get("filtros", {})
+        tipo = filtros.get("tipo_propiedad")
+        zona = filtros.get("zona")
+
+        tipo_ok = coincide_tipo(original, tipo) if tipo else True
+        zona_ok = zona_coincide(zona, original.get("zona", ""), original.get("ciudad", "")) if zona else True
+        
+        if tipo_ok and zona_ok:
+            pasaron_zona_tipo += 1
 
         propiedad = evaluar_propiedad(
             original,
@@ -2299,8 +2359,15 @@ def buscar_mejores_propiedades(
                 :cantidad - len(resultado)
             ]
         )
+        
+    motivo_falla = ""
+    if not resultado:
+        if pasaron_zona_tipo > 0:
+            motivo_falla = "precio_o_caracs"
+        else:
+            motivo_falla = "zona_o_tipo"
 
-    return resultado
+    return resultado, motivo_falla
 
 
 def buscar_por_codigo(
@@ -2389,7 +2456,7 @@ async def formatear_ficha(
 
     if diferencias:
         lineas.append(
-            "ℹ️ *Coincidencia aproximada:* "
+            "ℹ️ *Consideraciones:* "
             + "; ".join(diferencias[:2])
         )
 
@@ -2410,6 +2477,7 @@ async def formatear_ficha(
         )
 
         if telefono:
+            # 🚀 Enlace Limpio
             lineas.append(
                 f"📲 *WhatsApp captador:* "
                 f"https://wa.me/{telefono}"
@@ -2520,6 +2588,7 @@ def resumen_filtros(estado: dict) -> str:
         "zona": "Zona",
         "habitaciones_min": "Habitaciones mínimas",
         "banos_min": "Baños mínimos",
+        "garajes_min": "Puestos de estacionamiento"
     }
 
     for campo, etiqueta in etiquetas.items():
@@ -2573,6 +2642,7 @@ async def notificar_lead(
         lead.get("whatsapp")
     )
 
+    # 🚀 Enlace Limpio
     mensaje = (
         "🏠 NUEVO LEAD METTRYC\n\n"
         f"ID: {estado.get('lead_id')}\n"
@@ -2622,20 +2692,31 @@ async def notificar_lead(
 async def mostrar_propiedades(
     estado: dict,
 ) -> str:
-    propiedades = buscar_mejores_propiedades(
+    propiedades, motivo_falla = buscar_mejores_propiedades(
         estado,
         MAX_PROPIEDADES_POR_LOTE,
     )
 
+    # 🛡️ RESPUESTAS INTELIGENTES POR FALLA
     if not propiedades:
         estado["ultimo_lote"] = []
-
-        return (
-            "Ya revisé las opciones disponibles y no encontré "
-            "más inmuebles que se acerquen lo suficiente. "
-            "Podemos ampliar la zona, ajustar el presupuesto o "
-            "cambiar alguna preferencia. ¿Qué te gustaría modificar?"
-        )
+        
+        filtros = estado.get("filtros", {})
+        tipo_str = normalizar_nombre(filtros.get("tipo_propiedad", "inmuebles"))
+        zona_str = normalizar_nombre(filtros.get("zona", "esa zona"))
+        presupuesto = filtros.get("presupuesto_max")
+        
+        if motivo_falla == "precio_o_caracs":
+            return (
+                f"No tenemos {tipo_str} en {zona_str} por "
+                f"{formato_moneda(presupuesto) if presupuesto else 'ese precio'}. "
+                "¿Busco en otro rango de inversión o ampliamos la zona?"
+            )
+        else:
+            return (
+                f"No disponemos de {tipo_str} en {zona_str} en este momento. "
+                "¿Te puedo ofrecer opciones en otra zona?"
+            )
 
     ids = [
         str(propiedad["id"])
@@ -2758,10 +2839,11 @@ async def seleccionar_propiedad(
         )
 
         if cruce.get("telefono"):
+            # 🚀 Enlace Limpio
             return (
                 "Perfecto, colega. El captador de esa propiedad "
                 f"es {cruce['nombre']}. Puedes comunicarte por "
-                f"WhatsApp aquí: https://wa.me/{cruce['telefono']}. "
+                f"WhatsApp aquí: [https://wa.me/](https://wa.me/){cruce['telefono']}. "
                 "Si quieres, también puedo revisar otras opciones."
             )
 
@@ -2874,8 +2956,13 @@ async def procesar_mensaje(
     sender: str,
     mensaje: str,
 ) -> str:
+    # 1. Recuperamos el estado de la memoria RAM de Render
     estado = obtener_sesion(sender)
 
+    # 🚨 LA INYECCIÓN MAESTRA: Validamos el tiempo de inactividad antes de que intervenga la IA
+    estado = verificar_caducidad_y_amnesia(estado)
+
+    # 2. Procedemos con el flujo normal que ya tienes funcionando perfectamente
     decision = await decidir_con_ia(
         mensaje,
         estado,
@@ -2892,6 +2979,79 @@ async def procesar_mensaje(
         decision,
         mensaje,
     )
+
+    # --- 🛡️ MEGA-CAZADOR DE PYTHON ---
+    texto_normalizado = normalizar_texto(mensaje)
+    filtros_actuales = estado.setdefault("filtros", {})
+    
+    # A. Cazador de Presupuesto (Busca números con $)
+    presupuesto_detectado = 0.0
+    if not filtros_actuales.get("presupuesto_max"):
+        match_precio = re.search(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?\s*(?:\$|usd|dolares)", texto_normalizado)
+        if match_precio:
+            try:
+                num_str = match_precio.group(1).replace(".", "").replace(",", "")
+                precio_forzado = float(num_str)
+                if "mil" in texto_normalizado or "k" in texto_normalizado:
+                    precio_forzado *= 1000
+                filtros_actuales["presupuesto_max"] = precio_forzado
+                presupuesto_detectado = precio_forzado
+                hubo_cambio = True
+            except ValueError:
+                pass
+
+    # B. Cazador de Operación (Inteligencia Financiera)
+    if not filtros_actuales.get("tipo_operacion"):
+        if any(p in texto_normalizado for p in ["venta", "comprar", "compra", "inversion"]):
+            filtros_actuales["tipo_operacion"] = "venta"
+            hubo_cambio = True
+        elif any(p in texto_normalizado for p in ["alquiler", "alquilar", "canon", "arrendar"]):
+            filtros_actuales["tipo_operacion"] = "alquiler"
+            hubo_cambio = True
+        elif presupuesto_detectado > 0:
+            # 🛡️ SENTIDO COMÚN: Presupuestos mayores de $4000 se asumen como venta.
+            if presupuesto_detectado > 4000:
+                filtros_actuales["tipo_operacion"] = "venta"
+            else:
+                filtros_actuales["tipo_operacion"] = "alquiler"
+            hubo_cambio = True
+
+    # C. Cazador de Tipo Inmueble
+    if not filtros_actuales.get("tipo_propiedad"):
+        tipos_posibles = ["apartamento", "townhouse", "casa", "local", "galpon", "oficina", "terreno", "apartoquinta"]
+        for t in tipos_posibles:
+            if t in texto_normalizado:
+                filtros_actuales["tipo_propiedad"] = t
+                hubo_cambio = True
+                break
+
+    # D. Cazador de Zonas (Ignorando Ñ)
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+        zonas_encontradas = []
+
+        for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad_dict, zonas_dict in ciudades.items():
+                ciudad_norm = normalizar_texto(ciudad_dict)
+                if ciudad_norm in texto_normalizado:
+                    zonas_encontradas.append(ciudad_dict)
+                for zona in zonas_dict:
+                    zona_norm = normalizar_texto(zona)
+                    if zona_norm in texto_normalizado and len(zona_norm) > 3:
+                        zonas_encontradas.append(zona)
+
+        if zonas_encontradas:
+            zonas_unicas = list(dict.fromkeys(zonas_encontradas))
+            zona_forzada = ", ".join(zonas_unicas)
+            zona_ia = str(filtros_actuales.get("zona", ""))
+            
+            # Si Python extrajo más detalle que la IA, Python GANA.
+            if not zona_ia or len(zona_forzada) > len(zona_ia):
+                filtros_actuales["zona"] = zona_forzada
+                hubo_cambio = True
+    except ImportError:
+        pass
+    # -------------------------------------------------------------
 
     if not estado.get("rol"):
         estado["rol"] = "cliente"
@@ -2980,29 +3140,20 @@ async def procesar_mensaje(
             )
 
     else:
-        if (
-            hubo_cambio
-            and criterios_suficientes(estado)
-            and any(
-                frase in normalizar_texto(mensaje)
-                for frase in [
-                    "busca",
-                    "muestrame",
-                    "quiero ver",
-                    "ver opciones",
-                    "que tienes",
-                ]
-            )
-        ):
-            respuesta = await mostrar_propiedades(
-                estado
-            )
+        # Si Python ya recolectó todos los filtros necesarios, enviamos opciones directo
+        if hubo_cambio and criterios_suficientes(estado):
+            respuesta = await mostrar_propiedades(estado)
+            
         else:
-            respuesta = (
-                decision.mensaje.strip()
-                or (
-                    "Cuéntame un poco más y con gusto te ayudo."
-                )
+            # 1. Python (El Director) decide qué falta
+            pregunta_dinamica = obtener_pregunta_faltante(estado)
+            texto_crudo = decision.mensaje.strip() or pregunta_dinamica
+            
+            # 2. Paty (La Actriz) lo humaniza
+            respuesta = await humanizar_texto_con_ia(
+                estado=estado, 
+                instruccion_cruda=texto_crudo, 
+                mensaje_usuario=mensaje
             )
 
     if (
@@ -3024,8 +3175,6 @@ async def procesar_mensaje(
                 estado
             )
 
-            # La IA conserva su respuesta natural. Solo se usa
-            # fallback si no produjo un mensaje útil.
             if not decision.mensaje.strip():
                 respuesta = (
                     "Gracias. Para completar la solicitud todavía "
@@ -3077,6 +3226,7 @@ async def lifespan(app: FastAPI):
 
     http_client = httpx.AsyncClient(
         follow_redirects=True,
+        trust_env=False,  # 🚀 EL SALVAVIDAS: Ignora proxies basura de Render
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=20,
