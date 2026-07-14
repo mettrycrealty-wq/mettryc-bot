@@ -699,165 +699,111 @@ def convertir_caracteristicas(
 
 
 # ============================================================
-# UTILIDADES DE ZONAS MÚLTIPLES
+# ZONAS MÚLTIPLES (NUEVO)
 # ============================================================
 
-def dividir_zonas(valor: Any) -> List[str]:
-    """
-    Convierte una solicitud como:
+SEPARADOR_ZONAS_REGEX = re.compile(
+    r"\s*(?:,|/|;|\bo\b|\bu\b|\by\b|\|)\s*",
+    flags=re.IGNORECASE,
+)
 
-    Mañongo, Trigaleña o Prebo
+ALIAS_ZONAS = {
+    "manongo": "Mañongo",
+    "manonngo": "Mañongo",
+    "trigalena": "Trigaleña",
+    "trigaleña": "Trigaleña",
+    "prebo": "Prebo",
+}
 
-    en:
-
-    ["Mañongo", "Trigaleña", "Prebo"]
-    """
-    texto = str(valor or "").strip()
-
-    if not texto:
+def parsear_zonas(valor: Any) -> List[str]:
+    if valor is None:
         return []
 
-    partes = re.split(
-        r"\s*(?:,|;|/|\|)\s*"
-        r"|\s+(?:o|u|y|e)\s+",
-        texto,
-        flags=re.IGNORECASE,
-    )
+    if isinstance(valor, list):
+        crudo = " , ".join(str(v) for v in valor if v)
+    else:
+        crudo = str(valor)
 
-    resultado: List[str] = []
-    vistas: Set[str] = set()
-
-    for parte in partes:
-        parte = re.sub(
-            r"^\s*(?:en|por|para)\s+",
-            "",
-            parte,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        clave = normalizar_texto(parte)
-
-        if (
-            parte
-            and clave
-            and clave not in vistas
-        ):
-            vistas.add(clave)
-            resultado.append(parte)
-
-    return resultado
-
-
-def normalizar_clave_zona(
-    valor: Any,
-) -> str:
-    texto = normalizar_texto(valor)
-
-    texto = re.sub(
-        r"^(?:urbanizacion|urb|sector|zona)\s+",
-        "",
-        texto,
-    )
-
-    texto = re.sub(
-        r"^(?:el|la|los|las)\s+",
-        "",
-        texto,
-    )
-
-    return texto.strip()
-
-
-def zona_individual_coincide(
-    zona_buscada: str,
-    zona_propiedad: str,
-    ciudad_propiedad: str,
-) -> bool:
-    buscada = normalizar_clave_zona(
-        zona_buscada
-    )
-
-    zona = normalizar_clave_zona(
-        zona_propiedad
-    )
-
-    ciudad = normalizar_clave_zona(
-        ciudad_propiedad
-    )
-
-    if not buscada:
-        return True
-
-    # Igualdad exacta con la zona o ciudad registrada en Wasi.
-    if buscada == zona or buscada == ciudad:
-        return True
-
-    # Permite zonas con subdivisiones, por ejemplo:
-    # "Prebo" frente a "Prebo I" o "Prebo II".
-    if zona.startswith(f"{buscada} "):
-        return True
-
-    # Permite etiquetas Wasi con información adicional, sin
-    # considerar toda la ciudad como si fuera una zona.
-    if re.search(
-        rf"\b{re.escape(buscada)}\b",
-        zona,
-    ):
-        return True
-
-    return False
-
-
-def zona_coincide(
-    buscada: str,
-    zona_prop: str,
-    ciudad_prop: str,
-) -> bool:
-    """
-    La propiedad cumple si pertenece al menos a una de las
-    zonas solicitadas.
-    """
-    zonas_buscadas = dividir_zonas(
-        buscada
-    )
-
-    if not zonas_buscadas:
-        return True
-
-    return any(
-        zona_individual_coincide(
-            zona_buscada,
-            zona_prop,
-            ciudad_prop,
-        )
-        for zona_buscada in zonas_buscadas
-    )
-
-
-def formatear_lista_zonas(
-    valor: Any,
-) -> str:
-    zonas = [
-        zona.strip()
-        for zona in dividir_zonas(valor)
-        if zona.strip()
+    partes = [
+        p.strip()
+        for p in SEPARADOR_ZONAS_REGEX.split(crudo)
+        if p and p.strip()
     ]
 
-    if not zonas:
-        return "esa zona"
+    zonas: List[str] = []
+    vistos: Set[str] = set()
 
-    if len(zonas) == 1:
-        return zonas[0]
+    for parte in partes:
+        norm = normalizar_texto(parte)
+        if not norm:
+            continue
 
-    if len(zonas) == 2:
-        return (
-            f"{zonas[0]} o {zonas[1]}"
-        )
+        bonito = ALIAS_ZONAS.get(norm, normalizar_nombre(parte))
 
-    return (
-        ", ".join(zonas[:-1])
-        + f" o {zonas[-1]}"
-    )
+        if norm not in vistos:
+            vistos.add(norm)
+            zonas.append(bonito)
+
+    return zonas
+
+
+def detectar_zonas_en_texto(texto: str) -> List[str]:
+    texto_norm = normalizar_texto(texto or "")
+    detectadas: List[str] = []
+    vistos: Set[str] = set()
+
+    # 1) Alias directos
+    for norm, bonito in ALIAS_ZONAS.items():
+        if re.search(rf"\b{re.escape(norm)}\b", texto_norm):
+            if norm not in vistos:
+                vistos.add(norm)
+                detectadas.append(bonito)
+
+    # 2) Diccionario geográfico (si existe)
+    try:
+        from geografia import DICCIONARIO_GEOGRAFICO
+
+        for _estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
+            for ciudad, zonas in ciudades.items():
+                ciudad_norm = normalizar_texto(ciudad)
+                if ciudad_norm and re.search(rf"\b{re.escape(ciudad_norm)}\b", texto_norm):
+                    if ciudad_norm not in vistos:
+                        vistos.add(ciudad_norm)
+                        detectadas.append(normalizar_nombre(ciudad))
+
+                for zona in zonas:
+                    zona_norm = normalizar_texto(zona)
+                    if not zona_norm or len(zona_norm) < 3:
+                        continue
+                    if re.search(rf"\b{re.escape(zona_norm)}\b", texto_norm):
+                        if zona_norm not in vistos:
+                            vistos.add(zona_norm)
+                            detectadas.append(normalizar_nombre(zona))
+    except ImportError:
+        pass
+
+    return detectadas
+
+
+def fusionar_zonas(
+    zona_actual: Any,
+    zona_nueva: Any,
+    mensaje: str = "",
+) -> str:
+    lista_actual = parsear_zonas(zona_actual)
+    lista_nueva = parsear_zonas(zona_nueva)
+    lista_mensaje = detectar_zonas_en_texto(mensaje)
+
+    final: List[str] = []
+    vistos: Set[str] = set()
+
+    for z in [*lista_actual, *lista_nueva, *lista_mensaje]:
+        norm = normalizar_texto(z)
+        if norm and norm not in vistos:
+            vistos.add(norm)
+            final.append(ALIAS_ZONAS.get(norm, z))
+
+    return ", ".join(final)
 
 
 # ============================================================
