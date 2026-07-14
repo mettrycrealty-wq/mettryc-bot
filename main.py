@@ -510,35 +510,28 @@ def zona_coincide(
     if not disponibles:
         return False
 
+    # 1. 🛡️ FILTRO DE CIUDAD: Si pide una ciudad exacta, debe coincidir.
     ciudades_mettryc = {
         "valencia", "naguanagua", "san diego", "guacara", 
         "barquisimeto", "cabudare", "caracas"
     }
-    
     ciudades_pedidas = buscados.intersection(ciudades_mettryc)
     
     if ciudades_pedidas:
         if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
             return False
 
+    # 2. 🛡️ FILTRO ESTRICTO DE ZONA: Intersección exacta de palabras.
     coincidencias = buscados.intersection(disponibles)
     if len(coincidencias) >= 1:
         return True
 
-    try:
-        from geografia import DICCIONARIO_GEOGRAFICO
-        for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
-            for ciudad_dict, zonas_dict in ciudades.items():
-                ciudad_norm = normalizar_texto(ciudad_dict)
-                zonas_norm = [normalizar_texto(z) for z in zonas_dict]
-                
-                if ciudad_prop_norm == ciudad_norm or ciudad_prop_norm in zonas_norm or zona_prop_norm in zonas_norm:
-                    for palabra_buscada in buscados:
-                        if any(palabra_buscada in z_norm for z_norm in zonas_norm) or palabra_buscada == ciudad_norm:
-                            return True
-    except ImportError:
-        pass
+    # 3. 🛡️ FILTRO DE SUBCADENAS: Por si la zona en Wasi está escrita diferente.
+    for b in buscados:
+        if b in zona_prop_norm or b in ciudad_prop_norm:
+            return True
 
+    # Si no pasa ninguna de las pruebas de arriba, SE ELIMINA LA PROPIEDAD.
     return False
 
 
