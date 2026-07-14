@@ -697,6 +697,26 @@ def convertir_caracteristicas(
 
     return ""
 
+def formatear_lista_zonas(zona_valor: Any) -> str:
+    """
+    Convierte zonas múltiples a texto legible:
+    - 'Prebo'
+    - 'Prebo o Trigaleña'
+    - 'Prebo, Trigaleña o Mañongo'
+    """
+    zonas = parsear_zonas(zona_valor) if zona_valor else []
+
+    if not zonas:
+        return "esa zona"
+
+    if len(zonas) == 1:
+        return zonas[0]
+
+    if len(zonas) == 2:
+        return f"{zonas[0]} o {zonas[1]}"
+
+    return f"{', '.join(zonas[:-1])} o {zonas[-1]}"
+
 
 # ============================================================
 # ZONAS MÚLTIPLES (NUEVO)
@@ -4679,8 +4699,10 @@ async def mostrar_propiedades(
             )
         )
 
-        zona = formatear_lista_zonas(
-            filtros.get("zona")
+        try:
+            zona = formatear_lista_zonas(filtros.get("zona"))
+        except Exception:
+            zona = normalizar_nombre(filtros.get("zona") or "esa zona")
         )
 
         presupuesto = filtros.get(
