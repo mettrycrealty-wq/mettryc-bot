@@ -779,7 +779,7 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
         "X-Title": "Mettryc Realty Paty",
     }
     payload = {
-        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash"),
+        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash-lite"),
         "messages": mensajes,
         "max_tokens": 150,
         "temperature": 0.4
