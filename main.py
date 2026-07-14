@@ -647,7 +647,7 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
 
     # 1. Filtro estricto para clientes (Si dicen explícitamente que no son asesores)
     patrones_cliente = [
-        r"\bno\s+soy\s+(asesor|agente|corredor|broker|realtor)\b",
+        r"\bno\s+soy\s+(asesor|agente|corredor|broker|realtor|colega)\b", # 🚀 Protegido contra falsos positivos
         r"\bsoy\s+cliente\b",
         r"\bes\s+para\s+mi\b",
         r"\bbusco\s+para\s+mi\b",
@@ -659,7 +659,7 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
     # 2. Patrones exactos y Firmas de Colegas
     patrones_colega = [
         r"\bsoy\s+(asesor|asesora|agente|corredor|corredora|broker|realtor|asociado)\b",
-        r"\bsoy\s+colega\b",
+        r"\bcolega\b",           # 🚀 FIX: Detecta "hola colega", "saludos colega", "buenos dias colega"
         r"\btengo\s+un\s+cliente\b",
         r"\bbusco\s+para\s+un\s+cliente\b",
         r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
@@ -678,14 +678,14 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
     palabras_jerga = [
         "canon", "perfil", "cliente", "asesor", "asociado", "inmobiliaria", 
         "realty", "realtor", "broker", "real estate", "negociacion", 
-        "comision", "colega", "aliado"
+        "comision", "aliado"
     ]
     
     if any(palabra in texto for palabra in palabras_solicitud) and any(jerga in texto for jerga in palabras_jerga):
         return "colega_inmobiliario"
 
     return None
-
+    
 def convertir_caracteristicas(valor: Any) -> str:
     if isinstance(valor, str):
         return valor
