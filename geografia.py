@@ -3,7 +3,7 @@
 
 DICCIONARIO_GEOGRAFICO = {
     'distrito metropolitano': {
-        'caracas': ['los naranjos del cafetal', 'la florida', 'prados del este', 'colinas de bello monte', 'altamira', 'el rosal', 'chacao', 'los palos grandes', 'la castellana', 'el marques', 'macaracuay', 'la tahona', 'los samanes', 'santa paula', 'cerro verde', 'san luis', 'santa ines', 'santa fe', 'valle arriba', 'colinas de tamanaco', 'cumbres de curumo', 'santa monica', 'los chaguaramos', 'las acacias', 'el paraiso', 'montalban', 'la paz', 'vista alegre', 'san bernardino', 'la candelaria', 'san jose', 'al tagracia', 'la pastora', 'catia', '23 de enero', 'propatria', 'casalta', 'caricuao', 'macarao', 'antimano', 'la yaguara', 'el junquito', 'coche', 'el valle', 'prado de maria', 'el cementerio', 'los rosales', 'las mercedes', 'bello monte', 'sabana grande', 'el recreo', 'plaza venezuela', 'los caobos', 'mariperez', 'san agustin', 'el silencio', 'quinta crespo', 'san martin', 'artigas', 'la urbina', 'el llanito', 'petare', 'palo verde', 'los dos caminos', 'los chorros', 'sebucan', 'santa eduvigis', 'boleita', 'la carlota', 'chuao', 'cafetal', 'san roman', 'colinas de valle arriba', 'terrazas del club hipico', 'prados de maria', 'la boyera', 'el hatillo', 'la lagunita', 'el cigarrall', 'los pomelos'],
+        'caracas': ['los naranjos del cafetal', 'la florida', 'prados del este', 'colinas de bello monte', 'altamira', 'el rosal', 'chacao', 'los palos grandes', 'la castellana', 'el marques', 'mac[...]
     },
     'miranda': {
         'higuerote': ['colinas de tacarigua', 'puerto frances', 'carenero', 'chirimena', 'los totumos', 'san jorge'],
@@ -19,7 +19,7 @@ DICCIONARIO_GEOGRAFICO = {
     },
     'carabobo': {
         'naguanagua': ['el rincon', 'mañongo', 'la granja', 'las quintas', 'tazajal', 'el roble', 'guaparo', 'caprenco', 'bárbula', 'la campiña', 'carialinda'],
-        'valencia': ['agua blanca', 'altos de guataparo', 'avenida bolivar norte', 'avenida lara', 'camoruco', 'carabobo', 'centro', 'chimenea', 'el bosque', 'el parral', 'el trigal', 'el viñedo', 'flor amarillo', 'guaparo', 'isabelica', 'kardian', 'la ceiba', 'la florida', 'la isabelica', 'la manguita', 'la trigaleña', 'las acacias', 'las chimeneas', 'las quintas', 'lomas del este', 'los colorados', 'los mangos', 'los nisperos', 'los sauces', 'mañongo', 'parque valencia', 'prebo', 'sabana larga', 'san blas', 'san jose', 'santa cecilia', 'terraza de los nisperos', 'trigal centro', 'trigal norte', 'trigal sur', 'valle de camoruco', 'valles de camoruco'],
+        'valencia': ['agua blanca', 'altos de guataparo', 'avenida bolivar norte', 'avenida lara', 'camoruco', 'carabobo', 'centro', 'chimenea', 'el bosque', 'el parral', 'el trigal', 'el viñedo'[...]
         'los guayos': ['buenaventura', 'paraparal', 'las aguitas', 'el roble', 'ciudad alianza', 'los cerritos'],
         'guacara': ['ciudad alianza', 'el samán', 'la pradera', 'loma linda', 'yagua', 'vigirima', 'centro'],
         'san joaquin': ['la pradera', 'el remanso', 'villa oasis', 'centro'],
@@ -32,17 +32,44 @@ DICCIONARIO_GEOGRAFICO = {
         'carlos arvelo': ['guigue', 'belen', 'tacarigua'],
     },
     'lara': {
-        'barquisimeto': ['el este', 'centro', 'oeste', 'fundalara', 'santa elena', 'el parral', 'colinas de santa rosa', 'la rosaleda', 'los leones', 'nueva segovia', 'patarata', 'pueblo nuevo', 'san jose', 'san juan', 'zona industrial'],
+        'barquisimeto': ['el este', 'centro', 'oeste', 'fundalara', 'santa elena', 'el parral', 'colinas de santa rosa', 'la rosaleda', 'los leones', 'nueva segovia', 'patarata', 'pueblo nuevo', '[...]
         'cabudare': ['la mora', 'valle hondo', 'el recreo', 'las mercedes', 'los rastrojos', 'agua viva', 'centro', 'el palmar'],
         'quibor': ['centro', 'la ermita', 'san rafael'],
         'el tocuyo': ['centro', 'la concordia', 'los hornos'],
         'carora': ['centro', 'torres', 'el roble'],
     },
     'aragua': {
-        'maracay': ['base aragua', 'calicanto', 'carmen julia', 'centro', 'corinsa', 'delicias', 'el bosque', 'el castaño', 'el centro', 'el limon', 'el milagro', 'el piñal', 'el toro', 'fundacagua', 'la floresta', 'la julia', 'la maracaya', 'la morita', 'la providencia', 'la romana', 'la soledad', 'las acacias', 'las delicias', 'los aviadores', 'los olivos', 'los samanes', 'madre maria', 'palo negro', 'parque aragua', 'piñonal', 'san ignacio', 'san isidro', 'san jacinto', 'san jose', 'san mateo', 'santa rita', 'turmero', 'valle lindo'],
+        'maracay': ['base aragua', 'calicanto', 'carmen julia', 'centro', 'corinsa', 'delicias', 'el bosque', 'el castaño', 'el centro', 'el limon', 'el milagro', 'el piñal', 'el toro', 'fundaca[...]
         'cagua': ['centro', 'corinsa', 'fundacagua', 'la providencia', 'santa rosalia'],
         'turmero': ['centro', 'la julia', 'san mateo', 'valle lindo'],
         'el limon': ['centro', 'el piñal', 'el toro'],
         'la victoria': ['centro', 'las mercedes', 'san jose'],
     }
 }
+
+# ------------------------------------------------------------------
+# Compatibility layer: allow overriding the embedded dictionary with
+# data/geografia.json placed in the repository's data/ folder. This
+# keeps backwards compatibility while enabling editing the geo data
+# as JSON.
+# ------------------------------------------------------------------
+import json
+from pathlib import Path
+import logging
+
+_data_path = Path(__file__).parent / "data" / "geografia.json"
+
+if _data_path.exists():
+    try:
+        with _data_path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                DICCIONARIO_GEOGRAFICO = loaded
+            else:
+                logging.getLogger(__name__).warning(
+                    "data/geografia.json does not contain a JSON object; keeping embedded DICCIONARIO_GEOGRAFICO"
+                )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Failed to load data/geografia.json: %s", exc
+        )
