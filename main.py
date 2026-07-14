@@ -2892,8 +2892,15 @@ async def procesar_mensaje(
         mensaje,
     )
 
-    # --- 🛡️ MEGA-CAZADOR DE PYTHON ---
-    texto_normalizado = normalizar_texto(mensaje)
+    # --- 🛡️ MEGA-CAZADOR DE PYTHON CON MEMORIA ---
+    # 🚀 FIX: Unimos los últimos 3 mensajes del usuario con el actual para no perder contexto
+    mensajes_previos = " ".join([
+        m["content"] for m in estado.get("historial", []) if m["role"] == "user"
+    ][-3:])
+    
+    texto_completo = f"{mensajes_previos} {mensaje}"
+    texto_normalizado = normalizar_texto(texto_completo)
+    
     filtros_actuales = estado.setdefault("filtros", {})
     
     # A. Cazador de Presupuesto (Mejorado para "USD 65.000" y evitar teléfonos)
