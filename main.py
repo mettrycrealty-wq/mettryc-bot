@@ -2608,13 +2608,13 @@ async def mostrar_propiedades(
     # 🛡️ RESPUESTAS INTELIGENTES POR FALLA
     if not propiedades:
         estado["ultimo_lote"] = []
-        
         filtros = estado.get("filtros", {})
         tipo_str = normalizar_nombre(filtros.get("tipo_propiedad", "inmuebles"))
         zona_str = normalizar_nombre(filtros.get("zona", "esa zona"))
         presupuesto = filtros.get("presupuesto_max")
         
-        if motivo_falla == "precio_o_caracs":
+        # 🚀 FIX: Nombre exacto de la variable
+        if motivo_falla == "precio_o_caracteristicas":
             return (
                 f"No tenemos {tipo_str} en {zona_str} por "
                 f"{formato_moneda(presupuesto) if presupuesto else 'ese precio'}. "
