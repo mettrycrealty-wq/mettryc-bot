@@ -1437,6 +1437,12 @@ herramienta debe ejecutar el sistema.
 No inventes propiedades, precios, enlaces, códigos, captadores,
 agentes ni disponibilidad. El sistema mostrará las fichas.
 
+REGLAS ESTRICTAS DE EXTRACCIÓN Y FORMATO JSON (¡CRÍTICO!)
+
+1. NO inventes nombres de variables en el JSON. Usa estrictamente la estructura solicitada (ej. usa 'actualizaciones', NUNCA 'filtros_actualizados', 'accion' NUNCA 'acción').
+2. Para el campo 'presupuesto_max' usa SIEMPRE Y ÚNICAMENTE números. NUNCA uses letras ni símbolos (ej: si dicen 400 dólares, devuelve 400).
+3. Si el cliente da varias zonas separadas por "o" (ej. Prebo o Trigaleña), extrae el texto completo exactamente así en el campo 'zona'.
+
 COMPORTAMIENTO CONVERSACIONAL
 
 1. Aprovecha cualquier dato dicho anteriormente. Nunca preguntes
@@ -3051,21 +3057,23 @@ async def procesar_mensaje(
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
     
-    # A. Cazador de Presupuesto (Busca números con $)
-    presupuesto_detectado = 0.0
+    # A. Cazador de Presupuesto (Mejorado para detectar números sueltos si son lógicos)
     if not filtros_actuales.get("presupuesto_max"):
-        match_precio = re.search(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?\s*(?:\$|usd|dolares)", texto_normalizado)
+        # Primero busca con símbolo de moneda
+        match_precio = re.search(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(?:mil|k)?\s*(?:\$|usd|dolares|dls)", texto_normalizado)
+        # Si no lo encuentra, busca un número entre 100 y 999999 que parezca presupuesto
+        if not match_precio:
+            match_precio = re.search(r"\b([1-9]\d{2,5})\b", texto_normalizado)
+            
         if match_precio:
             try:
                 num_str = match_precio.group(1).replace(".", "").replace(",", "")
                 precio_forzado = float(num_str)
-                if "mil" in texto_normalizado or "k" in texto_normalizado:
-                    precio_forzado *= 1000
+                if "mil" in texto_normalizado or "k" in texto_normalizado: precio_forzado *= 1000
                 filtros_actuales["presupuesto_max"] = precio_forzado
                 presupuesto_detectado = precio_forzado
                 hubo_cambio = True
-            except ValueError:
-                pass
+            except ValueError: pass
 
     # B. Cazador de Operación (Inteligencia Financiera)
     if not filtros_actuales.get("tipo_operacion"):
@@ -3092,20 +3100,28 @@ async def procesar_mensaje(
                 hubo_cambio = True
                 break
 
-    # D. Cazador de Zonas (Ignorando Ñ)
+    # D. Cazador de Zonas (Acepta zonas múltiples y respeta el "o")
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         zonas_encontradas = []
+        for est, ciu in DICCIONARIO_GEOGRAFICO.items():
+            for c_dict, z_dict in ciu.items():
+                if normalizar_texto(c_dict) in texto_normalizado: zonas_encontradas.append(c_dict)
+                for z in z_dict:
+                    zn = normalizar_texto(z)
+                    if zn in texto_normalizado and len(zn) > 3: zonas_encontradas.append(z)
 
-        for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
-            for ciudad_dict, zonas_dict in ciudades.items():
-                ciudad_norm = normalizar_texto(ciudad_dict)
-                if ciudad_norm in texto_normalizado:
-                    zonas_encontradas.append(ciudad_dict)
-                for zona in zonas_dict:
-                    zona_norm = normalizar_texto(zona)
-                    if zona_norm in texto_normalizado and len(zona_norm) > 3:
-                        zonas_encontradas.append(zona)
+        if zonas_encontradas:
+            zonas_unicas = list(dict.fromkeys(zonas_encontradas))
+            # 🚀 FIX: Si la IA sí logró extraer "Prebo o Trigaleña", la respetamos.
+            # Solo sobrescribimos si la IA falló o si Python encontró MÁS zonas.
+            zona_ia = str(filtros_actuales.get("zona", ""))
+            
+            if not zona_ia or len(zonas_unicas) > len(zona_ia.split(" o ")):
+                zona_forzada = " o ".join(zonas_unicas)
+                filtros_actuales["zona"] = zona_forzada
+                hubo_cambio = True
+    except ImportError: pass
 
         if zonas_encontradas:
             zonas_unicas = list(dict.fromkeys(zonas_encontradas))
