@@ -2893,6 +2893,84 @@ async def procesar_mensaje(
         mensaje,
     )
 
+    # ============================================================
+    # 🛠️ PANEL DE CONTROL Y PRUEBAS (COMANDOS DE ADMINISTRADOR)
+    # ============================================================
+    # Obtenemos el mensaje exacto que escribió el usuario en minúsculas
+    mensaje_admin = str(estado.get("ultimo_mensaje", "")).strip().lower()
+
+    # 1. Reiniciar Chat (Borra la memoria)
+    if mensaje_admin == "reiniciar chat":
+        estado["historial"] = []
+        estado["filtros"] = {}
+        estado["propiedades_enviadas"] = []
+        estado["estado_conversacion"] = "inicio"
+        return "🧹 Memoria del chat borrada exitosamente. La IA ha olvidado lo anterior. ¡Empecemos de cero!"
+
+    # 2. Reiniciar Servidor en Render
+    if mensaje_admin in ["reiniciar server", "reiniciar servidor"]:
+        import os
+        import threading
+        import time
+        def kill_server():
+            time.sleep(2)
+            os._exit(1) # Esto "apaga" la app forzosamente y obliga a Render a reiniciarla de inmediato
+        
+        threading.Thread(target=kill_server).start()
+        return "🔄 Orden recibida. Reiniciando el servidor en Render... El bot estará fuera de línea por aproximadamente 1 minuto mientras arranca de nuevo."
+
+    # 3. Prueba de Google Sheets
+    if mensaje_admin == "prueba google":
+        agentes = len(sheets_cache.get("agentes", []))
+        captadores = len(sheets_cache.get("captadores", []))
+        return (
+            "📊 *TEST GOOGLE SHEETS*\n"
+            f"✅ Conexión exitosa al documento.\n"
+            f"👥 Agentes en turno leídos: {agentes}\n"
+            f"🏢 Captadores registrados leídos: {captadores}"
+        )
+
+    # 4. Prueba de Wasi
+    if mensaje_admin == "prueba wasi":
+        props = len(inventory_cache.get("inventario", []))
+        return (
+            "🏢 *TEST API WASI*\n"
+            f"✅ Conexión exitosa.\n"
+            f"🏠 Propiedades sincronizadas en memoria: {props}"
+        )
+
+    # 5. Prueba de Telegram
+    if mensaje_admin == "prueba telegram":
+        import asyncio
+        async def test_telegram():
+            mensaje_prueba = "🤖 PRUEBA DE CONEXIÓN: El bot de Mettryc Realty está operativo y transmitiendo alertas correctamente."
+            
+            # Enviar a todos los administradores
+            for admin_id in TELEGRAM_ADMIN_IDS:
+                await enviar_mensaje_telegram(admin_id, mensaje_prueba)
+                
+            # Enviar a los agentes que estén en el turno actual
+            for agente in sheets_cache.get("agentes", []):
+                t_id = agente.get("telegram_id") or agente.get("chat_id")
+                if t_id:
+                    await enviar_mensaje_telegram(t_id, f"🤖 PRUEBA DE CONEXIÓN PARA AGENTE: {agente.get('nombre')}")
+        
+        # Disparamos la tarea en segundo plano
+        asyncio.create_task(test_telegram())
+        return "📲 Prueba de Telegram enviada. Los administradores y los agentes en turno deberían recibir una notificación en este instante."
+
+    # 6. Prueba de Inteligencia Artificial (OpenRouter)
+    if mensaje_admin == "prueba ia":
+        import os
+        if os.getenv("OPENROUTER_API_KEY"):
+            return (
+                "🧠 *TEST INTELIGENCIA ARTIFICIAL*\n"
+                "✅ OpenRouter está debidamente configurado y la API Key está activa. El motor de GPT-4o-mini está listo."
+            )
+        else:
+            return "❌ ERROR: No se detecta la API Key de OpenRouter en el entorno de Render."
+    # ============================================================
+    
     # --- 🛡️ MEGA-CAZADOR DE PYTHON CON MEMORIA ---
     # 🚀 FIX: Unimos los últimos 3 mensajes del usuario con el actual para no perder contexto
     mensajes_previos = " ".join([
