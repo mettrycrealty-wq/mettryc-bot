@@ -710,7 +710,121 @@ def convertir_caracteristicas(valor: Any) -> str:
 
     return ""
 
+def convertir_caracteristicas(valor: Any) -> str:
+    if isinstance(valor, str):
+        return valor
 
+    if isinstance(valor, list):
+        return " ".join(
+            str(elemento)
+            for elemento in valor
+        )
+
+    if isinstance(valor, dict):
+        return " ".join(
+            f"{clave} {contenido}"
+            for clave, contenido in valor.items()
+            if contenido not in [
+                None,
+                "",
+                False,
+                0,
+                "0",
+            ]
+        )
+
+    return ""
+
+
+def verificar_caducidad_y_amnesia(estado: dict) -> dict:
+    if not estado.get("actualizado_en"):
+        return estado
+
+    ahora = datetime.utcnow()
+    ultima_actualizacion = datetime.fromisoformat(estado["actualizado_en"])
+    tiempo_inactivo = ahora - ultima_actualizacion
+    
+    rol = estado.get("rol", "cliente")
+    numero_canal = estado.get("numero_canal", "")
+
+    if rol == "colega_inmobiliario" and tiempo_inactivo > timedelta(hours=24):
+        logger.info(f"⏳ Sesión de colega ({numero_canal}) caducada por inactividad (24h). Reiniciando estado.")
+        return crear_sesion(numero_canal)
+
+    if rol == "cliente" and tiempo_inactivo > timedelta(days=30):
+        logger.info(f"⏳ Sesión de cliente ({numero_canal}) superó los 30 días. Reiniciando estado.")
+        return crear_sesion(numero_canal)
+
+    if rol == "cliente" and tiempo_inactivo > timedelta(hours=24):
+        if estado.get("historial"):
+            nombre_log = estado["lead"].get("nombre") or "Desconocido"
+            logger.info(f"🧠 Amnesia Selectiva Mettryc: Limpiando mensajes viejos de {nombre_log} (>24h). Filtros conservados.")
+            estado["historial"] = []
+
+    return estado
+
+
+def obtener_pregunta_faltante(estado: dict) -> str:
+    filtros = estado.get("filtros", {})
+    
+    if not filtros.get("tipo_operacion"):
+        return "¿Es para la compra o alquiler?"
+        
+    if not filtros.get("tipo_propiedad"):
+        return "¿Qué tipo de inmueble buscas? (Ej: apartamento, casa, townhouse)"
+        
+    if not filtros.get("zona"):
+        return "¿En qué zona o ciudad buscas?"
+        
+    if not filtros.get("presupuesto_max"):
+        return "¿Cuál es tu presupuesto estimado?"
+        
+    return "¿Hay alguna característica adicional?"
+
+
+async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_usuario: str) -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    
+    prompt_sistema = f"""
+    Eres Paty, la asistente VIP de Mettryc Realty.
+    Tu sistema interno acaba de determinar que necesitas pedirle este dato al usuario:
+    "{instruccion_cruda}"
+    
+    TU TAREA:
+    Traduce esa orden rígida a tu personalidad natural, cálida y profesional.
+    1. Si el usuario acaba de dar un dato, valídalo brevemente (ej. "¡Excelente zona!").
+    2. Luego, haz la pregunta que se te ordenó.
+    3. NO hagas más preguntas aparte de la indicada. Sé muy breve (máximo 30 palabras).
+    """
+    
+    mensajes = [{"role": "system", "content": prompt_sistema}]
+    
+    for msg in estado.get("historial", [])[-4:]:
+        mensajes.append({"role": msg["role"], "content": msg["content"]})
+        
+    mensajes.append({"role": "user", "content": mensaje_usuario})
+    
+    payload = {
+        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash"),
+        "messages": mensajes,
+        "max_tokens": 150,
+        "temperature": 0.4
+    }
+    
+    try:
+        # 🚀 Enlace limpio y conexión resiliente
+        resp = await http_client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15.0
+        )
+        resp.raise_for_status()
+        contenido = resp.json()["choices"][0]["message"]["content"]
+        return contenido.strip() if contenido else instruccion_cruda
+    except Exception as e:
+        logger.error(f"Error humanizando texto: {e}")
+        return instruccion_cruda
 # ============================================================
 # SESIONES
 # ============================================================
