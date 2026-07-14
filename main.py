@@ -1523,8 +1523,9 @@ Información permitida:
 - Formulario:
   https://forms.gle/SbLtHrey69fhf3Xt8
 
-ACCIONES
+ACCIONES (El campo 'accion' DEBE ser un objeto JSON con la propiedad 'tipo', ej: {"tipo": "buscar_propiedades"})
 
+Tipos de acción permitidos:
 - responder: conversar o hacer una pregunta natural.
 - buscar_propiedades: buscar con filtros actuales o nuevos.
 - mostrar_mas_propiedades: enviar las siguientes opciones.
@@ -1532,7 +1533,6 @@ ACCIONES
 - seleccionar_propiedad: el usuario eligió una ficha mostrada.
 - pedir_codigo_inmueble: viene de un anuncio y falta el código.
 - reiniciar_busqueda: quiere comenzar otra búsqueda.
-- pedir_aclaracion: no se entiende un dato relevante.
 
 Devuelve solamente el JSON solicitado.
 """
@@ -2154,245 +2154,85 @@ def datos_lead_faltantes(
 # RANKING Y EVALUACIÓN ESTRICTA
 # ============================================================
 
-def obtener_precio(
-    propiedad: dict,
-    operacion: str,
-) -> float:
+def obtener_precio(propiedad: dict, operacion: str) -> float:
     if operacion == "alquiler":
-        return convertir_float(
-            propiedad.get(
-                "precio_renta_float"
-            )
-        )
+        return convertir_float(propiedad.get("precio_renta_float"))
+    return convertir_float(propiedad.get("precio_venta_float"))
 
-    return convertir_float(
-        propiedad.get(
-            "precio_venta_float"
-        )
-    )
-
-
-def coincide_tipo(
-    propiedad: dict,
-    tipo_buscado: str,
-) -> bool:
-    if not tipo_buscado:
-        return True
-
-    buscado = normalizar_tipo_propiedad(
-        tipo_buscado
-    )
-
-    tipo_wasi = normalizar_tipo_propiedad(
-        propiedad.get(
-            "tipo_propiedad_wasi",
-            "",
-        )
-    )
-
-    titulo = normalizar_texto(
-        propiedad.get("titulo", "")
-    )
+def coincide_tipo(propiedad: dict, tipo_buscado: str) -> bool:
+    if not tipo_buscado: return True
+    buscado = normalizar_tipo_propiedad(tipo_buscado)
+    tipo_wasi = normalizar_tipo_propiedad(propiedad.get("tipo_propiedad_wasi", ""))
+    titulo = normalizar_texto(propiedad.get("titulo", ""))
 
     if buscado == "casa":
-        aceptados = {
-            "casa",
-            "quinta",
-            "townhouse",
-            "apartoquinta",
-        }
-
-        return any(
-            tipo in tipo_wasi or tipo in titulo
-            for tipo in aceptados
-        )
-
+        aceptados = {"casa", "quinta", "townhouse", "apartoquinta"}
+        return any(tipo in tipo_wasi or tipo in titulo for tipo in aceptados)
     if buscado == "apartamento":
-        return any(
-            tipo in tipo_wasi or tipo in titulo
-            for tipo in [
-                "apartamento",
-                "penthouse",
-            ]
-        )
+        return any(tipo in tipo_wasi or tipo in titulo for tipo in ["apartamento", "penthouse"])
 
-    return (
-        buscado in tipo_wasi
-        or buscado in titulo
-    )
+    return buscado in tipo_wasi or buscado in titulo
 
-
-def evaluar_propiedad(
-    original: dict,
-    filtros: dict,
-) -> Optional[dict]:
+def evaluar_propiedad_estricta(original: dict, filtros: dict) -> tuple[bool, str, dict]:
     propiedad = deepcopy(original)
-
-    operacion = filtros.get(
-        "tipo_operacion"
-    )
-
-    precio = obtener_precio(
-        propiedad,
-        operacion,
-    )
-
-    if precio <= 0:
-        return None
-
-    score = 0.0
-    diferencias = []
-    es_exacta = True
-
+    
+    operacion = filtros.get("tipo_operacion")
     tipo = filtros.get("tipo_propiedad")
     zona = filtros.get("zona")
-    presupuesto = filtros.get(
-        "presupuesto_max"
-    )
-    habitaciones_min = filtros.get(
-        "habitaciones_min"
-    )
-    banos_min = filtros.get("banos_min")
-    garajes_min = filtros.get(
-        "garajes_min"
-    )
-    caracteristicas = filtros.get(
-        "caracteristicas",
-        [],
-    )
+    presupuesto = filtros.get("presupuesto_max")
+    habs_req = filtros.get("habitaciones_min")
+    banos_req = filtros.get("banos_min")
+    garajes_req = filtros.get("garajes_min")
+    caracteristicas = filtros.get("caracteristicas", [])
 
-    # 1. 🛡️ FILTRO ESTRICTO: TIPO INMUEBLE Y OPERACIÓN
-    if tipo:
-        if coincide_tipo(propiedad, tipo):
-            score += 35
-        else:
-            return None
+    precio = obtener_precio(propiedad, operacion) if operacion else obtener_precio(propiedad, "venta")
+    
+    # 1. 🛡️ ELIMINATORIO: Operación y Precio
+    if operacion and precio <= 0:
+        return False, "rechazada_operacion", propiedad
 
-    # 2. 🛡️ FILTRO ESTRICTO Y MÚLTIPLE: ZONAS
-    if zona:
-        if zona_coincide(
-            zona,
-            propiedad.get("zona", ""),
-            propiedad.get("ciudad", ""),
-        ):
-            score += 30
-        else:
-            return None
+    # 2. 🛡️ ELIMINATORIO: Tipo de Inmueble
+    if tipo and not coincide_tipo(propiedad, tipo):
+        return False, "rechazada_tipo", propiedad
 
-    # 3. 🛡️ TOLERANCIA 20%: PRESUPUESTO
-    if presupuesto:
-        if precio <= presupuesto:
-            proporcion = precio / presupuesto
-            score += 20 * proporcion
-        elif precio <= presupuesto * 1.20:
-            score += 5
+    # 3. 🛡️ ELIMINATORIO: Zona
+    if zona and not zona_coincide(zona, propiedad.get("zona", ""), propiedad.get("ciudad", "")):
+        return False, "rechazada_zona", propiedad
+
+    es_exacta = True
+    diferencias = []
+
+    # 4. 🛡️ TOLERANCIA 20%: Presupuesto
+    if presupuesto and precio > 0:
+        if precio > presupuesto:
+            if precio <= presupuesto * 1.20:
+                es_exacta = False
+                diferencias.append(f"Inversión {formato_moneda(precio)}")
+            else:
+                return False, "rechazada_precio", propiedad
+
+    # 5. 🛡️ TOLERANCIA +/- 1: Espacios
+    for val_req, key_prop, label in [(habs_req, "habitaciones", "habs"), (banos_req, "banos", "baños"), (garajes_req, "garajes", "puestos")]:
+        if val_req is not None and val_req > 0:
+            val_prop = convertir_entero(propiedad.get(key_prop))
+            if val_prop < val_req - 1 or val_prop > val_req + 1:
+                return False, f"rechazada_{key_prop}", propiedad
+            elif val_prop != val_req:
+                es_exacta = False
+                diferencias.append(f"{val_prop} {label}")
+
+    # 6. 🛡️ RECONOCIMIENTO DE PALABRAS CLAVE
+    texto_propiedad = normalizar_texto(" ".join([str(propiedad.get("titulo", "")), str(propiedad.get("descripcion", "")), str(propiedad.get("caracteristicas_texto", ""))]))
+    for car in caracteristicas:
+        if normalizar_texto(car) not in texto_propiedad:
             es_exacta = False
-            diferencias.append(
-                "Inversión " + formato_moneda(precio)
-            )
-        else:
-            return None
+            diferencias.append(f"No especifica '{car}'")
 
-    # 4. 🛡️ TOLERANCIA +1/-1: HABITACIONES
-    habitaciones = convertir_entero(
-        propiedad.get("habitaciones")
-    )
-    if habitaciones_min is not None and habitaciones_min > 0:
-        if habitaciones == habitaciones_min:
-            score += 10
-        elif habitaciones_min - 1 <= habitaciones <= habitaciones_min + 1:
-            score += 5
-            es_exacta = False
-            diferencias.append(
-                f"tiene {habitaciones} habitaciones"
-            )
-        else:
-            return None
-
-    # 5. 🛡️ TOLERANCIA +1/-1: BAÑOS
-    banos = convertir_entero(
-        propiedad.get("banos")
-    )
-    if banos_min is not None and banos_min > 0:
-        if banos == banos_min:
-            score += 5
-        elif banos_min - 1 <= banos <= banos_min + 1:
-            score += 2
-            es_exacta = False
-            diferencias.append(
-                f"tiene {banos} baños"
-            )
-        else:
-            return None
-            
-    # 6. 🛡️ TOLERANCIA +1/-1: GARAJES
-    garajes = convertir_entero(
-        propiedad.get("garajes")
-    )
-    if garajes_min is not None and garajes_min > 0:
-        if garajes == garajes_min:
-            score += 5
-        elif garajes_min - 1 <= garajes <= garajes_min + 1:
-            score += 2
-            es_exacta = False
-            diferencias.append(
-                f"tiene {garajes} puestos"
-            )
-        else:
-            return None
-
-    # 7. 🛡️ RECONOCIMIENTO DE PALABRAS CLAVE
-    texto_propiedad = normalizar_texto(
-        " ".join([
-            str(propiedad.get("titulo", "")),
-            str(propiedad.get("descripcion", "")),
-            str(
-                propiedad.get(
-                    "caracteristicas_texto",
-                    "",
-                )
-            ),
-        ])
-    )
-
-    no_confirmadas = []
-
-    for caracteristica in caracteristicas:
-        car_norm = normalizar_texto(
-            caracteristica
-        )
-
-        if (
-            car_norm
-            and car_norm in texto_propiedad
-        ):
-            score += 5
-
-        elif car_norm:
-            no_confirmadas.append(
-                caracteristica
-            )
-
-    if no_confirmadas:
-        diferencias.append(
-            "no especifica: "
-            + ", ".join(no_confirmadas)
-        )
-        es_exacta = False
-
-    propiedad["_score"] = round(score, 2)
+    propiedad["_coincidencia"] = "exacta" if es_exacta else "aproximada"
     propiedad["_diferencias"] = diferencias
-    propiedad["_coincidencia"] = (
-        "exacta"
-        if es_exacta and not diferencias
-        else "aproximada"
-    )
-    propiedad["operacion_buscada"] = (
-        operacion
-    )
+    propiedad["operacion_buscada"] = operacion
 
-    return propiedad
-
+    return True, ("exacta" if es_exacta else "tolerancia"), propiedad
 
 def buscar_mejores_propiedades(estado: dict, cantidad: int = 3) -> tuple[List[dict], str]:
     excluir = {str(pid) for pid in estado.get("propiedades_enviadas", [])}
@@ -2400,11 +2240,7 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int = 3) -> tuple[List[di
     tolerancia = []
     pasaron_zona_tipo = 0
     
-    # 🌟 NUEVO: Diccionario para estadísticas de los logs
-    stats = {
-        "rechazada_operacion": 0, "rechazada_tipo": 0, "rechazada_zona": 0, 
-        "rechazada_precio": 0, "rechazada_habs": 0, "rechazada_banos": 0, "rechazada_garajes": 0
-    }
+    stats = {"rechazada_operacion": 0, "rechazada_tipo": 0, "rechazada_zona": 0, "rechazada_precio": 0, "rechazada_habitaciones": 0, "rechazada_banos": 0, "rechazada_garajes": 0}
     
     for original in inventory_cache["inventario"]:
         if str(original.get("id", "")) in excluir:
@@ -2413,12 +2249,13 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int = 3) -> tuple[List[di
         is_match, category, prop = evaluar_propiedad_estricta(original, estado["filtros"])
         
         if is_match:
-            if category == "exacta": exactas.append(prop)
-            else: tolerancia.append(prop)
+            if category == "exacta": 
+                exactas.append(prop)
+            else: 
+                tolerancia.append(prop)
         else:
-            # Sumamos al contador del motivo de rechazo
             stats[category] = stats.get(category, 0) + 1
-            if category in ["rechazada_precio", "rechazada_habs", "rechazada_banos", "rechazada_garajes"]:
+            if category in ["rechazada_precio", "rechazada_habitaciones", "rechazada_banos", "rechazada_garajes"]:
                 pasaron_zona_tipo += 1
 
     op = estado["filtros"].get("tipo_operacion", "venta")
@@ -2431,37 +2268,20 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int = 3) -> tuple[List[di
         
     motivo_falla = "precio_o_caracteristicas" if not resultado and pasaron_zona_tipo > 0 else "zona_o_tipo"
     
-    # 🌟 LOG DE RAYOS X 4: ESTADÍSTICAS DEL MOTOR
     logger.info(f"📊 [MOTOR DE BÚSQUEDA] Evaluadas: {len(inventory_cache['inventario'])}")
-    logger.info(f"📊 [MOTOR DE BÚSQUEDA] Descartadas -> Zona: {stats.get('rechazada_zona',0)} | Tipo: {stats.get('rechazada_tipo',0)} | Operación: {stats.get('rechazada_operacion',0)} | Precio: {stats.get('rechazada_precio',0)} | Habs/Baños/Puestos: {stats.get('rechazada_habs',0)+stats.get('rechazada_banos',0)+stats.get('rechazada_garajes',0)}")
+    logger.info(f"📊 [MOTOR DE BÚSQUEDA] Descartadas -> Zona: {stats.get('rechazada_zona',0)} | Tipo: {stats.get('rechazada_tipo',0)} | Operación: {stats.get('rechazada_operacion',0)} | Precio: {stats.get('rechazada_precio',0)}")
     logger.info(f"📊 [MOTOR DE BÚSQUEDA] Encontradas -> Exactas: {len(exactas)} | Tolerancia: {len(tolerancia)}")
     
     return resultado, motivo_falla
 
-
-def buscar_por_codigo(
-    codigo: str,
-) -> Optional[dict]:
-    codigo_limpio = re.sub(
-        r"\D",
-        "",
-        str(codigo or ""),
-    )
-
+def buscar_por_codigo(codigo: str) -> Optional[dict]:
+    codigo_limpio = re.sub(r"\D", "", str(codigo or ""))
     if not codigo_limpio:
         return None
-
-    for propiedad in inventory_cache[
-        "inventario"
-    ]:
-        if (
-            str(propiedad.get("id", ""))
-            == codigo_limpio
-        ):
+    for propiedad in inventory_cache["inventario"]:
+        if str(propiedad.get("id", "")) == codigo_limpio:
             return deepcopy(propiedad)
-
     return None
-
 
 # ============================================================
 # FICHAS
