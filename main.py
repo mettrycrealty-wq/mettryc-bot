@@ -2449,6 +2449,9 @@ def buscar_mejores_propiedades(
 
         original_clon = deepcopy(original)
         original_clon["precio"] = label_precio_aplicable
+        # Inyectamos los nombres antiguos por compatibilidad con evaluar_propiedad
+        original_clon["precio_venta_float"] = original.get("precio_venta", 0)
+        original_clon["precio_renta_float"] = original.get("precio_alquiler", 0)
 
         propiedad = evaluar_propiedad(
             original_clon,
