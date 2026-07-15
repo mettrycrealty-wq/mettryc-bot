@@ -46,7 +46,7 @@ MODELO_AGENTE_PRINCIPAL = os.getenv(
     "MODELO_AGENTE_PRINCIPAL",
     os.getenv(
         "MODELO_ANALISIS_PRINCIPAL",
-        "google/gemini-2.5-flash",
+        "google/gemini-2.5-flash-lite",
     ),
 )
 
@@ -3135,27 +3135,27 @@ async def procesar_mensaje(
 
     # 5. Prueba de Telegram
     if mensaje_admin == "prueba telegram":
-        import asyncio
         async def test_telegram():
-        mensaje_prueba = "🤖 PRUEBA DE CONEXIÓN: Bot Mettryc operativo."
-             
-            # Cambiamos 'enviar_mensaje_telegram' por 'enviar_telegram'
+            mensaje_prueba = "🤖 PRUEBA DE CONEXIÓN: Bot Mettryc operativo."
+            
+            # Enviar a administradores
             for admin_id in TELEGRAM_ADMIN_IDS:
                 if await enviar_telegram(admin_id, mensaje_prueba):
-                logger.info(f"✅ Prueba Telegram enviada a {admin_id}")
-            else:
-                logger.error(f"❌ Falló envío a Telegram {admin_id}")
-                
+                    logger.info(f"✅ Prueba Telegram enviada a {admin_id}")
+                else:
+                    logger.error(f"❌ Falló envío a Telegram {admin_id}")
+            
             # Enviar a los agentes que estén en el turno actual
             for agente in sheets_cache.get("agentes", []):
                 t_id = agente.get("telegram_id") or agente.get("chat_id")
                 if t_id:
-                    await enviar_mensaje_telegram(t_id, f"🤖 PRUEBA DE CONEXIÓN PARA AGENTE: {agente.get('nombre')}")
+                    # CORREGIDO: ahora usamos enviar_telegram
+                    await enviar_telegram(t_id, f"🤖 PRUEBA DE CONEXIÓN PARA AGENTE: {agente.get('nombre')}")
         
         # Disparamos la tarea en segundo plano
         asyncio.create_task(test_telegram())
-        return "📲 Prueba de Telegram enviada. Los administradores y los agentes en turno deberían recibir una notificación en este instante."
-
+        return {"status": "ok", "message": "📲 Prueba de Telegram enviada. Los administradores y los agentes en turno deberían recibir una notificación en este instante."}
+        
     # 6. Prueba de Inteligencia Artificial (OpenRouter)
     if mensaje_admin == "prueba ia":
         import os
