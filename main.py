@@ -1065,75 +1065,41 @@ async def obtener_inventario_wasi() -> List[dict]:
                 f"{usuario.get('last_name', '')}"
             ).strip()
 
-            # --- NUEVA LÓGICA DE EXTRACCIÓN DE ZONA ---
-            zona_wasi = str(valor.get("zone_label") or "").strip()
+            # --- NUEVA LÓGICA DE EXTRACCIÓN GEOGRÁFICA (Según docs de Wasi) ---
             localidad_wasi = str(valor.get("location_label") or "").strip()
+            zona_wasi = str(valor.get("zone_label") or "").strip()
             
-            # Combinamos Localidad y Zona. Si una viene vacía, no afecta.
+            # Combinamos ambos niveles. Si uno está vacío, no afecta al otro.
             zona_combinada = f"{localidad_wasi} {zona_wasi}".strip()
             if not zona_combinada:
                 zona_combinada = "N/D"
 
             propiedades.append({
                 "id": str(property_id),
-                "titulo": valor.get(
-                    "title",
-                    "Propiedad Mettryc",
-                ),
+                "titulo": valor.get("title", "Propiedad Mettryc"),
                 "descripcion": descripcion,
-                "ciudad": valor.get(
-                    "city_label",
-                    "N/D",
-                ),
+                "ciudad": valor.get("city_label", "N/D"),
                 "zona": zona_combinada,
-                "tipo_propiedad_wasi": valor.get(
-                    "type_label",
-                    "N/D",
-                ),
+                "tipo_propiedad_wasi": valor.get("type_label", "N/D"),
                 
-                # --- NUEVA LÓGICA DE PRECIOS SEPARADOS ---
-                "precio_venta": (
-                    parsear_precio_wasi(
-                        valor.get("sale_price"),
-                        valor.get("sale_price_label")
-                    )
+                # Precios separados para la evaluación inteligente
+                "precio_venta": parsear_precio_wasi(
+                    valor.get("sale_price"), valor.get("sale_price_label")
                 ),
-                "precio_alquiler": (
-                    parsear_precio_wasi(
-                        valor.get("rent_price"),
-                        valor.get("rent_price_label")
-                    )
+                "precio_alquiler": parsear_precio_wasi(
+                    valor.get("rent_price"), valor.get("rent_price_label")
                 ),
                 "precio_venta_label": valor.get("sale_price_label", "N/D"),
                 "precio_alquiler_label": valor.get("rent_price_label", "N/D"),
-                # -----------------------------------------
 
                 "area": valor.get("area", "N/D"),
-                "habitaciones": valor.get(
-                    "bedrooms",
-                    "N/D",
-                ),
-                "banos": valor.get(
-                    "bathrooms",
-                    "N/D",
-                ),
-                "garajes": valor.get(
-                    "garages",
-                    "N/D",
-                ),
-                "caracteristicas_texto": (
-                    caracteristicas
-                ),
-                "captador_wasi": (
-                    captador or "Asesor Mettryc"
-                ),
-                "telefono_captador_wasi": (
-                    usuario.get("phone", "")
-                ),
-                "enlace": (
-                    "https://www.mettryc.com/inmueble/"
-                    f"{property_id}"
-                ),
+                "habitaciones": valor.get("bedrooms", "N/D"),
+                "banos": valor.get("bathrooms", "N/D"),
+                "garajes": valor.get("garages", "N/D"),
+                "caracteristicas_texto": caracteristicas,
+                "captador_wasi": captador or "Asesor Mettryc",
+                "telefono_captador_wasi": usuario.get("phone", ""),
+                "enlace": f"https://www.mettryc.com/inmueble/{property_id}",
             })
 
         if cantidad_pagina < take:
@@ -2425,18 +2391,14 @@ def buscar_mejores_propiedades(
     cantidad: int = 3,
 ) -> tuple[List[dict], str]:
     excluir = {
-        str(property_id)
-        for property_id
-        in estado["propiedades_enviadas"]
+        str(property_id) for property_id in estado["propiedades_enviadas"]
     }
 
     evaluadas = []
     pasaron_zona_tipo = 0
 
     for original in inventory_cache["inventario"]:
-        property_id = str(
-            original.get("id", "")
-        )
+        property_id = str(original.get("id", ""))
 
         if not property_id or property_id in excluir:
             continue
@@ -2445,9 +2407,11 @@ def buscar_mejores_propiedades(
         tipo = filtros.get("tipo_propiedad")
         zona = filtros.get("zona")
         operacion = str(filtros.get("operacion", "")).lower()
+        
+        # CORRECCIÓN DE SEGURIDAD: Convertir None a 0
         presupuesto_max = filtros.get("presupuesto_max") or 0
 
-        # 1. Filtro estricto por Zona y Tipo
+        # 1. Filtro estricto de Zona y Tipo
         tipo_ok = coincide_tipo(original, tipo) if tipo else True
         zona_ok = zona_coincide(zona, original.get("zona", ""), original.get("ciudad", "")) if zona else True
         
@@ -2462,15 +2426,14 @@ def buscar_mejores_propiedades(
             precio_aplicable = original.get("precio_venta", 0)
             label_precio_aplicable = original.get("precio_venta_label", "N/D")
             if precio_aplicable <= 0:
-                continue  # Se descarta en silencio: No está a la venta
+                continue 
                 
         elif "alquilar" in operacion or "alquiler" in operacion or "renta" in operacion:
             precio_aplicable = original.get("precio_alquiler", 0)
             label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
             if precio_aplicable <= 0:
-                continue  # Se descarta en silencio: No está en alquiler
+                continue 
         else:
-            # Si el usuario no ha especificado operación, tomamos el precio disponible
             if original.get("precio_venta", 0) > 0:
                 precio_aplicable = original.get("precio_venta", 0)
                 label_precio_aplicable = original.get("precio_venta_label", "N/D")
@@ -2478,14 +2441,12 @@ def buscar_mejores_propiedades(
                 precio_aplicable = original.get("precio_alquiler", 0)
                 label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
 
-        # 3. Filtrar por presupuesto SOLO si el usuario indicó un límite real
+        # 3. Validación Tolerante de Presupuesto
         if presupuesto_max > 0 and precio_aplicable > presupuesto_max:
-            continue  # Se descarta por presupuesto superado
+            continue
 
-        # Si llegó hasta aquí, pasó los filtros base con éxito
         pasaron_zona_tipo += 1
 
-        # Pasamos el clon modificado a evaluar para que mantenga sus scores
         original_clon = deepcopy(original)
         original_clon["precio"] = label_precio_aplicable
 
@@ -2498,35 +2459,21 @@ def buscar_mejores_propiedades(
             evaluadas.append(propiedad)
 
     exactas = sorted(
-        [
-            propiedad
-            for propiedad in evaluadas
-            if propiedad["_coincidencia"]
-            == "exacta"
-        ],
-        key=lambda propiedad: propiedad["_score"],
+        [p for p in evaluadas if p["_coincidencia"] == "exacta"],
+        key=lambda p: p["_score"],
         reverse=True,
     )
 
     aproximadas = sorted(
-        [
-            propiedad
-            for propiedad in evaluadas
-            if propiedad["_coincidencia"]
-            == "aproximada"
-        ],
-        key=lambda propiedad: propiedad["_score"],
+        [p for p in evaluadas if p["_coincidencia"] == "aproximada"],
+        key=lambda p: p["_score"],
         reverse=True,
     )
 
     resultado = exactas[:cantidad]
 
     if len(resultado) < cantidad:
-        resultado.extend(
-            aproximadas[
-                :cantidad - len(resultado)
-            ]
-        )
+        resultado.extend(aproximadas[:cantidad - len(resultado)])
         
     motivo_falla = ""
     if not resultado:
@@ -3259,24 +3206,21 @@ async def procesar_mensaje(
                 hubo_cambio = True
                 break
 
-    # D. Cazador de Zonas con Detección de Ambigüedad y Multi-Zona
+    # D. Cazador de Zonas con Detección de Ambigüedad
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         
         mapeo_zonas = {}
         ciudades_mencionadas = []
 
-        # 1. Escanear todo el diccionario buscando ciudades y zonas
         for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
             for ciudad_dict, zonas_dict in ciudades.items():
                 ciudad_norm = normalizar_texto(ciudad_dict)
                 
-                # Anotar si el usuario mencionó la ciudad explícitamente ("estoy en valencia")
                 if ciudad_norm in texto_normalizado:
                     if ciudad_dict not in ciudades_mencionadas:
                         ciudades_mencionadas.append(ciudad_dict)
                     
-                # Anotar las zonas mencionadas y a qué ciudades pertenecen ("trigaleña", "centro")
                 for zona in zonas_dict:
                     zona_norm = normalizar_texto(zona)
                     if zona_norm in texto_normalizado and len(zona_norm) > 3:
@@ -3289,53 +3233,42 @@ async def procesar_mensaje(
         instruccion_ambiguedad = ""
         zonas_listas_para_guardar = []
 
-        # 2. Evaluar cada zona encontrada en el texto
         for zona, ciudades_vinculadas in mapeo_zonas.items():
-            # Si el usuario ya mencionó una ciudad que coincide con esta zona
             ciudades_coincidentes = [c for c in ciudades_vinculadas if c in ciudades_mencionadas]
             
             if ciudades_coincidentes:
                 zonas_listas_para_guardar.append(f"{zona}, {ciudades_coincidentes[0]}")
-            # Si la zona es ÚNICA en el país (ej. "Trigal Norte")
             elif len(ciudades_vinculadas) == 1:
                 zonas_listas_para_guardar.append(f"{zona}, {ciudades_vinculadas[0]}")
-            # AMBIGÜEDAD: Múltiples ciudades y el usuario no especificó ninguna (ej. "Centro")
             else:
+                # AMBIGÜEDAD DETECTADA: "Centro", "El Remanso", etc.
                 ambiguedad_detectada = True
-                ciudades_str = ", ".join(ciudades_vinculadas[:-1]) + " o " + ciudades_vinculadas[-1]
+                ciudades_str = " o ".join([", ".join(ciudades_vinculadas[:-1]), ciudades_vinculadas[-1]]) if len(ciudades_vinculadas) > 1 else ciudades_vinculadas[0]
                 instruccion_ambiguedad = (
-                    f"IMPORTANTE: El usuario busca en '{zona}', pero esta zona existe en {ciudades_str}. "
-                    f"Pregúntale de forma muy amable en cuál de estas ciudades está buscando."
+                    f"IMPORTANTE: El usuario busca en la zona '{zona}', pero según la geografía existe en {ciudades_str}. "
+                    f"Dile que tienes opciones pero pregúntale de forma muy amable en cuál de estas ciudades está buscando."
                 )
-                break # FRENO DE MANO: detenemos la recolección para no enviar propiedades erróneas
+                break 
 
-        # 3. Aplicar los cambios en la memoria
         if ambiguedad_detectada:
-            # Forzamos a la IA a preguntar inyectando la orden en el estado
             estado["accion_sistema"] = instruccion_ambiguedad
             hubo_cambio = True
         else:
-            # ACUMULACIÓN: Extraer las zonas que ya estaban en la memoria (ej. si ya teníamos "Centro")
             memoria_zona_actual = str(filtros_actuales.get("zona", ""))
             lista_acumulada = [z.strip() for z in memoria_zona_actual.split(",") if z.strip()]
 
-            # Añadir las nuevas zonas validadas (Soporte Multi-Zona)
             for z in zonas_listas_para_guardar:
                 if z not in lista_acumulada:
                     lista_acumulada.append(z)
             
-            # Si el usuario solo mencionó la ciudad ("estoy en valencia"), la añadimos a la memoria
-            # para que se combine con zonas huérfanas anteriores.
             for c in ciudades_mencionadas:
                 if not any(c in z for z in lista_acumulada):
                     lista_acumulada.append(c)
 
             if lista_acumulada:
-                # Limpiar duplicados manteniendo orden
                 zonas_unicas = list(dict.fromkeys(lista_acumulada))
                 nueva_cadena_zonas = ", ".join(zonas_unicas)
                 
-                # Guardamos el string combinado (ej. "centro, valencia, la trigaleña, valencia")
                 if nueva_cadena_zonas != memoria_zona_actual:
                     filtros_actuales["zona"] = nueva_cadena_zonas
                     hubo_cambio = True
