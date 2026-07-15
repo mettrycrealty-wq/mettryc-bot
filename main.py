@@ -2861,6 +2861,10 @@ async def mostrar_propiedades(
         MAX_PROPIEDADES_POR_LOTE,
     )
 
+    # === LOG CHISMOSO (Resultados finales) ===
+    if DEBUG_MODE:
+        Chismoso.log_resultados(estado.get("numero_canal", "unknown"), propiedades)
+
     # 🛡️ RESPUESTAS INTELIGENTES POR FALLA
     if not propiedades:
         estado["ultimo_lote"] = []
