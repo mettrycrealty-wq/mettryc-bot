@@ -83,6 +83,16 @@ async def webhook(request: Request):
     # Guardar en historial
     estado["historial"].append({"role": "assistant", "content": decision.mensaje})
     
+    # ============================================================
+    # 🚀 FIX: LA "BOCA" DEL BOT (ENVIAR A WHATSAPP)
+    # ============================================================
+    # Debes colocar aquí la función que conecta con tu proveedor de WhatsApp.
+    # Ejemplo (descomenta y adapta a tu función original):
+    
+    # await enviar_mensaje_whatsapp(chat_id, decision.mensaje)
+    
+    # ============================================================
+
     return {"status": "ok"}
 
 @app.get("/health")
