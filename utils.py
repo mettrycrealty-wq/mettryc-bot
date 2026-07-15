@@ -480,10 +480,17 @@ def limpiar_json_modelo(contenido: str) -> str:
 
     if texto.startswith("```"):
         texto = re.sub(
-            r"^
-http://googleusercontent.com/immersive_entry_chip/0
+            r"^\x60{3}(?:json)?\s*",
+            "",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        texto = re.sub(r"\s*\x60{3}$", "", texto)
 
-**¿Cuál es el siguiente paso?**
-El siguiente archivo lógico y más sencillo de separar debería ser **`config.py`** (para sacar todas las variables de entorno como API Keys y URLs) o **`models.py`** (para mover los esquemas Pydantic). 
+    inicio = texto.find("{")
+    fin = texto.rfind("}")
 
-¿Cuál prefieres que extraigamos a continuación?
+    if inicio >= 0 and fin > inicio:
+        return texto[inicio:fin + 1]
+
+    return texto
