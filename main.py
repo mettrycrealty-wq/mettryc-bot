@@ -2445,7 +2445,7 @@ def buscar_mejores_propiedades(
         tipo = filtros.get("tipo_propiedad")
         zona = filtros.get("zona")
         operacion = str(filtros.get("operacion", "")).lower()
-        presupuesto_max = filtros.get("presupuesto_max", 0)
+        presupuesto_max = filtros.get("presupuesto_max") or 0
 
         # 1. Filtro estricto por Zona y Tipo
         tipo_ok = coincide_tipo(original, tipo) if tipo else True
