@@ -3141,7 +3141,7 @@ async def procesar_mensaje(
             
             # Enviar a todos los administradores
             for admin_id in TELEGRAM_ADMIN_IDS:
-                await enviar_mensaje_telegram(admin_id, mensaje_prueba)
+                await enviar_telegram(admin_id, mensaje_prueba)
                 
             # Enviar a los agentes que estén en el turno actual
             for agente in sheets_cache.get("agentes", []):
