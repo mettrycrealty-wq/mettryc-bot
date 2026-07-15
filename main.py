@@ -500,20 +500,30 @@ def zona_coincide(
     if not buscada:
         return True
 
+    buscada_norm = normalizar_texto(buscada)
     ciudad_prop_norm = normalizar_texto(ciudad_prop)
     zona_prop_norm = normalizar_texto(zona_prop)
+    
+    # 1. Unimos zona y ciudad de la propiedad para la búsqueda
+    ubicacion_prop_norm = f"{zona_prop_norm} {ciudad_prop_norm}"
+
+    # 2. MATCH EXACTO POR CADENA (Ideal para cuando el Mega-Cazador inyecta la zona)
+    # El cazador separa por comas si hay varias zonas. Ej: "trigal norte, el parral"
+    zonas_pedidas = [z.strip() for z in buscada_norm.split(",") if z.strip()]
+    
+    for zp in zonas_pedidas:
+        # Si la zona pedida está en la ubicación de la propiedad o viceversa
+        if zp in ubicacion_prop_norm or zona_prop_norm in zp:
+            return True
+
+    # 3. PREPARACIÓN DE TOKENS
     buscados = tokens_zona(buscada)
-    disponibles = tokens_zona(f"{zona_prop} {ciudad_prop}")
+    disponibles = tokens_zona(ubicacion_prop_norm)
 
-    if not buscados:
-        return True
-    if not disponibles:
-        return False
-
-    # 1. 🛡️ FILTRO DE CIUDAD: Si pide una ciudad exacta, debe coincidir.
+    # 4. FILTRO DE CIUDAD ESTRICTO
     ciudades_mettryc = {
         "valencia", "naguanagua", "san diego", "guacara", 
-        "barquisimeto", "cabudare", "caracas"
+        "barquisimeto", "cabudare", "caracas", "maracay", "los guayos", "cagua", "turmero"
     }
     ciudades_pedidas = buscados.intersection(ciudades_mettryc)
     
@@ -521,19 +531,24 @@ def zona_coincide(
         if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
             return False
 
-    # 2. 🛡️ FILTRO ESTRICTO DE ZONA: Intersección exacta de palabras.
+    # 5. FILTRO DE TOKENS REFORZADO (Adiós a los Falsos Positivos)
     coincidencias = buscados.intersection(disponibles)
-    if len(coincidencias) >= 1:
+    
+    # Palabras que por sí solas NO determinan una zona única
+    palabras_genericas = {
+        "norte", "sur", "este", "oeste", "centro", "valles", 
+        "colinas", "lomas", "parque", "villa", "villas", "san", 
+        "santa", "alto", "altos", "nueva", "nuevo", "pueblo",
+        "base", "valle", "ciudad", "avenida", "via"
+    }
+    
+    coincidencias_fuertes = coincidencias - palabras_genericas
+    
+    # Solo aprobamos si hay al menos una coincidencia "fuerte" (ej. "trigal", "prebo", "castores")
+    if len(coincidencias_fuertes) >= 1:
         return True
 
-    # 3. 🛡️ FILTRO DE SUBCADENAS: Por si la zona en Wasi está escrita diferente.
-    for b in buscados:
-        if b in zona_prop_norm or b in ciudad_prop_norm:
-            return True
-
-    # Si no pasa ninguna de las pruebas de arriba, SE ELIMINA LA PROPIEDAD.
     return False
-
 
 def extraer_codigo_inmueble(
     mensaje: str,
