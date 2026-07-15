@@ -3137,11 +3137,14 @@ async def procesar_mensaje(
     if mensaje_admin == "prueba telegram":
         import asyncio
         async def test_telegram():
-            mensaje_prueba = "🤖 PRUEBA DE CONEXIÓN: El bot de Mettryc Realty está operativo y transmitiendo alertas correctamente."
-            
-            # Enviar a todos los administradores
+        mensaje_prueba = "🤖 PRUEBA DE CONEXIÓN: Bot Mettryc operativo."
+             
+            # Cambiamos 'enviar_mensaje_telegram' por 'enviar_telegram'
             for admin_id in TELEGRAM_ADMIN_IDS:
-                await enviar_telegram(admin_id, mensaje_prueba)
+                if await enviar_telegram(admin_id, mensaje_prueba):
+                logger.info(f"✅ Prueba Telegram enviada a {admin_id}")
+            else:
+                logger.error(f"❌ Falló envío a Telegram {admin_id}")
                 
             # Enviar a los agentes que estén en el turno actual
             for agente in sheets_cache.get("agentes", []):
