@@ -1065,6 +1065,15 @@ async def obtener_inventario_wasi() -> List[dict]:
                 f"{usuario.get('last_name', '')}"
             ).strip()
 
+            # --- NUEVA LÓGICA DE EXTRACCIÓN DE ZONA ---
+            zona_wasi = str(valor.get("zone_label") or "").strip()
+            localidad_wasi = str(valor.get("location_label") or "").strip()
+            
+            # Combinamos Localidad y Zona. Si una viene vacía, no afecta.
+            zona_combinada = f"{localidad_wasi} {zona_wasi}".strip()
+            if not zona_combinada:
+                zona_combinada = "N/D"
+
             propiedades.append({
                 "id": str(property_id),
                 "titulo": valor.get(
@@ -1076,10 +1085,7 @@ async def obtener_inventario_wasi() -> List[dict]:
                     "city_label",
                     "N/D",
                 ),
-                "zona": valor.get(
-                    "zone_label",
-                    "N/D",
-                ),
+                "zona": zona_combinada,
                 "tipo_propiedad_wasi": valor.get(
                     "type_label",
                     "N/D",
