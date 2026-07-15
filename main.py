@@ -36,6 +36,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # CONFIGURACIÓN
 # ============================================================
 
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 WASI_TOKEN = os.getenv("WASI_TOKEN", "")
 WASI_COMPANY_ID = os.getenv("WASI_COMPANY_ID", "")
@@ -130,6 +131,122 @@ INTERVALO_ACTUALIZACION_WASI = timedelta(
         )
     )
 )
+
+
+# ============================================================
+# CHISMOSO (DEBUGGER)
+# ============================================================
+
+class Chismoso:
+    @staticmethod
+    def log_extraction(sender: str, campo: str, valor: Any, metodo: str, confianza: float = None):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n🔍 [EXTRACCIÓN] ({sender[-4:]})\n"
+            f"   Campo: {campo}\n"
+            f"   Valor: {valor}\n"
+            f"   Método: {metodo}\n"
+            + (f"   Confianza IA: {confianza}\n" if confianza else "")
+        )
+        logging.info(mensaje)
+
+    @staticmethod
+    def log_inventario(sender: str, filtros: dict, total_propiedades: int = 0):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n📊 [INVENTARIO] ({sender[-4:]})\n"
+            f"   Total propiedades: {total_propiedades}\n"
+            f"   Filtros aplicados:\n"
+            f"   - Operación: {filtros.get('tipo_operacion')}\n"
+            f"   - Tipo: {filtros.get('tipo_propiedad')}\n"
+            f"   - Zona: {filtros.get('zona')}\n"
+            f"   - Presupuesto: {formato_moneda(filtros.get('presupuesto_max'))}\n"
+            f"   - Habitaciones: {filtros.get('habitaciones_min')}\n"
+        )
+        logging.info(mensaje)
+
+    @staticmethod
+    def log_zona(sender: str, zona_buscada: str, zona_prop: str, ciudad_prop: str, coincide: bool, razon: str):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n🗺️ [GEOGRAFÍA] ({sender[-4:]})\n"
+            f"   Buscada: '{zona_buscada}'\n"
+            f"   Propiedad: '{zona_prop}, {ciudad_prop}'\n"
+            f"   Coincide: {'✅' if coincide else '❌'} ({razon})\n"
+        )
+        logging.info(mensaje)
+
+    @staticmethod
+    def log_aceptacion(sender: str, propiedad_id: str, titulo: str, score: float, diferencias: str):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n🟢 [ACEPTADA] ({sender[-4:]})\n"
+            f"   ID: {propiedad_id}\n"
+            f"   Título: {titulo}\n"
+            f"   Score: {score}\n"
+            f"   Diferencias: {diferencias}\n"
+        )
+        logging.info(mensaje)
+
+    @staticmethod
+    def log_rechazo(sender: str, propiedad_id: str, motivo: str):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n🔴 [RECHAZADA] ({sender[-4:]})\n"
+            f"   ID: {propiedad_id}\n"
+            f"   Motivo: {motivo}\n"
+        )
+        logging.info(mensaje)
+
+    @staticmethod
+    def log_resultados(sender: str, propiedades: List[dict], total_evaluadas: int = 0, exactas: int = 0, aproximadas: int = 0):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n📩 [RESULTADOS] ({sender[-4:]})\n"
+            f"   Total evaluadas: {total_evaluadas}\n"
+            f"   Coinciden exactas: {exactas}\n"
+            f"   Coinciden aproximadas: {aproximadas}\n"
+            f"   Enviadas: {len(propiedades)}\n"
+        )
+        
+        for idx, prop in enumerate(propiedades, 1):
+            mensaje += (
+                f"   {idx}. {prop.get('titulo')}\n"
+                f"       Zona: {prop.get('zona')}\n"
+                f"       Ciudad: {prop.get('ciudad')}\n"
+                f"       Coincidencia: {prop.get('_coincidencia')}\n"
+                f"       Score: {prop.get('_score')}\n"
+                f"       Diferencias: {prop.get('_diferencias')}\n"
+            )
+        logging.info(mensaje)
+
+    @staticmethod
+    def log_falla(sender: str, motivo: str, filtros: dict):
+        if not DEBUG_MODE:
+            return
+        
+        mensaje = (
+            f"\n⚠️ [FALLA] ({sender[-4:]})\n"
+            f"   Motivo: {motivo}\n"
+            f"   Filtros:\n"
+            f"   - Operación: {filtros.get('tipo_operacion')}\n"
+            f"   - Tipo: {filtros.get('tipo_propiedad')}\n"
+            f"   - Zona: {filtros.get('zona')}\n"
+            f"   - Presupuesto: {formato_moneda(filtros.get('presupuesto_max'))}\n"
+        )
+        logging.info(mensaje)
 
 
 # ============================================================
@@ -550,6 +667,7 @@ def zona_coincide(
 
     return False
 
+
 def extraer_codigo_inmueble(
     mensaje: str,
 ) -> Optional[str]:
@@ -718,31 +836,6 @@ def convertir_caracteristicas(valor: Any) -> str:
 
     return ""
 
-def convertir_caracteristicas(valor: Any) -> str:
-    if isinstance(valor, str):
-        return valor
-
-    if isinstance(valor, list):
-        return " ".join(
-            str(elemento)
-            for elemento in valor
-        )
-
-    if isinstance(valor, dict):
-        return " ".join(
-            f"{clave} {contenido}"
-            for clave, contenido in valor.items()
-            if contenido not in [
-                None,
-                "",
-                False,
-                0,
-                "0",
-            ]
-        )
-
-    return ""
-
 
 def verificar_caducidad_y_amnesia(estado: dict) -> dict:
     if not estado.get("actualizado_en"):
@@ -833,6 +926,8 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
     except Exception as e:
         logger.error(f"Error humanizando texto: {e}")
         return instruccion_cruda
+
+
 # ============================================================
 # SESIONES
 # ============================================================
@@ -1420,7 +1515,7 @@ natural y humana. Nunca debes parecer un formulario.
 TU FUNCIÓN
 
 Debes comprender el mensaje usando toda la conversación y el estado
-comercial. Extrae información, identifica la intención y decide qué
+comercial. Extraes información, identificas la intención y decides qué
 herramienta debe ejecutar el sistema.
 
 No inventes propiedades, precios, enlaces, códigos, captadores,
@@ -1449,7 +1544,7 @@ COMPORTAMIENTO CONVERSACIONAL
     registra el campo correcto en campos_sin_preferencia.
 11. Interpreta números según el contexto de la conversación.
 12. No repitas saludos en todos los mensajes.
-13. No respondas el mismo mensaje que recibas. ej: si te dicen "Hola esta casa esta disponible?" no respondas "Hola esta casa esta disponible?"
+13. No respondas el mismo mensaje que recibes. ej: si te dicen "Hola esta casa esta disponible?" no respondas "Hola esta casa esta disponible?"
 
 ROL
 
@@ -2200,7 +2295,7 @@ def coincide_tipo(
         )
 
     if buscado == "apartamento":
-        return any(
+                return any(
             tipo in tipo_wasi or tipo in titulo
             for tipo in [
                 "apartamento",
@@ -2300,7 +2395,7 @@ def evaluar_propiedad(
             )
         else:
             return None
-
+            
     # 5. 🛡️ TOLERANCIA +1/-1: BAÑOS
     banos = convertir_entero(
         propiedad.get("banos")
@@ -2389,7 +2484,6 @@ def evaluar_propiedad(
 def buscar_mejores_propiedades(
     estado: dict,
     cantidad: int = 3,
-    sender: str = "DEBUG",  # Nuevo parámetro para identificar la sesión
 ) -> tuple[List[dict], str]:
     excluir = {
         str(property_id) for property_id in estado["propiedades_enviadas"]
@@ -2404,7 +2498,7 @@ def buscar_mejores_propiedades(
 
     # Log inicial de los filtros aplicados
     Chismoso.log_inventario(
-        sender=sender,
+        sender=estado.get("numero_canal", "DEBUG"),
         filtros=filtros,
         total_propiedades=len(inventory_cache["inventario"])
     )
@@ -2430,7 +2524,7 @@ def buscar_mejores_propiedades(
                 razon = "Coincidencia EXACTA" if zona_buscada.lower() in f"{zona_prop.lower()} {ciudad_prop.lower()}" else "Coincidencia por tokens"
             
             Chismoso.log_zona(
-                sender=sender,
+                sender=estado.get("numero_canal", "DEBUG"),
                 zona_buscada=zona_buscada,
                 zona_prop=zona_prop,
                 ciudad_prop=ciudad_prop,
@@ -2468,7 +2562,7 @@ def buscar_mejores_propiedades(
         presupuesto_max = filtros.get("presupuesto_max", 0)
         if presupuesto_max > 0 and precio_aplicable > presupuesto_max * (1 + MAX_EXCESO_PRESUPUESTO):
             Chismoso.log_rechazo(
-                sender=sender,
+                sender=estado.get("numero_canal", "DEBUG"),
                 propiedad_id=property_id,
                 motivo=f"PRECIO ({formato_moneda(precio_aplicable)}) excede el presupuesto ({formato_moneda(presupuesto_max)})"
             )
@@ -2489,7 +2583,7 @@ def buscar_mejores_propiedades(
         if propiedad:
             evaluadas.append(propiedad)
             Chismoso.log_aceptacion(
-                sender=sender,
+                sender=estado.get("numero_canal", "DEBUG"),
                 propiedad_id=property_id,
                 titulo=propiedad.get("titulo"),
                 score=propiedad.get("_score"),
@@ -2515,7 +2609,7 @@ def buscar_mejores_propiedades(
 
     # Log de resultados finales
     Chismoso.log_resultados(
-        sender=sender,
+        sender=estado.get("numero_canal", "DEBUG"),
         propiedades=resultado,
         total_evaluadas=len(evaluadas),
         exactas=len(exactas),
@@ -2526,7 +2620,7 @@ def buscar_mejores_propiedades(
     if not resultado:
         motivo_falla = "precio_o_caracs" if pasaron_zona_tipo > 0 else "zona_o_tipo"
         Chismoso.log_falla(
-            sender=sender,
+            sender=estado.get("numero_canal", "DEBUG"),
             motivo=motivo_falla,
             filtros=filtros
         )
@@ -3149,11 +3243,11 @@ async def procesar_mensaje(
     )
 
     Chismoso.log_extraction(
-    sender=sender,
-    campo="zona",
-    valor=decision.actualizaciones.zona,
-    metodo="IA" if decision.confianza_rol > 0.7 else "Mega-Cazador",
-    confianza=decision.confianza_rol
+        sender=sender,
+        campo="zona",
+        valor=decision.actualizaciones.zona,
+        metodo="IA" if decision.confianza_rol > 0.7 else "Mega-Cazador",
+        confianza=decision.confianza_rol
     )
 
 # ============================================================
@@ -3629,7 +3723,7 @@ async def refresh(
             sheets_cache["agentes"]
         ),
         "captadores": len(
-            sheets_cache["captadores"]
+            sheets_cache["captadores"
         ),
     }
 
