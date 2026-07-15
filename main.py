@@ -3219,52 +3219,87 @@ async def procesar_mensaje(
                 hubo_cambio = True
                 break
 
-    # D. Cazador de Zonas con Detección de Ambigüedad
+    # D. Cazador de Zonas con Detección de Ambigüedad y Multi-Zona
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
         
-        # Guardaremos las zonas encontradas y a qué ciudades pertenecen
         mapeo_zonas = {}
-        ciudades_encontradas = set()
+        ciudades_mencionadas = []
 
+        # 1. Escanear todo el diccionario buscando ciudades y zonas
         for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
             for ciudad_dict, zonas_dict in ciudades.items():
                 ciudad_norm = normalizar_texto(ciudad_dict)
+                
+                # Anotar si el usuario mencionó la ciudad explícitamente ("estoy en valencia")
                 if ciudad_norm in texto_normalizado:
-                    ciudades_encontradas.add(ciudad_dict)
+                    if ciudad_dict not in ciudades_mencionadas:
+                        ciudades_mencionadas.append(ciudad_dict)
                     
+                # Anotar las zonas mencionadas y a qué ciudades pertenecen ("trigaleña", "centro")
                 for zona in zonas_dict:
                     zona_norm = normalizar_texto(zona)
                     if zona_norm in texto_normalizado and len(zona_norm) > 3:
                         if zona not in mapeo_zonas:
-                            mapeo_zonas[zona] = set()
-                        mapeo_zonas[zona].add(ciudad_dict)
+                            mapeo_zonas[zona] = []
+                        if ciudad_dict not in mapeo_zonas[zona]:
+                            mapeo_zonas[zona].append(ciudad_dict)
 
-        zonas_finales = list(ciudades_encontradas)
+        ambiguedad_detectada = False
+        instruccion_ambiguedad = ""
+        zonas_listas_para_guardar = []
 
+        # 2. Evaluar cada zona encontrada en el texto
         for zona, ciudades_vinculadas in mapeo_zonas.items():
-            # Si el usuario ya mencionó la ciudad explícitamente, evitamos redundancia
-            if any(c in texto_normalizado for c in ciudades_vinculadas):
-                zonas_finales.append(zona)
-            # PASO INTELIGENTE: Si la zona es ÚNICA (solo existe en 1 ciudad en el diccionario)
-            elif len(ciudades_vinculadas) == 1:
-                ciudad_vinculada = list(ciudades_vinculadas)[0]
-                zonas_finales.append(f"{zona}, {ciudad_vinculada}")
-            # PASO INTELIGENTE: Si la zona es MÚLTIPLE (ambigüedad geográfica, ej. "Centro" o "El Remanso")
-            else:
-                zonas_finales.append(zona)
-
-        if zonas_finales:
-            # Limpiar duplicados manteniendo el orden
-            zonas_unicas = list(dict.fromkeys(zonas_finales))
-            zona_forzada = ", ".join(zonas_unicas)
-            zona_ia = str(filtros_actuales.get("zona", ""))
+            # Si el usuario ya mencionó una ciudad que coincide con esta zona
+            ciudades_coincidentes = [c for c in ciudades_vinculadas if c in ciudades_mencionadas]
             
-            # Si Python extrajo más detalle que la IA, Python GANA.
-            if not zona_ia or len(zona_forzada) > len(zona_ia):
-                filtros_actuales["zona"] = zona_forzada
-                hubo_cambio = True
+            if ciudades_coincidentes:
+                zonas_listas_para_guardar.append(f"{zona}, {ciudades_coincidentes[0]}")
+            # Si la zona es ÚNICA en el país (ej. "Trigal Norte")
+            elif len(ciudades_vinculadas) == 1:
+                zonas_listas_para_guardar.append(f"{zona}, {ciudades_vinculadas[0]}")
+            # AMBIGÜEDAD: Múltiples ciudades y el usuario no especificó ninguna (ej. "Centro")
+            else:
+                ambiguedad_detectada = True
+                ciudades_str = ", ".join(ciudades_vinculadas[:-1]) + " o " + ciudades_vinculadas[-1]
+                instruccion_ambiguedad = (
+                    f"IMPORTANTE: El usuario busca en '{zona}', pero esta zona existe en {ciudades_str}. "
+                    f"Pregúntale de forma muy amable en cuál de estas ciudades está buscando."
+                )
+                break # FRENO DE MANO: detenemos la recolección para no enviar propiedades erróneas
+
+        # 3. Aplicar los cambios en la memoria
+        if ambiguedad_detectada:
+            # Forzamos a la IA a preguntar inyectando la orden en el estado
+            estado["accion_sistema"] = instruccion_ambiguedad
+            hubo_cambio = True
+        else:
+            # ACUMULACIÓN: Extraer las zonas que ya estaban en la memoria (ej. si ya teníamos "Centro")
+            memoria_zona_actual = str(filtros_actuales.get("zona", ""))
+            lista_acumulada = [z.strip() for z in memoria_zona_actual.split(",") if z.strip()]
+
+            # Añadir las nuevas zonas validadas (Soporte Multi-Zona)
+            for z in zonas_listas_para_guardar:
+                if z not in lista_acumulada:
+                    lista_acumulada.append(z)
+            
+            # Si el usuario solo mencionó la ciudad ("estoy en valencia"), la añadimos a la memoria
+            # para que se combine con zonas huérfanas anteriores.
+            for c in ciudades_mencionadas:
+                if not any(c in z for z in lista_acumulada):
+                    lista_acumulada.append(c)
+
+            if lista_acumulada:
+                # Limpiar duplicados manteniendo orden
+                zonas_unicas = list(dict.fromkeys(lista_acumulada))
+                nueva_cadena_zonas = ", ".join(zonas_unicas)
                 
+                # Guardamos el string combinado (ej. "centro, valencia, la trigaleña, valencia")
+                if nueva_cadena_zonas != memoria_zona_actual:
+                    filtros_actuales["zona"] = nueva_cadena_zonas
+                    hubo_cambio = True
+
     except ImportError:
         pass
     # -------------------------------------------------------------
