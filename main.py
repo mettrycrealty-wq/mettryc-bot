@@ -1090,22 +1090,24 @@ async def obtener_inventario_wasi() -> List[dict]:
                     "type_label",
                     "N/D",
                 ),
-                "precio_venta_float": (
+                
+                # --- NUEVA LÓGICA DE PRECIOS SEPARADOS ---
+                "precio_venta": (
                     parsear_precio_wasi(
                         valor.get("sale_price"),
-                        valor.get(
-                            "sale_price_label"
-                        ),
+                        valor.get("sale_price_label")
                     )
                 ),
-                "precio_renta_float": (
+                "precio_alquiler": (
                     parsear_precio_wasi(
                         valor.get("rent_price"),
-                        valor.get(
-                            "rent_price_label"
-                        ),
+                        valor.get("rent_price_label")
                     )
                 ),
+                "precio_venta_label": valor.get("sale_price_label", "N/D"),
+                "precio_alquiler_label": valor.get("rent_price_label", "N/D"),
+                # -----------------------------------------
+
                 "area": valor.get("area", "N/D"),
                 "habitaciones": valor.get(
                     "bedrooms",
@@ -2442,15 +2444,53 @@ def buscar_mejores_propiedades(
         filtros = estado.get("filtros", {})
         tipo = filtros.get("tipo_propiedad")
         zona = filtros.get("zona")
+        operacion = str(filtros.get("operacion", "")).lower()
+        presupuesto_max = filtros.get("presupuesto_max", 0)
 
+        # 1. Filtro estricto por Zona y Tipo
         tipo_ok = coincide_tipo(original, tipo) if tipo else True
         zona_ok = zona_coincide(zona, original.get("zona", ""), original.get("ciudad", "")) if zona else True
         
-        if tipo_ok and zona_ok:
-            pasaron_zona_tipo += 1
+        if not (tipo_ok and zona_ok):
+            continue
+
+        # 2. FILTRO INTELIGENTE DE OPERACIÓN (Venta vs Alquiler)
+        precio_aplicable = 0
+        label_precio_aplicable = "N/D"
+
+        if "comprar" in operacion or "venta" in operacion:
+            precio_aplicable = original.get("precio_venta", 0)
+            label_precio_aplicable = original.get("precio_venta_label", "N/D")
+            if precio_aplicable <= 0:
+                continue  # Se descarta en silencio: No está a la venta
+                
+        elif "alquilar" in operacion or "alquiler" in operacion or "renta" in operacion:
+            precio_aplicable = original.get("precio_alquiler", 0)
+            label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
+            if precio_aplicable <= 0:
+                continue  # Se descarta en silencio: No está en alquiler
+        else:
+            # Si el usuario no ha especificado operación, tomamos el precio disponible
+            if original.get("precio_venta", 0) > 0:
+                precio_aplicable = original.get("precio_venta", 0)
+                label_precio_aplicable = original.get("precio_venta_label", "N/D")
+            else:
+                precio_aplicable = original.get("precio_alquiler", 0)
+                label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
+
+        # 3. Filtrar por presupuesto SOLO si el usuario indicó un límite real
+        if presupuesto_max > 0 and precio_aplicable > presupuesto_max:
+            continue  # Se descarta por presupuesto superado
+
+        # Si llegó hasta aquí, pasó los filtros base con éxito
+        pasaron_zona_tipo += 1
+
+        # Pasamos el clon modificado a evaluar para que mantenga sus scores
+        original_clon = deepcopy(original)
+        original_clon["precio"] = label_precio_aplicable
 
         propiedad = evaluar_propiedad(
-            original,
+            original_clon,
             estado["filtros"],
         )
 
