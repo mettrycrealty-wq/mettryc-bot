@@ -13,13 +13,15 @@ logger = logging.getLogger("mettryc-chatbot")
 # ============================================================
 
 WASI_TOKEN = os.getenv("WASI_TOKEN", "")
+# 🚀 FIX: Wasi API exige el ID_COMPANY para devolver resultados reales
+ID_COMPANY = os.getenv("ID_COMPANY", "") 
+
 WASI_API_URL = "https://api.wasi.co/v1/property/search"
 WASI_TIMEOUT = float(os.getenv("WASI_TIMEOUT", "45"))
 INTERVALO_ACTUALIZACION_WASI = timedelta(
     minutes=int(os.getenv("INTERVALO_ACTUALIZACION_WASI_MINUTOS", "120"))
 )
 
-# Memoria RAM local para el inventario de propiedades
 inventory_cache: Dict[str, Any] = {
     "inventario": [],
     "ultima_actualizacion": None,
@@ -27,23 +29,18 @@ inventory_cache: Dict[str, Any] = {
 
 wasi_refresh_lock = asyncio.Lock()
 
-# ============================================================
-# LÓGICA DE SINCRONIZACIÓN WASI
-# ============================================================
-
 def wasi_necesita_actualizacion() -> bool:
     ultima = inventory_cache.get("ultima_actualizacion")
     if not ultima:
         return True
     return datetime.now() - ultima >= INTERVALO_ACTUALIZACION_WASI
 
-
 async def sincronizar_inventario_wasi(
     force: bool = False,
     client: Optional[httpx.AsyncClient] = None
 ) -> bool:
-    if not WASI_TOKEN:
-        logger.error("WASI_TOKEN no configurado.")
+    if not WASI_TOKEN or not ID_COMPANY:
+        logger.error("❌ [WASI] Faltan credenciales: WASI_TOKEN o ID_COMPANY no están configurados.")
         return False
 
     if not force and not wasi_necesita_actualizacion():
@@ -53,7 +50,6 @@ async def sincronizar_inventario_wasi(
         if not force and not wasi_necesita_actualizacion():
             return False
 
-        # 🚀 FIX: Obtenemos el cliente HTTP para evitar importación circular
         if client is None:
             from main import http_client
             client = http_client
@@ -61,16 +57,28 @@ async def sincronizar_inventario_wasi(
         try:
             logger.info("📡 [WASI] Iniciando sincronización del inventario...")
             
-            # Wasi paginación básica (ajustar si tu inventario crece mucho)
             respuesta = await client.get(
                 WASI_API_URL,
-                params={"wasi_token": WASI_TOKEN, "limit": 1000},
+                params={"id_company": ID_COMPANY, "wasi_token": WASI_TOKEN, "limit": 1000},
                 timeout=WASI_TIMEOUT,
             )
             respuesta.raise_for_status()
             
             datos = respuesta.json()
-            propiedades = datos.get("result", {}).get("items", [])
+            
+            if datos.get("status") == "error":
+                logger.error(f"❌ [WASI] Error de API: {datos.get('message')}")
+                return False
+
+            # 🚀 FIX: Extraemos el diccionario anidado correctamente
+            items_crudos = datos.get("result", {}).get("items", {})
+            
+            # Wasi devuelve un Diccionario de Diccionarios (ej: {"0": {...}, "1": {...}}), NO una lista
+            propiedades = []
+            if isinstance(items_crudos, dict):
+                propiedades = [v for k, v in items_crudos.items() if isinstance(v, dict)]
+            elif isinstance(items_crudos, list):
+                propiedades = [v for v in items_crudos if isinstance(v, dict)]
 
             inventory_cache["inventario"] = propiedades
             inventory_cache["ultima_actualizacion"] = datetime.now()
