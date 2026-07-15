@@ -3723,7 +3723,7 @@ async def refresh(
             sheets_cache["agentes"]
         ),
         "captadores": len(
-            sheets_cache["captadores"
+            sheets_cache["captadores"]
         ),
     }
 
