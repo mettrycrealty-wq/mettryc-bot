@@ -2389,6 +2389,7 @@ def evaluar_propiedad(
 def buscar_mejores_propiedades(
     estado: dict,
     cantidad: int = 3,
+    sender: str = "DEBUG",  # Nuevo parámetro para identificar la sesión
 ) -> tuple[List[dict], str]:
     excluir = {
         str(property_id) for property_id in estado["propiedades_enviadas"]
@@ -2396,25 +2397,47 @@ def buscar_mejores_propiedades(
 
     evaluadas = []
     pasaron_zona_tipo = 0
+    filtros = estado.get("filtros", {})
+    zona_buscada = filtros.get("zona")
+    tipo_buscado = filtros.get("tipo_propiedad")
+    operacion = str(filtros.get("tipo_operacion", "")).lower()
+
+    # Log inicial de los filtros aplicados
+    Chismoso.log_inventario(
+        sender=sender,
+        filtros=filtros,
+        total_propiedades=len(inventory_cache["inventario"])
+    )
 
     for original in inventory_cache["inventario"]:
         property_id = str(original.get("id", ""))
+        zona_prop = original.get("zona", "")
+        ciudad_prop = original.get("ciudad", "")
 
         if not property_id or property_id in excluir:
             continue
-            
-        filtros = estado.get("filtros", {})
-        tipo = filtros.get("tipo_propiedad")
-        zona = filtros.get("zona")
-        operacion = str(filtros.get("operacion", "")).lower()
-        
-        # CORRECCIÓN DE SEGURIDAD: Convertir None a 0
-        presupuesto_max = filtros.get("presupuesto_max") or 0
 
         # 1. Filtro estricto de Zona y Tipo
-        tipo_ok = coincide_tipo(original, tipo) if tipo else True
-        zona_ok = zona_coincide(zona, original.get("zona", ""), original.get("ciudad", "")) if zona else True
+        tipo_ok = coincide_tipo(original, tipo_buscado) if tipo_buscado else True
+        zona_ok = zona_coincide(zona_buscada, zona_prop, ciudad_prop) if zona_buscada else True
         
+        # Loggeo detallado de la evaluación geográfica
+        if zona_buscada:
+            razon = ""
+            if not zona_ok:
+                razon = "NO coincide con zona/ciudad"
+            else:
+                razon = "Coincidencia EXACTA" if zona_buscada.lower() in f"{zona_prop.lower()} {ciudad_prop.lower()}" else "Coincidencia por tokens"
+            
+            Chismoso.log_zona(
+                sender=sender,
+                zona_buscada=zona_buscada,
+                zona_prop=zona_prop,
+                ciudad_prop=ciudad_prop,
+                coincide=zona_ok,
+                razon=razon
+            )
+
         if not (tipo_ok and zona_ok):
             continue
 
@@ -2442,14 +2465,19 @@ def buscar_mejores_propiedades(
                 label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
 
         # 3. Validación Tolerante de Presupuesto
-        if presupuesto_max > 0 and precio_aplicable > presupuesto_max:
+        presupuesto_max = filtros.get("presupuesto_max", 0)
+        if presupuesto_max > 0 and precio_aplicable > presupuesto_max * (1 + MAX_EXCESO_PRESUPUESTO):
+            Chismoso.log_rechazo(
+                sender=sender,
+                propiedad_id=property_id,
+                motivo=f"PRECIO ({formato_moneda(precio_aplicable)}) excede el presupuesto ({formato_moneda(presupuesto_max)})"
+            )
             continue
 
         pasaron_zona_tipo += 1
 
         original_clon = deepcopy(original)
         original_clon["precio"] = label_precio_aplicable
-        # Inyectamos los nombres antiguos por compatibilidad con evaluar_propiedad
         original_clon["precio_venta_float"] = original.get("precio_venta", 0)
         original_clon["precio_renta_float"] = original.get("precio_alquiler", 0)
 
@@ -2460,7 +2488,15 @@ def buscar_mejores_propiedades(
 
         if propiedad:
             evaluadas.append(propiedad)
+            Chismoso.log_aceptacion(
+                sender=sender,
+                propiedad_id=property_id,
+                titulo=propiedad.get("titulo"),
+                score=propiedad.get("_score"),
+                diferencias=", ".join(propiedad.get("_diferencias", []))
+            )
 
+    # Clasificación y selección final
     exactas = sorted(
         [p for p in evaluadas if p["_coincidencia"] == "exacta"],
         key=lambda p: p["_score"],
@@ -2474,16 +2510,26 @@ def buscar_mejores_propiedades(
     )
 
     resultado = exactas[:cantidad]
-
     if len(resultado) < cantidad:
         resultado.extend(aproximadas[:cantidad - len(resultado)])
-        
+
+    # Log de resultados finales
+    Chismoso.log_resultados(
+        sender=sender,
+        propiedades=resultado,
+        total_evaluadas=len(evaluadas),
+        exactas=len(exactas),
+        aproximadas=len(aproximadas)
+    )
+
     motivo_falla = ""
     if not resultado:
-        if pasaron_zona_tipo > 0:
-            motivo_falla = "precio_o_caracs"
-        else:
-            motivo_falla = "zona_o_tipo"
+        motivo_falla = "precio_o_caracs" if pasaron_zona_tipo > 0 else "zona_o_tipo"
+        Chismoso.log_falla(
+            sender=sender,
+            motivo=motivo_falla,
+            filtros=filtros
+        )
 
     return resultado, motivo_falla
 
@@ -3096,6 +3142,14 @@ async def procesar_mensaje(
         estado,
         decision,
         mensaje,
+    )
+
+    Chismoso.log_extraction(
+    sender=sender,
+    campo="zona",
+    valor=decision.actualizaciones.zona,
+    metodo="IA" if decision.confianza_rol > 0.7 else "Mega-Cazador",
+    confianza=decision.confianza_rol
     )
 
 # ============================================================
