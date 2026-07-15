@@ -3090,8 +3090,8 @@ async def procesar_mensaje(
 # ============================================================
     # 🛠️ PANEL DE CONTROL Y PRUEBAS (COMANDOS DE ADMINISTRADOR)
     # ============================================================
-    # Obtenemos el mensaje exacto que escribió el usuario en minúsculas
-    mensaje_admin = str(estado.get("ultimo_mensaje", "")).strip().lower()
+    # 🚀 FIX: Usamos la variable 'mensaje' correcta que maneja tu arquitectura
+    mensaje_admin = str(mensaje).strip().lower()
 
     # 1. Reiniciar Chat (Borra la memoria)
     if mensaje_admin == "reiniciar chat":
