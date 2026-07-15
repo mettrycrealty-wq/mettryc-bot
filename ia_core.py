@@ -6,13 +6,14 @@ import httpx
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, ValidationError
 
-# Importamos las herramientas de nuestro utils.py
+
 from utils import (
     extraer_codigo_inmueble,
     detectar_posicion,
     pide_mas_opciones,
     menciona_anuncio_sin_codigo,
-    detectar_rol_explicito
+    detectar_rol_explicito,
+    limpiar_json_modelo
 )
 
 # Configuramos el logger
@@ -42,9 +43,6 @@ MODELO_AGENTE_RESPALDO = os.getenv(
 
 OPENROUTER_TIMEOUT = float(os.getenv("OPENROUTER_TIMEOUT", "30"))
 
-# ============================================================
-# MODELOS ESTRUCTURADOS DEL AGENTE (PYDANTIC)
-# ============================================================
 
 class ActualizacionesConversacion(BaseModel):
     tipo_operacion: Optional[
@@ -113,9 +111,6 @@ class TextoResultado(BaseModel):
     introduccion: str
     cierre: str
 
-# ============================================================
-# PROMPT MAESTRO
-# ============================================================
 
 PROMPT_MAESTRO = """
 Eres Paty, la asesora virtual de Mettryc Realty, la Primera
@@ -251,26 +246,381 @@ ACCIONES
 Devuelve solamente el JSON solicitado.
 """
 
-# ============================================================
-# FUNCIONES PRINCIPALES DE INTELIGENCIA ARTIFICIAL
-# ============================================================
 
-def limpiar_json_modelo(contenido: str) -> str:
-    texto = str(contenido or "").strip()
+async def llamar_openrouter_json(
+    modelo_pydantic,
+    mensajes: List[dict],
+    temperatura: float = 0.2,
+    client: Optional[httpx.AsyncClient] = None
+):
+    if not OPENROUTER_API_KEY:
+        return None
 
-    if texto.startswith("```"):
-        texto = re.sub(
-            r"^\x60{3}(?:json)?\s*",
-            "",
-            texto,
-            flags=re.IGNORECASE,
+    if client is None:
+        from main import http_client
+        client = http_client
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://www.mettryc.com",
+        "X-Title": "Mettryc Realty Paty",
+    }
+
+    modelos = [
+        MODELO_AGENTE_PRINCIPAL,
+        MODELO_AGENTE_RESPALDO,
+    ]
+
+    for modelo in modelos:
+        formatos = [
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": modelo_pydantic.__name__,
+                    "strict": True,
+                    "schema": modelo_pydantic.model_json_schema(),
+                },
+            },
+            {"type": "json_object"},
+        ]
+
+        for response_format in formatos:
+            payload = {
+                "model": modelo,
+                "messages": mensajes,
+                "temperature": temperatura,
+                "max_tokens": 900,
+                "response_format": response_format,
+            }
+
+            try:
+                respuesta = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=OPENROUTER_TIMEOUT,
+                )
+                respuesta.raise_for_status()
+
+                contenido = (
+                    respuesta.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+
+                if isinstance(contenido, list):
+                    contenido = "".join(
+                        elemento.get("text", "")
+                        for elemento in contenido
+                        if isinstance(elemento, dict)
+                    )
+
+                logger.info(f"🤖 [IA RAW RESPONSE] Éxito con {modelo}: {contenido[:200]}...")
+
+                contenido = limpiar_json_modelo(contenido)
+
+                return modelo_pydantic.model_validate_json(contenido)
+
+            except ValidationError as exc:
+                logger.warning(f"🤖 [IA ERROR FORMATO] JSON de la IA inválido: {exc}")
+                
+            except Exception as exc:
+                logger.warning(f"🤖 [IA ERROR RED/API] Falla con {modelo}: {type(exc).__name__} - {str(exc)[:150]}")
+
+    return None
+
+
+def construir_estado_para_ia(estado: dict) -> dict:
+    propiedad_interes = estado.get("propiedad_interes")
+
+    return {
+        "rol": estado.get("rol"),
+        "confianza_rol": estado.get("confianza_rol"),
+        "objetivo": estado.get("objetivo"),
+        "filtros": estado.get("filtros"),
+        "sin_preferencia": estado.get("sin_preferencia"),
+        "esperando_codigo": estado.get("esperando_codigo"),
+        "ultimo_lote": estado.get("ultimo_lote"),
+        "propiedad_interes": (
+            {
+                "id": propiedad_interes.get("id"),
+                "titulo": propiedad_interes.get("titulo"),
+            }
+            if propiedad_interes
+            else None
+        ),
+        "lead": {
+            "nombre": estado["lead"].get("nombre"),
+            "correo": estado["lead"].get("correo"),
+            "whatsapp": (
+                "disponible"
+                if estado["lead"].get("whatsapp")
+                else None
+            ),
+            "numero_actual_disponible": bool(
+                estado.get("numero_canal")
+            ),
+        },
+    }
+
+
+async def decidir_con_ia(
+    mensaje: str,
+    estado: dict,
+    client: Optional[httpx.AsyncClient] = None
+) -> DecisionAgente:
+    contexto = {
+        "estado_comercial": construir_estado_para_ia(estado),
+        "mensaje_actual": mensaje,
+    }
+
+    mensajes = [
+        {
+            "role": "system",
+            "content": PROMPT_MAESTRO,
+        },
+        *estado.get("historial", [])[-12:],
+        {
+            "role": "user",
+            "content": (
+                "Analiza el mensaje actual usando el estado "
+                "comercial. Devuelve la decisión estructurada.\n\n"
+                + json.dumps(
+                    contexto,
+                    ensure_ascii=False,
+                )
+            ),
+        },
+    ]
+
+    decision = await llamar_openrouter_json(
+        DecisionAgente,
+        mensajes,
+        temperatura=0.2,
+        client=client
+    )
+
+    if decision:
+        return decision
+
+    return decision_fallback(mensaje, estado)
+
+
+def decision_fallback(mensaje: str, estado: dict) -> DecisionAgente:
+    codigo = extraer_codigo_inmueble(mensaje)
+    posicion = detectar_posicion(mensaje)
+    rol = detectar_rol_explicito(mensaje)
+
+    if codigo:
+        return DecisionAgente(
+            mensaje="",
+            rol=rol,
+            confianza_rol=1.0 if rol else 0,
+            intencion="consulta_inmueble",
+            accion=AccionAgente(
+                tipo="buscar_por_codigo",
+                codigo=codigo,
+            ),
         )
-        texto = re.sub(r"\s*\x60{3}$", "", texto)
 
-    inicio = texto.find("{")
-    fin = texto.rfind("}")
+    if pide_mas_opciones(mensaje):
+        return DecisionAgente(
+            mensaje="",
+            rol=rol,
+            confianza_rol=1.0 if rol else 0,
+            intencion="mas_opciones",
+            accion=AccionAgente(
+                tipo="mostrar_mas_propiedades"
+            ),
+        )
 
-    if inicio >= 0 and fin > inicio:
-        return texto[inicio:fin + 1]
+    if posicion:
+        return DecisionAgente(
+            mensaje="",
+            rol=rol,
+            confianza_rol=1.0 if rol else 0,
+            intencion="interes_propiedad",
+            accion=AccionAgente(
+                tipo="seleccionar_propiedad",
+                posicion=posicion,
+            ),
+        )
 
-    return texto
+    if menciona_anuncio_sin_codigo(mensaje):
+        return DecisionAgente(
+            mensaje=(
+                "¡Claro! Envíame el código que aparece en el "
+                "anuncio o el enlace de la propiedad y te muestro "
+                "la ficha exacta."
+            ),
+            rol=rol,
+            confianza_rol=1.0 if rol else 0,
+            intencion="anuncio_sin_codigo",
+            accion=AccionAgente(
+                tipo="pedir_codigo_inmueble"
+            ),
+        )
+
+    return DecisionAgente(
+        mensaje=(
+            "¡Con gusto te ayudo! Cuéntame qué tipo de propiedad "
+            "buscas, si es para comprar o alquilar y la zona que "
+            "prefieres."
+        ),
+        rol=rol,
+        confianza_rol=1.0 if rol else 0,
+        intencion="conversar",
+        accion=AccionAgente(
+            tipo="responder"
+        ),
+    )
+
+
+async def redactar_resultado_ia(
+    estado: dict,
+    cantidad: int,
+    aproximadas: int,
+    especifica: bool = False,
+    client: Optional[httpx.AsyncClient] = None
+) -> TextoResultado:
+    rol = estado.get("rol") or "cliente"
+
+    instrucciones = {
+        "rol": rol,
+        "cantidad": cantidad,
+        "aproximadas": aproximadas,
+        "propiedad_especifica": especifica,
+        "reglas": [
+            "Redacta una introducción breve y natural.",
+            "No inventes información de propiedades.",
+            "No incluyas fichas, precios ni enlaces.",
+            "El cierre debe invitar a seleccionar una opción o pedir más.",
+            "Si es colega, menciona que la ficha incluye el captador.",
+            "Si es cliente, no menciones datos de captadores.",
+        ],
+    }
+
+    mensajes = [
+        {
+            "role": "system",
+            "content": (
+                "Eres Paty de Mettryc Realty. Redacta el texto "
+                "que acompaña fichas generadas por el sistema. "
+                "DEBES devolver EXCLUSIVAMENTE un objeto JSON con dos claves exactas: "
+                "'introduccion' y 'cierre'. NINGUNA OTRA CLAVE ESTÁ PERMITIDA."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                instrucciones,
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    resultado = await llamar_openrouter_json(
+        TextoResultado,
+        mensajes,
+        temperatura=0.4,
+        client=client
+    )
+
+    if resultado:
+        return resultado
+
+    if especifica:
+        introduccion = "Claro, esta es la propiedad que consultaste:"
+    elif aproximadas:
+        introduccion = (
+            "Encontré estas opciones. Algunas son aproximadas, "
+            "pero pueden valer la pena:"
+        )
+    else:
+        introduccion = "Encontré estas opciones que encajan muy bien:"
+
+    if rol == "colega_inmobiliario":
+        cierre = (
+            "Puedes contactar al captador indicado en cada ficha "
+            "o pedirme más opciones."
+        )
+    else:
+        cierre = "Dime cuál te interesa o escribe “más opciones”."
+
+    return TextoResultado(
+        introduccion=introduccion,
+        cierre=cierre,
+    )
+
+
+def obtener_pregunta_faltante(estado: dict) -> str:
+    filtros = estado.get("filtros", {})
+    
+    if not filtros.get("tipo_operacion"):
+        return "¿Es para la compra o alquiler?"
+        
+    if not filtros.get("tipo_propiedad"):
+        return "¿Qué tipo de inmueble buscas? (Ej: apartamento, casa, townhouse)"
+        
+    if not filtros.get("zona"):
+        return "¿En qué zona o ciudad buscas?"
+        
+    if not filtros.get("presupuesto_max"):
+        return "¿Cuál es tu presupuesto estimado?"
+        
+    return "¿Hay alguna característica adicional?"
+
+
+async def humanizar_texto_con_ia(
+    estado: dict, 
+    instruccion_cruda: str, 
+    mensaje_usuario: str,
+    client: Optional[httpx.AsyncClient] = None
+) -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    
+    prompt_sistema = f"""
+    Eres Paty, la asistente VIP de Mettryc Realty.
+    Tu sistema interno acaba de determinar que necesitas pedirle este dato al usuario:
+    "{instruccion_cruda}"
+    
+    TU TAREA:
+    Traduce esa orden rígida a tu personalidad natural, cálida y profesional.
+    1. Si el usuario acaba de dar un dato, valídalo brevemente (ej. "¡Excelente zona!").
+    2. Luego, haz la pregunta que se te ordenó.
+    3. NO hagas más preguntas aparte de la indicada. Sé muy breve (máximo 30 palabras).
+    """
+    
+    mensajes = [{"role": "system", "content": prompt_sistema}]
+    
+    for msg in estado.get("historial", [])[-4:]:
+        mensajes.append({"role": msg["role"], "content": msg["content"]})
+        
+    mensajes.append({"role": "user", "content": mensaje_usuario})
+    
+    payload = {
+        "model": os.getenv("MODELO_PRINCIPAL", "google/gemini-2.5-flash"),
+        "messages": mensajes,
+        "max_tokens": 150,
+        "temperature": 0.4
+    }
+    
+    if client is None:
+        from main import http_client
+        client = http_client
+
+    try:
+        resp = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15.0
+        )
+        resp.raise_for_status()
+        contenido = resp.json()["choices"][0]["message"]["content"]
+        return contenido.strip() if contenido else instruccion_cruda
+    except Exception as e:
+        logger.error(f"Error humanizando texto: {e}")
+        return instruccion_cruda
