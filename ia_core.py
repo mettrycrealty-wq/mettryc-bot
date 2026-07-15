@@ -260,4 +260,17 @@ def limpiar_json_modelo(contenido: str) -> str:
 
     if texto.startswith("```"):
         texto = re.sub(
-            r"^
+            r"^\x60{3}(?:json)?\s*",
+            "",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        texto = re.sub(r"\s*\x60{3}$", "", texto)
+
+    inicio = texto.find("{")
+    fin = texto.rfind("}")
+
+    if inicio >= 0 and fin > inicio:
+        return texto[inicio:fin + 1]
+
+    return texto
