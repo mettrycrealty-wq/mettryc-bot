@@ -3219,23 +3219,44 @@ async def procesar_mensaje(
                 hubo_cambio = True
                 break
 
-    # D. Cazador de Zonas (Ignorando Ñ)
+    # D. Cazador de Zonas con Detección de Ambigüedad
     try:
         from geografia import DICCIONARIO_GEOGRAFICO
-        zonas_encontradas = []
+        
+        # Guardaremos las zonas encontradas y a qué ciudades pertenecen
+        mapeo_zonas = {}
+        ciudades_encontradas = set()
 
         for estado_geo, ciudades in DICCIONARIO_GEOGRAFICO.items():
             for ciudad_dict, zonas_dict in ciudades.items():
                 ciudad_norm = normalizar_texto(ciudad_dict)
                 if ciudad_norm in texto_normalizado:
-                    zonas_encontradas.append(ciudad_dict)
+                    ciudades_encontradas.add(ciudad_dict)
+                    
                 for zona in zonas_dict:
                     zona_norm = normalizar_texto(zona)
                     if zona_norm in texto_normalizado and len(zona_norm) > 3:
-                        zonas_encontradas.append(zona)
+                        if zona not in mapeo_zonas:
+                            mapeo_zonas[zona] = set()
+                        mapeo_zonas[zona].add(ciudad_dict)
 
-        if zonas_encontradas:
-            zonas_unicas = list(dict.fromkeys(zonas_encontradas))
+        zonas_finales = list(ciudades_encontradas)
+
+        for zona, ciudades_vinculadas in mapeo_zonas.items():
+            # Si el usuario ya mencionó la ciudad explícitamente, evitamos redundancia
+            if any(c in texto_normalizado for c in ciudades_vinculadas):
+                zonas_finales.append(zona)
+            # PASO INTELIGENTE: Si la zona es ÚNICA (solo existe en 1 ciudad en el diccionario)
+            elif len(ciudades_vinculadas) == 1:
+                ciudad_vinculada = list(ciudades_vinculadas)[0]
+                zonas_finales.append(f"{zona}, {ciudad_vinculada}")
+            # PASO INTELIGENTE: Si la zona es MÚLTIPLE (ambigüedad geográfica, ej. "Centro" o "El Remanso")
+            else:
+                zonas_finales.append(zona)
+
+        if zonas_finales:
+            # Limpiar duplicados manteniendo el orden
+            zonas_unicas = list(dict.fromkeys(zonas_finales))
             zona_forzada = ", ".join(zonas_unicas)
             zona_ia = str(filtros_actuales.get("zona", ""))
             
@@ -3243,6 +3264,7 @@ async def procesar_mensaje(
             if not zona_ia or len(zona_forzada) > len(zona_ia):
                 filtros_actuales["zona"] = zona_forzada
                 hubo_cambio = True
+                
     except ImportError:
         pass
     # -------------------------------------------------------------
