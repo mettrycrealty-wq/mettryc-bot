@@ -2,9 +2,6 @@ import re
 import unicodedata
 from typing import Any, Optional, Set
 
-# ============================================================
-# UTILIDADES DE TEXTO Y NÚMEROS
-# ============================================================
 
 def normalizar_texto(valor: Any) -> str:
     if valor is None:
@@ -64,9 +61,6 @@ def formato_moneda(valor: Any) -> str:
 
     return f"${numero:,.0f}".replace(",", ".")
 
-# ============================================================
-# UTILIDADES DE DATOS DE CONTACTO (LEAD)
-# ============================================================
 
 def limpiar_telefono(valor: Any) -> str:
     return re.sub(r"\D", "", str(valor or ""))
@@ -151,9 +145,6 @@ def nombre_valido(valor: Any) -> bool:
 
     return 2 <= len(palabras) <= 6
 
-# ============================================================
-# UTILIDADES INMOBILIARIAS Y WASI
-# ============================================================
 
 def parsear_precio_wasi(
     valor: Any,
@@ -471,14 +462,14 @@ def convertir_caracteristicas(valor: Any) -> str:
 
     return ""
 
-# ============================================================
-# UTILIDADES DE JSON (IA)
-# ============================================================
 
 def limpiar_json_modelo(contenido: str) -> str:
     texto = str(contenido or "").strip()
 
-    if texto.startswith("```"):
+    # 🚀 FIX: Usamos \x60 para representar el backtick sin romper el parser
+    marcador = "\x60\x60\x60"
+
+    if texto.startswith(marcador):
         texto = re.sub(
             r"^\x60{3}(?:json)?\s*",
             "",
