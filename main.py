@@ -141,7 +141,7 @@ class Chismoso:
     @staticmethod
     # En la clase Chismoso
     @staticmethod
-def _safe_sender(sender: Any) -> str:
+    def _safe_sender(sender: Any) -> str:
     if sender is None:
         return "DEBUG"
     sender_str = str(sender)
