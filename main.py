@@ -36,7 +36,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # CONFIGURACIÓN
 # ============================================================
 
-DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 WASI_TOKEN = os.getenv("WASI_TOKEN", "")
 WASI_COMPANY_ID = os.getenv("WASI_COMPANY_ID", "")
@@ -609,17 +609,31 @@ def tokens_zona(valor: Any) -> Set[str]:
     }
 
 
-def zona_coincide(
-    buscada: str,
-    zona_prop: str,
-    ciudad_prop: str,
-) -> bool:
+def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
     if not buscada:
         return True
 
-    buscada_norm = normalizar_texto(buscada)
-    ciudad_prop_norm = normalizar_texto(ciudad_prop)
-    zona_prop_norm = normalizar_texto(zona_prop)
+    buscada = normalizar_texto(buscada)
+    zona_prop = normalizar_texto(zona_prop)
+    ciudad_prop = normalizar_texto(ciudad_prop)
+    
+    # Búsqueda exacta primero
+    if buscada in f"{zona_prop} {ciudad_prop}":
+        return True
+        
+    # Si no hay match exacto, verificar tokens clave
+    palabras_clave = {
+        "trigal": ["trigal"],
+        "prebo": ["prebo"],
+        "candiles": ["candiles"],
+        "bosque": ["bosque"]
+    }
+    
+    for zona, palabras in palabras_clave.items():
+        if zona in buscada:
+            return any(p in zona_prop or p in ciudad_prop for p in palabras)
+            
+    return False
     
     # 1. Unimos zona y ciudad de la propiedad para la búsqueda
     ubicacion_prop_norm = f"{zona_prop_norm} {ciudad_prop_norm}"
@@ -868,6 +882,9 @@ def verificar_caducidad_y_amnesia(estado: dict) -> dict:
 def obtener_pregunta_faltante(estado: dict) -> str:
     filtros = estado.get("filtros", {})
     
+    if not filtros.get("presupuesto_max"):  # Siempre pedir presupuesto primero
+        return "¿Cuál es tu presupuesto estimado para la compra?"
+        
     if not filtros.get("tipo_operacion"):
         return "¿Es para la compra o alquiler?"
         
@@ -877,10 +894,7 @@ def obtener_pregunta_faltante(estado: dict) -> str:
     if not filtros.get("zona"):
         return "¿En qué zona o ciudad buscas?"
         
-    if not filtros.get("presupuesto_max"):
-        return "¿Cuál es tu presupuesto estimado?"
-        
-    return "¿Hay alguna característica adicional?"
+    return "¿Hay alguna característica adicional importante para ti?"
 
 
 async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_usuario: str) -> str:
@@ -2492,7 +2506,7 @@ def buscar_mejores_propiedades(
     evaluadas = []
     pasaron_zona_tipo = 0
     filtros = estado.get("filtros", {})
-    zona_buscada = filtros.get("zona")
+    zona_buscada = normalizar_texto(filtros.get("zona", ""))
     tipo_buscado = filtros.get("tipo_propiedad")
     operacion = str(filtros.get("tipo_operacion", "")).lower()
     presupuesto_max = convertir_float(filtros.get("presupuesto_max"))
@@ -2506,61 +2520,69 @@ def buscar_mejores_propiedades(
 
     for original in inventory_cache["inventario"]:
         property_id = str(original.get("id", ""))
-        zona_prop = original.get("zona", "")
-        ciudad_prop = original.get("ciudad", "")
+        zona_prop = normalizar_texto(original.get("zona", ""))
+        ciudad_prop = normalizar_texto(original.get("ciudad", ""))
 
         if not property_id or property_id in excluir:
             continue
 
-        # 1. Filtro estricto de Zona y Tipo
+        # 1. Filtro estricto de Tipo
         tipo_ok = coincide_tipo(original, tipo_buscado) if tipo_buscado else True
-        zona_ok = zona_coincide(zona_buscada, zona_prop, ciudad_prop) if zona_buscada else True
-        
-        # Loggeo detallado de la evaluación geográfica
+        if not tipo_ok:
+            continue
+
+        # 2. Filtro estricto de Zona con coincidencia exacta requerida
+        zona_ok = True
         if zona_buscada:
-            razon = ""
-            if not zona_ok:
-                razon = "NO coincide con zona/ciudad"
-            else:
-                razon = "Coincidencia EXACTA" if zona_buscada.lower() in f"{zona_prop.lower()} {ciudad_prop.lower()}" else "Coincidencia por tokens"
+            # Verificar match exacto en zona o ciudad
+            zona_ok = (
+                zona_buscada in zona_prop 
+                or zona_buscada in ciudad_prop
+                or zona_prop in zona_buscada
+            )
             
+            # Loggeo detallado de la evaluación geográfica
+            razon = "Coincidencia EXACTA" if zona_ok else "NO coincide con zona/ciudad"
             Chismoso.log_zona(
                 sender=estado.get("numero_canal", "DEBUG"),
                 zona_buscada=zona_buscada,
-                zona_prop=zona_prop,
-                ciudad_prop=ciudad_prop,
+                zona_prop=original.get("zona", ""),  # Mostrar original sin normalizar
+                ciudad_prop=original.get("ciudad", ""),
                 coincide=zona_ok,
                 razon=razon
             )
 
-        if not (tipo_ok and zona_ok):
-            continue
+            if not zona_ok:
+                continue
 
-        # 2. FILTRO INTELIGENTE DE OPERACIÓN (Venta vs Alquiler)
+        # 3. FILTRO INTELIGENTE DE OPERACIÓN (Venta vs Alquiler)
         precio_aplicable = 0
         label_precio_aplicable = "N/D"
 
         if "comprar" in operacion or "venta" in operacion:
-            precio_aplicable = original.get("precio_venta", 0)
+            precio_aplicable = convertir_float(original.get("precio_venta", 0))
             label_precio_aplicable = original.get("precio_venta_label", "N/D")
             if precio_aplicable <= 0:
-                continue 
+                Chismoso.log_rechazo(
+                    sender=estado.get("numero_canal", "DEBUG"),
+                    propiedad_id=property_id,
+                    motivo="No tiene precio de venta definido"
+                )
+                continue
                 
         elif "alquilar" in operacion or "alquiler" in operacion or "renta" in operacion:
-            precio_aplicable = original.get("precio_alquiler", 0)
+            precio_aplicable = convertir_float(original.get("precio_alquiler", 0))
             label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
             if precio_aplicable <= 0:
-                continue 
-        else:
-            if original.get("precio_venta", 0) > 0:
-                precio_aplicable = original.get("precio_venta", 0)
-                label_precio_aplicable = original.get("precio_venta_label", "N/D")
-            else:
-                precio_aplicable = original.get("precio_alquiler", 0)
-                label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
+                Chismoso.log_rechazo(
+                    sender=estado.get("numero_canal", "DEBUG"),
+                    propiedad_id=property_id,
+                    motivo="No tiene precio de alquiler definido"
+                )
+                continue
 
-        # 3. Validación Tolerante de Presupuesto
-        if presupuesto_max and presupuesto_max > 0:  # Solo validar si hay presupuesto
+        # 4. Validación Tolerante de Presupuesto (solo si se especificó)
+        if presupuesto_max and presupuesto_max > 0:
             if precio_aplicable > presupuesto_max * (1 + MAX_EXCESO_PRESUPUESTO):
                 Chismoso.log_rechazo(
                     sender=estado.get("numero_canal", "DEBUG"),
@@ -2571,16 +2593,17 @@ def buscar_mejores_propiedades(
 
         pasaron_zona_tipo += 1
 
+        # Preparar propiedad para evaluación
         original_clon = deepcopy(original)
-        original_clon["precio"] = label_precio_aplicable
-        original_clon["precio_venta_float"] = original.get("precio_venta", 0)
-        original_clon["precio_renta_float"] = original.get("precio_alquiler", 0)
+        original_clon.update({
+            "precio": label_precio_aplicable,
+            "precio_venta_float": convertir_float(original.get("precio_venta", 0)),
+            "precio_renta_float": convertir_float(original.get("precio_alquiler", 0)),
+            "operacion_buscada": "venta" if "venta" in operacion else "alquiler"
+        })
 
-        propiedad = evaluar_propiedad(
-            original_clon,
-            estado["filtros"],
-        )
-
+        # Evaluación final de la propiedad
+        propiedad = evaluar_propiedad(original_clon, estado["filtros"])
         if propiedad:
             evaluadas.append(propiedad)
             Chismoso.log_aceptacion(
@@ -2605,7 +2628,7 @@ def buscar_mejores_propiedades(
     )
 
     resultado = exactas[:cantidad]
-    if len(resultado) < cantidad:
+    if len(resultado) < cantidad and zona_buscada:  # Solo mostrar aproximadas si se buscó una zona específica
         resultado.extend(aproximadas[:cantidad - len(resultado)])
 
     # Log de resultados finales
@@ -2627,7 +2650,6 @@ def buscar_mejores_propiedades(
         )
 
     return resultado, motivo_falla
-
 
 def buscar_por_codigo(
     codigo: str,
