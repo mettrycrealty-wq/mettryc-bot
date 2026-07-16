@@ -2574,8 +2574,64 @@ def buscar_mejores_propiedades(
             if not zona_ok:
                 continue
 
-        # Resto del código de filtrado (operación, presupuesto)...
-        # [Mantener igual desde "FILTRO INTELIGENTE DE OPERACIÓN" hasta "Evaluación final de la propiedad"]
+        # 3. FILTRO INTELIGENTE DE OPERACIÓN (Venta vs Alquiler)
+        precio_aplicable = 0
+        label_precio_aplicable = "N/D"
+
+        if "comprar" in operacion or "venta" in operacion:
+            precio_aplicable = convertir_float(original.get("precio_venta", 0))
+            label_precio_aplicable = original.get("precio_venta_label", "N/D")
+            if precio_aplicable <= 0:
+                Chismoso.log_rechazo(
+                    sender=estado.get("numero_canal", "DEBUG"),
+                    propiedad_id=property_id,
+                    motivo="No tiene precio de venta definido"
+                )
+                continue
+                
+        elif "alquilar" in operacion or "alquiler" in operacion or "renta" in operacion:
+            precio_aplicable = convertir_float(original.get("precio_alquiler", 0))
+            label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
+            if precio_aplicable <= 0:
+                Chismoso.log_rechazo(
+                    sender=estado.get("numero_canal", "DEBUG"),
+                    propiedad_id=property_id,
+                    motivo="No tiene precio de alquiler definido"
+                )
+                continue
+
+        # 4. Validación Tolerante de Presupuesto (solo si se especificó)
+        if presupuesto_max and presupuesto_max > 0:
+            if precio_aplicable > presupuesto_max * (1 + MAX_EXCESO_PRESUPUESTO):
+                Chismoso.log_rechazo(
+                    sender=estado.get("numero_canal", "DEBUG"),
+                    propiedad_id=property_id,
+                    motivo=f"PRECIO ({formato_moneda(precio_aplicable)}) excede el presupuesto ({formato_moneda(presupuesto_max)})"
+                )
+                continue
+
+        pasaron_zona_tipo += 1
+
+        # Preparar propiedad para evaluación
+        original_clon = deepcopy(original)
+        original_clon.update({
+            "precio": label_precio_aplicable,
+            "precio_venta_float": convertir_float(original.get("precio_venta", 0)),
+            "precio_renta_float": convertir_float(original.get("precio_alquiler", 0)),
+            "operacion_buscada": "venta" if "venta" in operacion else "alquiler"
+        })
+
+        # Evaluación final de la propiedad
+        propiedad = evaluar_propiedad(original_clon, estado["filtros"])
+        if propiedad:
+            evaluadas.append(propiedad)
+            Chismoso.log_aceptacion(
+                sender=estado.get("numero_canal", "DEBUG"),
+                propiedad_id=property_id,
+                titulo=propiedad.get("titulo"),
+                score=propiedad.get("_score"),
+                diferencias=", ".join(propiedad.get("_diferencias", []))
+            )
 
     # Clasificación y selección final
     exactas = sorted(
