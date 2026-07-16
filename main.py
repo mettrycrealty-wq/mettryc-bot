@@ -504,6 +504,7 @@ def detectar_presupuesto(texto: str) -> float:
     return mejor
 
 
+@@
 def detectar_operacion(texto: str, presupuesto: float = 0) -> Optional[str]:
     texto_norm = normalizar_texto(texto)
     if any(p in texto_norm for p in ["venta", "comprar", "compra", "vend"]):
@@ -513,7 +514,24 @@ def detectar_operacion(texto: str, presupuesto: float = 0) -> Optional[str]:
     if presupuesto > 0:
         return "venta" if presupuesto > 4000 else "alquiler"
     return None
+def detectar_operacion(texto: str, presupuesto: Any = 0) -> Optional[str]:
+    texto_norm = normalizar_texto(texto)
 
+    try:
+        presupuesto_valor = float(presupuesto) if presupuesto not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        presupuesto_valor = 0.0
+
+    if any(p in texto_norm for p in ["venta", "comprar", "compra", "vend"]):
+        return "venta"
+
+    if any(p in texto_norm for p in ["alquiler", "alquilar", "renta", "arrend"]):
+        return "alquiler"
+
+    if presupuesto_valor > 0:
+        return "venta" if presupuesto_valor > 4000 else "alquiler"
+
+    return None
 
 def detectar_tipo_propiedad(texto: str) -> Optional[str]:
     texto_norm = normalizar_texto(texto)
