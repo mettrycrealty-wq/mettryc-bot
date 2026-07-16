@@ -143,8 +143,8 @@ class Chismoso:
     @staticmethod
     def _safe_sender(sender: Any) -> str:
         if sender is None:
-        return "DEBUG"
-    sender_str = str(sender)
+    return "DEBUG"
+        sender_str = str(sender)
     return sender_str if len(sender_str) >= 4 else f"DEBUG_{sender_str}"
 
     @staticmethod
