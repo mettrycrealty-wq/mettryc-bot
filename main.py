@@ -140,7 +140,7 @@ INTERVALO_ACTUALIZACION_WASI = timedelta(
 class Chismoso:
     @staticmethod
     # En la clase Chismoso
-@staticmethod
+    @staticmethod
 def _safe_sender(sender: Any) -> str:
     if sender is None:
         return "DEBUG"
