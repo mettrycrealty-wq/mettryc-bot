@@ -3353,22 +3353,19 @@ def forzar_accion_evidente(
 async def procesar_mensaje(
     sender: str,
     mensaje: str,
-) -> str:
-    # 1. Recuperar estado de sesión
-    estado = obtener_sesion(sender)
-    estado = verificar_caducidad_y_amnesia(estado)
+) -> str | dict:
+    """Procesa mensajes del usuario con soporte para comandos admin y búsqueda de propiedades."""
+    
+    # 1. Recuperar y limpiar estado de sesión
+    estado = verificar_caducidad_y_amnesia(obtener_sesion(sender))
+    mensaje_admin = str(mensaje).strip().lower()
+    logger.info(f"DEBUG ADMIN: Mensaje recibido: '{mensaje_admin}'")
 
     # ===============================================
     # 🛠️ PANEL DE CONTROL - COMANDOS DE ADMINISTRADOR
     # ===============================================
-    mensaje_admin = str(mensaje).strip().lower()
-    logger.info(f"DEBUG ADMIN: Mensaje recibido: '{mensaje_admin}'")
-
-    # Verificar si el remitente es administrador
-    es_admin = str(sender) == os.getenv("TELEGRAM_ADMIN_ID")  # Asegurar comparación de strings
-
-    if es_admin:
-        # 1. Reiniciar Chat
+    if str(sender) == os.getenv("TELEGRAM_ADMIN_ID"):
+        # 1. Reinicio de chat
         if mensaje_admin == "/reiniciar":
             estado.update({
                 "historial": [],
@@ -3379,65 +3376,88 @@ async def procesar_mensaje(
             guardar_sesion(sender, estado)
             return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
 
-        # 2. Reiniciar Servidor
+        # 2. Reinicio de servidor
         if mensaje_admin == "/restart":
-            def reiniciar_asincrono():
-                import time, os
-                time.sleep(1)
-                os._exit(1)
-            
-            import threading
-            threading.Thread(target=reiniciar_asincrono).start()
+            threading.Thread(
+                target=lambda: (time.sleep(1), os._exit(1)),
+                daemon=True
+            ).start()
             return {"replies": [{"message": "🔄 Reiniciando servidor..."}]}
 
-        # 3. Prueba de Conexiones
+        # 3. Prueba de conexiones
         if mensaje_admin == "/test":
-            pruebas = [
-                f"📊 Google Sheets: {len(sheets_cache.get('agentes', []))} agentes",
-                f"🏢 Wasi API: {len(inventory_cache.get('inventario', []))} propiedades",
-                f"📲 Telegram: {'✅ OK' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌ No configurado'}",
-                f"🧠 IA: {'✅ ' + os.getenv('MODELO_ANALISIS_PRINCIPAL', '') if os.getenv('OPENROUTER_API_KEY') else '❌ No configurado'}"
-            ]
-            return {"replies": [{"message": "🔍 Resultados de pruebas:\n" + "\n".join(pruebas)}]}
+            return {
+                "replies": [{
+                    "message": "\n".join([
+                        "🔍 Resultados de pruebas:",
+                        f"📊 Sheets: {len(sheets_cache.get('agentes', []))} agentes",
+                        f"🏢 Wasi: {len(inventory_cache['inventario'])} propiedades",
+                        f"📲 Telegram: {'✅' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌'}",
+                        f"🧠 IA: {'✅ ' + os.getenv('MODELO_ANALISIS_PRINCIPAL', '') if os.getenv('OPENROUTER_API_KEY') else '❌'}"
+                    ])
+                }]
+            }
 
-        # 4. Estado del Sistema
+        # 4. Estado del sistema
         if mensaje_admin == "/status":
-            from datetime import datetime
-            status_msg = [
-                f"🖥️ Estado del Bot - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"👥 Usuarios activos: {len(sesiones)}",
-                f"🏠 Propiedades cargadas: {len(inventory_cache.get('inventario', []))}",
-                f"🔄 Última actualización: {inventory_cache.get('ultima_actualizacion', 'N/D')}",
-                f"⚙️ Modelo IA: {os.getenv('MODELO_ANALISIS_PRINCIPAL', 'N/D')}",
-                f"📈 Exceso presupuesto: {float(os.getenv('MAX_EXCESO_PRESUPUESTO', '1.1'))*100:.0f}%"
-            ]
-            return {"replies": [{"message": "\n".join(status_msg)}]}
+            return {
+                "replies": [{
+                    "message": "\n".join([
+                        f"🖥️ Estado del Bot - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        f"👥 Usuarios activos: {len(sesiones)}",
+                        f"🏠 Propiedades: {len(inventory_cache['inventario'])}",
+                        f"🔄 Últ. actualización: {inventory_cache.get('ultima_actualizacion', 'N/D')}",
+                        f"⚙️ Modelo: {os.getenv('MODELO_ANALISIS_PRINCIPAL', 'N/D')}",
+                        f"📈 Exceso presupuesto: {float(os.getenv('MAX_EXCESO_PRESUPUESTO', '1.1'))*100:.0f}%"
+                    ])
+                }]
+            }
 
     # ===============================================
     # 🧠 PROCESAMIENTO NORMAL DEL MENSAJE
     # ===============================================
-    decision = await decidir_con_ia(mensaje, estado)
-    decision = forzar_accion_evidente(decision, mensaje, estado)
-    hubo_cambio = aplicar_decision(estado, decision, mensaje)
+    try:
+        decision = await decidir_con_ia(mensaje, estado)
+        decision = forzar_accion_evidente(decision, mensaje, estado)
+        hubo_cambio = aplicar_decision(estado, decision, mensaje)
 
-    # CORRECCIÓN CLAVE: Manejo seguro de actualizaciones
-    zona_actualizada = None
-    if hasattr(decision, 'actualizaciones'):
-        if hasattr(decision.actualizaciones, 'zona'):
-            zona_actualizada = decision.actualizaciones.zona
-        elif hasattr(decision.actualizaciones, 'dict'):
-            zona_actualizada = decision.actualizaciones.dict().get('zona')
+        # Manejo seguro de actualizaciones Pydantic
+        zona_actualizada = (
+            decision.actualizaciones.zona 
+            if hasattr(decision.actualizaciones, 'zona') 
+            else decision.actualizaciones.dict().get('zona', None)
+        )
 
-    Chismoso.log_extraction(
-        sender=sender,
-        campo="zona",
-        valor=zona_actualizada,
-        metodo="IA" if getattr(decision, 'confianza_rol', 0) > 0.7 else "Mega-Cazador",
-        confianza=getattr(decision, 'confianza_rol', 0)
-    )
+        Chismoso.log_extraction(
+            sender=sender,
+            campo="zona",
+            valor=zona_actualizada,
+            metodo="IA" if decision.confianza_rol > 0.7 else "Mega-Cazador",
+            confianza=decision.confianza_rol
+        )
 
-    # [Resto del código permanece igual...]
-    # ... (las secciones de Mega-Cazador y Lógica de Respuesta se mantienen sin cambios)
+        # Determinar respuesta según acción
+        if decision.accion.tipo == "reiniciar_busqueda":
+            return "¡Nueva búsqueda iniciada! ¿Qué tipo de propiedad necesitas?"
+
+        elif decision.accion.tipo in ["buscar_por_codigo", "pedir_codigo_inmueble"]:
+            if codigo := (decision.accion.codigo or extraer_codigo_inmueble(mensaje)):
+                return await mostrar_inmueble_especifico(estado, codigo)
+            estado["esperando_codigo"] = True
+            return "Por favor, envía el código o enlace de la propiedad"
+
+        elif decision.accion.tipo == "mostrar_mas_propiedades":
+            return await mostrar_propiedades(estado) if estado.get("propiedades_enviadas") else "Primero dime qué propiedad buscas"
+
+        elif decision.accion.tipo == "seleccionar_propiedad":
+            return await seleccionar_propiedad(estado, decision.accion.posicion)
+
+        # Respuesta genérica cuando falta información
+        return await mostrar_propiedades(estado) if criterios_suficientes(estado) else await humanizar_texto_con_ia(estado, obtener_pregunta_faltante(estado), mensaje)
+
+    except Exception as e:
+        logger.error(f"Error procesando mensaje: {str(e)}")
+        raise  # Re-lanza para manejo en webhook
 
 # ============================================================
 # INICIALIZACIÓN
@@ -3630,20 +3650,11 @@ async def webhook(
         else data
     )
 
-    sender = str(
-        payload.get("sender", "")
-    ).strip()
+    sender = str(payload.get("sender", "")).strip()
+    mensaje = str(payload.get("message", "")).strip()
+    message_id = str(payload.get("message_id") or payload.get("id") or "").strip()
 
-    mensaje = str(
-        payload.get("message", "")
-    ).strip()
-
-    message_id = str(
-        payload.get("message_id")
-        or payload.get("id")
-        or ""
-    ).strip()
-
+    # Validaciones básicas
     if not sender:
         raise HTTPException(
             status_code=422,
@@ -3653,69 +3664,60 @@ async def webhook(
     if not mensaje:
         return {"replies": []}
 
+    # Generar ID único si no existe
     if not message_id:
-        message_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"{sender}:{mensaje}",
-            )
-        )
+        message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{sender}:{mensaje}"))
 
-    if mensaje_es_duplicado(
-        sender,
-        message_id,
-    ):
+    # Evitar procesamiento duplicado
+    if mensaje_es_duplicado(sender, message_id):
         return {"replies": []}
 
+    # Inicializar lock para el usuario
     if sender not in locks_usuarios:
         locks_usuarios[sender] = asyncio.Lock()
 
-    if not inventory_cache["inventario"]:
-        await actualizar_inventario(force=True)
+    # Actualizaciones asíncronas de datos
+    try:
+        if not inventory_cache["inventario"]:
+            await actualizar_inventario(force=True)
+        elif inventario_necesita_actualizacion():
+            asyncio.create_task(actualizar_inventario())
 
-    elif inventario_necesita_actualizacion():
-        asyncio.create_task(
-            actualizar_inventario()
-        )
+        if sheets_necesita_actualizacion():
+            asyncio.create_task(sincronizar_google_sheet())
+    except Exception as e:
+        logger.error(f"Error actualizando datos: {str(e)}")
 
-    if sheets_necesita_actualizacion():
-        asyncio.create_task(
-            sincronizar_google_sheet()
-        )
-
+    # Procesamiento principal
     try:
         async with locks_usuarios[sender]:
-            respuesta = await procesar_mensaje(
-                sender,
-                mensaje,
-            )
-
-        return {
-            "replies": [
-                {
-                    "message": respuesta.replace(
-                        "**",
-                        "*",
-                    )
-                }
-            ]
-        }
+            respuesta = await procesar_mensaje(sender, mensaje)
+            
+            # Manejo de diferentes formatos de respuesta
+            if respuesta is None:
+                respuesta = "No se pudo generar una respuesta"
+            
+            if isinstance(respuesta, dict):  # Respuestas estructuradas (admin)
+                return respuesta
+            
+            # Formateo seguro para el frontend
+            return {
+                "replies": [{
+                    "message": str(respuesta).replace("**", "*") if respuesta else ""
+                }]
+            }
 
     except Exception as exc:
         logger.exception(
-            "Error webhook sender=%s tipo=%s",
-            sender[-4:],
-            type(exc).__name__,
+            f"Error webhook sender={sender[-4:]} tipo={type(exc).__name__}"
         )
-
+        
         return {
-            "replies": [
-                {
-                    "message": (
-                        "Disculpa, tuve un inconveniente "
-                        "procesando tu mensaje. ¿Puedes "
-                        "intentarlo nuevamente?"
-                    )
-                }
-            ]
+            "replies": [{
+                "message": (
+                    "Disculpa, tuve un inconveniente "
+                    "procesando tu mensaje. ¿Puedes "
+                    "intentarlo nuevamente?"
+                )
+            }]
         }
