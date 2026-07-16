@@ -2495,6 +2495,7 @@ def buscar_mejores_propiedades(
     zona_buscada = filtros.get("zona")
     tipo_buscado = filtros.get("tipo_propiedad")
     operacion = str(filtros.get("tipo_operacion", "")).lower()
+    presupuesto_max = convertir_float(filtros.get("presupuesto_max"))
 
     # Log inicial de los filtros aplicados
     Chismoso.log_inventario(
@@ -2559,14 +2560,14 @@ def buscar_mejores_propiedades(
                 label_precio_aplicable = original.get("precio_alquiler_label", "N/D")
 
         # 3. Validación Tolerante de Presupuesto
-        presupuesto_max = filtros.get("presupuesto_max", 0)
-        if presupuesto_max > 0 and precio_aplicable > presupuesto_max * (1 + MAX_EXCESO_PRESUPUESTO):
-            Chismoso.log_rechazo(
-                sender=estado.get("numero_canal", "DEBUG"),
-                propiedad_id=property_id,
-                motivo=f"PRECIO ({formato_moneda(precio_aplicable)}) excede el presupuesto ({formato_moneda(presupuesto_max)})"
-            )
-            continue
+        if presupuesto_max and presupuesto_max > 0:  # Solo validar si hay presupuesto
+            if precio_aplicable > presupuesto_max * (1 + MAX_EXCESO_PRESUPUESTO):
+                Chismoso.log_rechazo(
+                    sender=estado.get("numero_canal", "DEBUG"),
+                    propiedad_id=property_id,
+                    motivo=f"PRECIO ({formato_moneda(precio_aplicable)}) excede el presupuesto ({formato_moneda(presupuesto_max)})"
+                )
+                continue
 
         pasaron_zona_tipo += 1
 
