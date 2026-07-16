@@ -139,13 +139,12 @@ INTERVALO_ACTUALIZACION_WASI = timedelta(
 
 class Chismoso:
     @staticmethod
-    # En la clase Chismoso
-    @staticmethod
     def _safe_sender(sender: Any) -> str:
+        """Convierte sender a string seguro, manejando None"""
         if sender is None:
             return "DEBUG"
         sender_str = str(sender)
-    return sender_str if len(sender_str) >= 4 else f"DEBUG_{sender_str}"
+        return sender_str if len(sender_str) >= 4 else f"DEBUG_{sender_str}"
 
     @staticmethod
     def log_extraction(sender: Any, campo: str, valor: Any, metodo: str, confianza: float = None):
