@@ -626,32 +626,15 @@ def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
     if not buscada:
         return True
 
-    buscada = normalizar_texto(buscada)
-    zona_prop = normalizar_texto(zona_prop)
-    ciudad_prop = normalizar_texto(ciudad_prop)
+    # Normalizar textos
+    buscada_norm = normalizar_texto(buscada)
+    zona_prop_norm = normalizar_texto(zona_prop)
+    ciudad_prop_norm = normalizar_texto(ciudad_prop)
     
-    # Búsqueda exacta primero
-    if buscada in f"{zona_prop} {ciudad_prop}":
-        return True
-        
-    # Si no hay match exacto, verificar tokens clave
-    palabras_clave = {
-        "trigal": ["trigal"],
-        "prebo": ["prebo"],
-        "candiles": ["candiles"],
-        "bosque": ["bosque"]
-    }
-    
-    for zona, palabras in palabras_clave.items():
-        if zona in buscada:
-            return any(p in zona_prop or p in ciudad_prop for p in palabras)
-            
-    return False
-    
-    # 1. Unimos zona y ciudad de la propiedad para la búsqueda
+    # Unimos zona y ciudad de la propiedad para la búsqueda
     ubicacion_prop_norm = f"{zona_prop_norm} {ciudad_prop_norm}"
 
-    # 2. MATCH EXACTO POR CADENA (Ideal para cuando el Mega-Cazador inyecta la zona)
+    # 1. MATCH EXACTO POR CADENA
     # El cazador separa por comas si hay varias zonas. Ej: "trigal norte, el parral"
     zonas_pedidas = [z.strip() for z in buscada_norm.split(",") if z.strip()]
     
@@ -660,14 +643,15 @@ def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
         if zp in ubicacion_prop_norm or zona_prop_norm in zp:
             return True
 
-    # 3. PREPARACIÓN DE TOKENS
+    # 2. PREPARACIÓN DE TOKENS
     buscados = tokens_zona(buscada)
     disponibles = tokens_zona(ubicacion_prop_norm)
 
-    # 4. FILTRO DE CIUDAD ESTRICTO
+    # 3. FILTRO DE CIUDAD ESTRICTO
     ciudades_mettryc = {
         "valencia", "naguanagua", "san diego", "guacara", 
-        "barquisimeto", "cabudare", "caracas", "maracay", "los guayos", "cagua", "turmero"
+        "barquisimeto", "cabudare", "caracas", "maracay", 
+        "los guayos", "cagua", "turmero"
     }
     ciudades_pedidas = buscados.intersection(ciudades_mettryc)
     
@@ -675,7 +659,7 @@ def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
         if not any(ciudad in ciudad_prop_norm for ciudad in ciudades_pedidas):
             return False
 
-    # 5. FILTRO DE TOKENS REFORZADO (Adiós a los Falsos Positivos)
+    # 4. FILTRO DE TOKENS REFORZADO
     coincidencias = buscados.intersection(disponibles)
     
     # Palabras que por sí solas NO determinan una zona única
@@ -688,12 +672,11 @@ def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
     
     coincidencias_fuertes = coincidencias - palabras_genericas
     
-    # Solo aprobamos si hay al menos una coincidencia "fuerte" (ej. "trigal", "prebo", "castores")
+    # Solo aprobamos si hay al menos una coincidencia "fuerte"
     if len(coincidencias_fuertes) >= 1:
         return True
 
     return False
-
 
 def extraer_codigo_inmueble(
     mensaje: str,
