@@ -698,7 +698,7 @@ def detectar_zona_ciudad(texto_normalizado: str) -> Dict[str, Any]:
                     f"La zona {resultado.get('zona')} aparece tanto en {ciudades_texto}. "
                     "¿En cuál de esas ciudades deseas buscar?"
                 )
-           else:
+                 else:
         for zona_alias, ciudades_alias in FALLBACK_ZONAS_AMBIGUAS.items():
             zona_alias_norm = normalizar_texto(zona_alias)
             if contiene_termino(texto_normalizado, zona_alias_norm):
