@@ -678,7 +678,7 @@ def detectar_zona_ciudad(texto_normalizado: str) -> Dict[str, Any]:
         ciudades_asociadas = catalogo_geografico["zonas_por_ciudad"].get(zona_norm_detectada, set())
         if not ciudades_asociadas and zona_norm_detectada in FALLBACK_ZONAS_AMBIGUAS:
             ciudades_asociadas = set(FALLBACK_ZONAS_AMBIGUAS[zona_norm_detectada])
-                if len(ciudades_asociadas) == 1:
+        if len(ciudades_asociadas) == 1:
             ciudad_unica = next(iter(ciudades_asociadas))
             resultado["ciudad"] = ciudad_unica
         elif len(ciudades_asociadas) > 1:
