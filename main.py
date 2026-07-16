@@ -865,14 +865,14 @@ def obtener_pregunta_faltante(estado: dict) -> str:
     filtros = estado.get("filtros", {})
 
     # Eliminar duplicados en la zona (ej: "el trigal, el trigal, valencia" → "el trigal, valencia")
-if 'zona' in filtros:
-    zonas = filtros['zona'].split(',')  # Separa por comas
-    zonas_unicas = []
-    for zona in zonas:
-        zona = zona.strip()  # Elimina espacios
-        if zona not in zonas_unicas:  # Evita duplicados
-            zonas_unicas.append(zona)
-    filtros['zona'] = ', '.join(zonas_unicas)  # Vuelve a unir
+    if 'zona' in filtros:
+        zonas = filtros['zona'].split(',')  # Separa por comas
+        zonas_unicas = []
+        for zona in zonas:
+            zona = zona.strip()  # Elimina espacios
+            if zona not in zonas_unicas:  # Evita duplicados
+                zonas_unicas.append(zona)
+        filtros['zona'] = ', '.join(zonas_unicas)  # Vuelve a unir
     
     if not filtros.get("presupuesto_max"):  # Siempre pedir presupuesto primero
         return "¿Cuál es tu presupuesto estimado para la compra?"
