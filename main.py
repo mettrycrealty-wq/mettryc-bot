@@ -504,7 +504,6 @@ def detectar_presupuesto(texto: str) -> float:
     return mejor
 
 
-@@
 def detectar_operacion(texto: str, presupuesto: float = 0) -> Optional[str]:
     texto_norm = normalizar_texto(texto)
     if any(p in texto_norm for p in ["venta", "comprar", "compra", "vend"]):
