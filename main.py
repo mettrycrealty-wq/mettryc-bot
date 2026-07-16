@@ -139,12 +139,20 @@ INTERVALO_ACTUALIZACION_WASI = timedelta(
 
 class Chismoso:
     @staticmethod
-    def log_extraction(sender: str, campo: str, valor: Any, metodo: str, confianza: float = None):
+    def _safe_sender(sender: Any) -> str:
+        """Convierte sender a string seguro, manejando None"""
+        if sender is None:
+            return "DEBUG"
+        return str(sender)
+
+    @staticmethod
+    def log_extraction(sender: Any, campo: str, valor: Any, metodo: str, confianza: float = None):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n🔍 [EXTRACCIÓN] ({sender[-4:]})\n"
+            f"\n🔍 [EXTRACCIÓN] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   Campo: {campo}\n"
             f"   Valor: {valor}\n"
             f"   Método: {metodo}\n"
@@ -153,12 +161,13 @@ class Chismoso:
         logging.info(mensaje)
 
     @staticmethod
-    def log_inventario(sender: str, filtros: dict, total_propiedades: int = 0):
+    def log_inventario(sender: Any, filtros: dict, total_propiedades: int = 0):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n📊 [INVENTARIO] ({sender[-4:]})\n"
+            f"\n📊 [INVENTARIO] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   Total propiedades: {total_propiedades}\n"
             f"   Filtros aplicados:\n"
             f"   - Operación: {filtros.get('tipo_operacion')}\n"
@@ -170,12 +179,13 @@ class Chismoso:
         logging.info(mensaje)
 
     @staticmethod
-    def log_zona(sender: str, zona_buscada: str, zona_prop: str, ciudad_prop: str, coincide: bool, razon: str):
+    def log_zona(sender: Any, zona_buscada: str, zona_prop: str, ciudad_prop: str, coincide: bool, razon: str):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n🗺️ [GEOGRAFÍA] ({sender[-4:]})\n"
+            f"\n🗺️ [GEOGRAFÍA] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   Buscada: '{zona_buscada}'\n"
             f"   Propiedad: '{zona_prop}, {ciudad_prop}'\n"
             f"   Coincide: {'✅' if coincide else '❌'} ({razon})\n"
@@ -183,12 +193,13 @@ class Chismoso:
         logging.info(mensaje)
 
     @staticmethod
-    def log_aceptacion(sender: str, propiedad_id: str, titulo: str, score: float, diferencias: str):
+    def log_aceptacion(sender: Any, propiedad_id: str, titulo: str, score: float, diferencias: str):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n🟢 [ACEPTADA] ({sender[-4:]})\n"
+            f"\n🟢 [ACEPTADA] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   ID: {propiedad_id}\n"
             f"   Título: {titulo}\n"
             f"   Score: {score}\n"
@@ -197,24 +208,26 @@ class Chismoso:
         logging.info(mensaje)
 
     @staticmethod
-    def log_rechazo(sender: str, propiedad_id: str, motivo: str):
+    def log_rechazo(sender: Any, propiedad_id: str, motivo: str):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n🔴 [RECHAZADA] ({sender[-4:]})\n"
+            f"\n🔴 [RECHAZADA] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   ID: {propiedad_id}\n"
             f"   Motivo: {motivo}\n"
         )
         logging.info(mensaje)
 
     @staticmethod
-    def log_resultados(sender: str, propiedades: List[dict], total_evaluadas: int = 0, exactas: int = 0, aproximadas: int = 0):
+    def log_resultados(sender: Any, propiedades: List[dict], total_evaluadas: int = 0, exactas: int = 0, aproximadas: int = 0):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n📩 [RESULTADOS] ({sender[-4:]})\n"
+            f"\n📩 [RESULTADOS] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   Total evaluadas: {total_evaluadas}\n"
             f"   Coinciden exactas: {exactas}\n"
             f"   Coinciden aproximadas: {aproximadas}\n"
@@ -233,12 +246,13 @@ class Chismoso:
         logging.info(mensaje)
 
     @staticmethod
-    def log_falla(sender: str, motivo: str, filtros: dict):
+    def log_falla(sender: Any, motivo: str, filtros: dict):
         if not DEBUG_MODE:
             return
         
+        sender_str = Chismoso._safe_sender(sender)
         mensaje = (
-            f"\n⚠️ [FALLA] ({sender[-4:]})\n"
+            f"\n⚠️ [FALLA] ({sender_str[-4:] if len(sender_str) >= 4 else sender_str})\n"
             f"   Motivo: {motivo}\n"
             f"   Filtros:\n"
             f"   - Operación: {filtros.get('tipo_operacion')}\n"
@@ -247,7 +261,6 @@ class Chismoso:
             f"   - Presupuesto: {formato_moneda(filtros.get('presupuesto_max'))}\n"
         )
         logging.info(mensaje)
-
 
 # ============================================================
 # MODELOS ESTRUCTURADOS DEL AGENTE
@@ -2513,7 +2526,7 @@ def buscar_mejores_propiedades(
 
     # Log inicial de los filtros aplicados
     Chismoso.log_inventario(
-        sender=estado.get("numero_canal", "DEBUG"),
+        sender=estado.get("numero_canal") or "DEBUG",
         filtros=filtros,
         total_propiedades=len(inventory_cache["inventario"])
     )
