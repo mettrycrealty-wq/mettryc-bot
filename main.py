@@ -863,16 +863,22 @@ def verificar_caducidad_y_amnesia(estado: dict) -> dict:
 
 def obtener_pregunta_faltante(estado: dict) -> str:
     filtros = estado.get("filtros", {})
-
-    # Eliminar duplicados en la zona (ej: "el trigal, el trigal, valencia" → "el trigal, valencia")
-    if 'zona' in filtros:
-        zonas = filtros['zona'].split(',')  # Separa por comas
-        zonas_unicas = []
-        for zona in zonas:
-            zona = zona.strip()  # Elimina espacios
-            if zona not in zonas_unicas:  # Evita duplicados
-                zonas_unicas.append(zona)
-        filtros['zona'] = ', '.join(zonas_unicas)  # Vuelve a unir
+    
+    # Limpieza de zona (solo si existe)
+    if filtros.get('zona'):
+        try:
+            zonas = filtros['zona'].split(',')  # Separa por comas
+            zonas_unicas = []
+            for zona in zonas:
+                zona = zona.strip()  # Elimina espacios
+                if zona and zona not in zonas_unicas:  # Evita duplicados y strings vacíos
+                    zonas_unicas.append(zona)
+            if zonas_unicas:  # Solo actualizar si hay zonas válidas
+                filtros['zona'] = ', '.join(zonas_unicas)
+            else:
+                filtros['zona'] = None
+        except (AttributeError, TypeError):
+            filtros['zona'] = None
     
     if not filtros.get("presupuesto_max"):  # Siempre pedir presupuesto primero
         return "¿Cuál es tu presupuesto estimado para la compra?"
