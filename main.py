@@ -2909,7 +2909,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         confianza=getattr(decision, "confianza_rol", 0),
     )
 
-        texto_normalizado = normalizar_texto(mensaje)
+    texto_normalizado = normalizar_texto(mensaje)
 
     # --- Manejo de consultas provenientes de Mercado Libre ---
     if estado.get("consulta_mercadolibre", {}).get("pendiente"):
