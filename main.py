@@ -500,6 +500,23 @@ def tokens_zona(valor: Any) -> Set[str]:
     bloqueadas = {"el", "la", "los", "las", "de", "del", "en", "zona", "sector", "urbanizacion", "ciudad", "venezuela"}
     return {token for token in normalizar_texto(valor).split() if len(token) >= 2 and token not in bloqueadas}
 
+def obtener_variantes_zona(zona_referencia: Optional[str]) -> List[str]:
+    if not zona_referencia:
+        return []
+
+    tokens_objetivo = tokens_zona(normalizar_texto(zona_referencia))
+    if not tokens_objetivo:
+        return []
+
+    variantes: Set[str] = set()
+    for zona_norm, nombres in catalogo_geografico.get("zonas_norm", {}).items():
+        tokens_catalogo = tokens_zona(zona_norm)
+        if not tokens_catalogo:
+            continue
+        if tokens_objetivo.issubset(tokens_catalogo) or tokens_catalogo.issubset(tokens_objetivo):
+            variantes.update(nombres)
+
+    return sorted(variantes)
 
 def contiene_termino(texto_normalizado: str, termino: str) -> bool:
     if not texto_normalizado or not termino:
@@ -1454,16 +1471,57 @@ def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
 
 def detectar_posicion(mensaje: str) -> Optional[int]:
     texto = normalizar_texto(mensaje)
-    referencias = {
-        1: ["la primera", "primera opcion", "opcion 1", "numero 1", "la 1"],
-        2: ["la segunda", "segunda opcion", "opcion 2", "numero 2", "la 2"],
-        3: ["la tercera", "tercera opcion", "opcion 3", "numero 3", "la ultima", "última opcion"],
-        4: ["opcion 4", "numero 4", "la cuarta"],
-        5: ["opcion 5", "numero 5", "la quinta"],
+    if not texto:
+        return None
+
+    patrones_por_posicion = {
+        1: [
+            r"\bprimera\b",
+            r"\b1(?:era|ra)?\b",
+            r"\bopcion\s*(?:numero\s*)?1\b",
+            r"\b(opcion|opción|casa|propiedad)\s*(?:numero|número|num\.?|#)?\s*1\b",
+        ],
+        2: [
+            r"\bsegunda\b",
+            r"\b2(?:da|nda)?\b",
+            r"\bopcion\s*(?:numero\s*)?2\b",
+            r"\b(opcion|opción|casa|propiedad)\s*(?:numero|número|num\.?|#)?\s*2\b",
+        ],
+        3: [
+            r"\btercera\b",
+            r"\b3(?:era|ra)?\b",
+            r"\bopcion\s*(?:numero\s*)?3\b",
+            r"\b(opcion|opción|casa|propiedad)\s*(?:numero|número|num\.?|#)?\s*3\b",
+            r"\bultima\b",
+            r"\búltima\b",
+        ],
+        4: [
+            r"\bcuarta\b",
+            r"\b4(?:ta|rta)?\b",
+            r"\bopcion\s*(?:numero\s*)?4\b",
+            r"\b(opcion|opción|casa|propiedad)\s*(?:numero|número|num\.?|#)?\s*4\b",
+        ],
+        5: [
+            r"\bquinta\b",
+            r"\b5(?:ta|nta)?\b",
+            r"\bopcion\s*(?:numero\s*)?5\b",
+            r"\b(opcion|opción|casa|propiedad)\s*(?:numero|número|num\.?|#)?\s*5\b",
+        ],
     }
-    for posicion, frases in referencias.items():
-        if any(frase in texto for frase in frases):
+
+    for posicion, patrones in patrones_por_posicion.items():
+        if any(re.search(patron, texto) for patron in patrones):
             return posicion
+
+    coincidencia_general = re.search(
+        r"\b(?:opcion|opción|casa|propiedad|inmueble)\s*(?:numero|número|num\.?|#)?\s*(\d)\b",
+        texto,
+    )
+    if coincidencia_general:
+        numero = int(coincidencia_general.group(1))
+        if 1 <= numero <= 5:
+            return numero
+
     return None
 
 
@@ -2083,12 +2141,20 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int) -> Tuple[List[dict],
             )
             continue
             zona_ok = True
-        if zona_buscada:
+                if zona_buscada:
             zonas_buscadas_usuario = [
                 segmento.strip()
                 for segmento in (filtros.get("zona") or "").split(",")
                 if segmento.strip()
             ] or [filtros.get("zona") or zona_buscada]
+
+            zonas_complementarias: List[str] = []
+            for zona_usuario in list(zonas_buscadas_usuario):
+                zonas_complementarias.extend(obtener_variantes_zona(zona_usuario))
+
+            if zonas_complementarias:
+                zonas_buscadas_usuario.extend(zonas_complementarias)
+                zonas_buscadas_usuario = list(dict.fromkeys(zonas_buscadas_usuario))
 
             zona_ok = any(
                 zona_coincide(zona_usuario, original.get("zona", ""), original.get("ciudad", ""))
@@ -2104,7 +2170,8 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int) -> Tuple[List[dict],
                 coincide=zona_ok,
                 razon=razon,
             )
-
+            if not zona_ok:
+                continue
             if not zona_ok:
                 continue
             
