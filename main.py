@@ -371,6 +371,12 @@ def extraer_telefono(texto: str) -> Optional[str]:
         return None
     return normalizar_telefono(coincidencia.group(1))
 
+def extraer_telefono_detallado(texto: str) -> Tuple[Optional[str], Optional[str]]:
+    coincidencia = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", texto or "")
+    if not coincidencia:
+        return None, None
+    original = coincidencia.group(1)
+    return normalizar_telefono(original), original
 
 def extraer_correo(texto: str) -> Optional[str]:
     coincidencia = re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", texto or "", re.IGNORECASE)
@@ -378,6 +384,16 @@ def extraer_correo(texto: str) -> Optional[str]:
         return None
     return coincidencia.group(0).lower()
 
+def extraer_correo_detallado(texto: str) -> Tuple[Optional[str], Optional[str]]:
+    coincidencia = re.search(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        texto or "",
+        re.IGNORECASE,
+    )
+    if not coincidencia:
+        return None, None
+    correo = coincidencia.group(0)
+    return correo.lower(), correo
 
 def correo_valido(valor: Any) -> bool:
     return bool(
@@ -394,8 +410,29 @@ def nombre_valido(valor: Any) -> bool:
     if not nombre:
         return False
     palabras = nombre.split()
-    bloqueadas = {"Hola", "Buenas", "Gracias", "Primera", "Segunda", "Tercera", "Apartamento", "Casa"}
+    bloqueadas = {
+        "Hola",
+        "Buenas",
+        "Gracias",
+        "Primera",
+        "Segunda",
+        "Tercera",
+        "Apartamento",
+        "Casa",
+        "Quiero",
+        "Visitar",
+        "Opcion",
+        "Opción",
+        "Cliente",
+        "Busco",
+        "Buscar",
+        "Necesito",
+        "Propiedad",
+        "Favor",
+    }
     if any(palabra in bloqueadas for palabra in palabras):
+        return False
+    if any(re.search(r"\d", palabra) for palabra in palabras):
         return False
     return 2 <= len(palabras) <= 6
 
@@ -728,6 +765,7 @@ def crear_sesion(sender: str) -> dict:
     return {
         "rol": None,
         "confianza_rol": 0.0,
+        "pregunta_rol_realizada": False,
         "objetivo": "conversar",
         "filtros": {
             "tipo_operacion": None,
@@ -744,6 +782,7 @@ def crear_sesion(sender: str) -> dict:
         "propiedades_enviadas": [],
         "ultimo_lote": [],
         "propiedad_interes": None,
+        "propiedad_seleccionada_posicion": None,
         "esperando_codigo": False,
         "lead": {
             "nombre": None,
@@ -751,6 +790,8 @@ def crear_sesion(sender: str) -> dict:
             "whatsapp": None,
             "whatsapp_confirmado": False,
         },
+        "lead_confirmacion_pendiente": False,
+        "lead_confirmado": False,
         "numero_canal": normalizar_telefono(sender) if SENDER_ES_WHATSAPP else None,
         "lead_id": None,
         "agente_asignado": None,
@@ -788,6 +829,7 @@ def reiniciar_busqueda(estado: dict) -> dict:
     nuevo = crear_sesion(numero_canal or "")
     nuevo["rol"] = rol
     nuevo["confianza_rol"] = confianza
+    nuevo["pregunta_rol_realizada"] = bool(rol)
     nuevo["historial"] = historial
     nuevo["numero_canal"] = numero_canal
     return nuevo
@@ -841,12 +883,16 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
         r"\bbusco\s+para\s+un\s+cliente\b",
         r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
         r"\bcomparto\s+comision\b",
+        r"\bpara\s+un\s+cliente\b",
+        r"\bpara\s+mi\s+cliente\b",
     ]
     patrones_cliente = [
         r"\bno\s+soy\s+(asesor|agente|corredor|broker|realtor)\b",
         r"\bsoy\s+cliente\b",
         r"\bes\s+para\s+mi\b",
         r"\bbusco\s+para\s+mi\b",
+        r"\bpara\s+mi\b",
+        r"\bpara\s+m[ií]\b",
     ]
     if any(re.search(patron, texto) for patron in patrones_cliente):
         return "cliente"
@@ -1486,6 +1532,7 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
     if rol_explicito:
         estado["rol"] = rol_explicito
         estado["confianza_rol"] = 1.0
+        estado["pregunta_rol_realizada"] = True
     elif (
         decision.rol
         and decision.confianza_rol >= 0.80
@@ -1493,6 +1540,8 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
     ):
         estado["rol"] = decision.rol
         estado["confianza_rol"] = decision.confianza_rol
+        estado["pregunta_rol_realizada"] = True
+    
     actualizaciones = decision.actualizaciones.model_dump()
     campos_busqueda = [
         "tipo_operacion",
@@ -1598,6 +1647,215 @@ def datos_lead_faltantes(estado: dict) -> List[str]:
     if not (normalizar_telefono(lead.get("whatsapp")) and lead.get("whatsapp_confirmado")):
         faltantes.append("confirmación del número de WhatsApp")
     return faltantes
+
+RESPUESTAS_AFIRMATIVAS = {
+    "si",
+    "sii",
+    "sip",
+    "si claro",
+    "claro",
+    "claro que si",
+    "correcto",
+    "exacto",
+    "afirmativo",
+    "por supuesto",
+    "ok",
+    "okay",
+    "listo",
+    "dale",
+    "de una",
+    "perfecto",
+}
+
+RESPUESTAS_NEGATIVAS = {
+    "no",
+    "no gracias",
+    "negativo",
+    "aun no",
+    "todavia no",
+    "no es correcto",
+    "incorrecto",
+    "para nada",
+}
+
+CAMPO_ACK_LABELS = {
+    "nombre completo": "el nombre",
+    "correo electrónico": "el correo electrónico",
+    "confirmación del número de WhatsApp": "el número de WhatsApp",
+}
+
+CAMPO_INSTRUCCIONES = {
+    "nombre completo": "Nombre y apellido",
+    "correo electrónico": "Correo electrónico (ej: usuario@dominio.com)",
+    "confirmación del número de WhatsApp": "Número de WhatsApp con código del país (ej: +584123456789)",
+}
+
+
+def es_respuesta_afirmativa(texto: str) -> bool:
+    texto_norm = normalizar_texto(texto)
+    if not texto_norm:
+        return False
+    if texto_norm in RESPUESTAS_AFIRMATIVAS:
+        return True
+    return texto_norm.startswith("si")
+
+
+def es_respuesta_negativa(texto: str) -> bool:
+    texto_norm = normalizar_texto(texto)
+    if not texto_norm:
+        return False
+    if texto_norm in RESPUESTAS_NEGATIVAS:
+        return True
+    return texto_norm.startswith("no")
+
+
+def formatear_whatsapp(valor: Optional[str]) -> str:
+    if not valor:
+        return "N/D"
+    telefono = str(valor).strip()
+    if not telefono:
+        return "N/D"
+    if telefono.startswith("+"):
+        return telefono
+    if telefono.startswith("00"):
+        telefono = telefono[2:]
+    return f"+{telefono}"
+
+
+def formatear_campos_para_respuesta(campos: List[str]) -> str:
+    etiquetas = [CAMPO_ACK_LABELS.get(campo, campo) for campo in campos if campo]
+    if not etiquetas:
+        return ""
+    if len(etiquetas) == 1:
+        return etiquetas[0]
+    return ", ".join(etiquetas[:-1]) + " y " + etiquetas[-1]
+
+
+def preparar_lista_datos_lead(faltantes: List[str]) -> str:
+    lineas = []
+    for indice, campo in enumerate(faltantes, 1):
+        descripcion = CAMPO_INSTRUCCIONES.get(campo, campo.title())
+        lineas.append(f"{indice}. {descripcion}")
+    return "\n".join(lineas)
+
+
+def mensaje_solicitud_datos_lead(
+    faltantes: List[str],
+    actualizados: Optional[List[str]] = None,
+    saludo: bool = False,
+) -> str:
+    actualizados = list(dict.fromkeys(actualizados or []))
+    partes = []
+    if saludo:
+        partes.append("¡Excelente elección! Para asignarte un asesor, envíame en un solo mensaje:")
+    elif actualizados:
+        partes.append(f"¡Gracias! Registré {formatear_campos_para_respuesta(actualizados)}.")
+        if faltantes:
+            partes.append("Ahora necesito lo siguiente:")
+    else:
+        partes.append("Para asignarte un asesor, necesito lo siguiente:")
+    if faltantes:
+        partes.append(preparar_lista_datos_lead(faltantes))
+        partes.append(
+            "Puedes escribirlos separados por comas o saltos de línea (ej: Nombre Apellido / correo@dominio.com / +584123456789)."
+        )
+    else:
+        partes.append("Si todo está correcto, dime “sí” para asignarte al asesor.")
+    return "\n\n".join(parte.strip() for parte in partes if parte).strip()
+
+
+def resumen_datos_lead(estado: dict) -> str:
+    lead = estado["lead"]
+    whatsapp = formatear_whatsapp(lead.get("whatsapp"))
+    return "\n".join(
+        [
+            f"- Nombre: {lead.get('nombre') or 'N/D'}",
+            f"- Correo: {lead.get('correo') or 'N/D'}",
+            f"- WhatsApp: {whatsapp}",
+        ]
+    )
+
+
+def mensaje_confirmacion_lead(estado: dict) -> str:
+    return (
+        "✔️ Datos recibidos:\n"
+        f"{resumen_datos_lead(estado)}\n\n"
+        "¿Está correcto? (Sí/No)"
+    )
+
+
+def construir_mensaje_errores_lead(errores: List[str]) -> str:
+    mensajes: List[str] = []
+    if "nombre completo" in errores:
+        mensajes.append("Necesito nombre y apellido. Ejemplo: María Pérez.")
+    if "correo electrónico" in errores:
+        mensajes.append("El correo parece incompleto. Usa un formato como usuario@dominio.com.")
+    if "confirmación del número de WhatsApp" in errores:
+        mensajes.append("Incluye el código de país en el WhatsApp (ej: +584123456789).")
+    return " ".join(mensajes).strip()
+
+
+def actualizar_lead_desde_mensaje(estado: dict, mensaje: str) -> Tuple[List[str], List[str]]:
+    lead = estado["lead"]
+    actualizados: List[str] = []
+    errores: List[str] = []
+    if not mensaje:
+        return actualizados, errores
+
+    correo, correo_original = extraer_correo_detallado(mensaje)
+    if correo_original:
+        if correo_valido(correo):
+            if lead.get("correo") != correo:
+                lead["correo"] = correo
+                actualizados.append("correo electrónico")
+        else:
+            errores.append("correo electrónico")
+
+    telefono, telefono_original = extraer_telefono_detallado(mensaje)
+    if telefono_original:
+        if telefono:
+            if lead.get("whatsapp") != telefono:
+                lead["whatsapp"] = telefono
+                actualizados.append("confirmación del número de WhatsApp")
+            lead["whatsapp_confirmado"] = True
+        else:
+            errores.append("confirmación del número de WhatsApp")
+
+    texto_norm = normalizar_texto(mensaje)
+    if (
+        not lead.get("whatsapp")
+        and estado.get("numero_canal")
+        and any(frase in texto_norm for frase in ["mismo numero", "mismo numero del chat", "numero del chat", "numero actual"])
+    ):
+        lead["whatsapp"] = estado["numero_canal"]
+        lead["whatsapp_confirmado"] = True
+        actualizados.append("confirmación del número de WhatsApp")
+
+    if not nombre_valido(lead.get("nombre")):
+        texto_para_nombre = mensaje
+        for valor in filter(None, [correo_original, telefono_original]):
+            texto_para_nombre = texto_para_nombre.replace(valor, " ")
+        coincidencia = re.search(
+            r"(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+([A-Za-zÀ-ÖØ-öø-ÿ' ]{3,})",
+            mensaje or "",
+            flags=re.IGNORECASE,
+        )
+        nombre_bruto = coincidencia.group(1) if coincidencia else None
+        if not nombre_bruto:
+            texto_filtrado = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ' ]", " ", texto_para_nombre)
+            texto_filtrado = re.sub(r"\s+", " ", texto_filtrado).strip()
+            if texto_filtrado.count(" ") >= 1:
+                nombre_bruto = texto_filtrado
+        if nombre_bruto and nombre_valido(nombre_bruto):
+            lead["nombre"] = normalizar_nombre(nombre_bruto)
+            actualizados.append("nombre completo")
+
+    if lead.get("whatsapp"):
+        lead["whatsapp_confirmado"] = True
+
+    actualizados = list(dict.fromkeys(actualizados))
+    errores = list(dict.fromkeys(errores))
+    return actualizados, errores
 
 # ============================================================
 # BUSCADOR DE PROPIEDADES
@@ -2299,6 +2557,15 @@ async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
             "Si tienes el código o el enlace, envíamelo y la busco directamente."
         )
     if posicion is None:
+        if estado.get("propiedad_interes"):
+            faltantes = datos_lead_faltantes(estado)
+            if faltantes:
+                return mensaje_solicitud_datos_lead(faltantes)
+            if estado.get("lead_confirmacion_pendiente"):
+                return mensaje_confirmacion_lead(estado)
+            if lead_completo(estado):
+                estado["lead_confirmacion_pendiente"] = True
+                return mensaje_confirmacion_lead(estado)
         if len(lote) == 1:
             posicion = 1
         else:
@@ -2312,7 +2579,19 @@ async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
             "Esa propiedad ya no aparece activa en el inventario. "
             "Puedo ayudarte a buscar otra similar."
         )
+
     estado["propiedad_interes"] = propiedad
+    estado["propiedad_seleccionada_posicion"] = posicion
+    estado["lead_confirmacion_pendiente"] = False
+    estado["lead_confirmado"] = False
+
+    logger.info(
+        "🏷️ Propiedad seleccionada id=%s titulo=%s posicion=%s",
+        propiedad.get("id"),
+        propiedad.get("titulo"),
+        posicion,
+    )
+
     if estado.get("rol") == "colega_inmobiliario":
         await sincronizar_google_sheet()
         cruce = cruzar_captador_con_sheet(propiedad.get("captador_wasi", ""))
@@ -2326,16 +2605,15 @@ async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
             "Perfecto, colega. Identifiqué la propiedad, pero el captador no aparece actualmente en el directorio. "
             "Puedes solicitar apoyo a la oficina o pedirme otras opciones."
         )
+
     estado["objetivo"] = "captura_lead"
     faltantes = datos_lead_faltantes(estado)
-    return (
-        "¡Excelente elección! Para asignarte un asesor necesito "
-        + ", ".join(faltantes)
-        + ". Puedes enviarme esos datos en un solo mensaje si te resulta más cómodo."
-    )
+    return mensaje_solicitud_datos_lead(faltantes, saludo=True)
 
 
 async def completar_y_asignar_lead(estado: dict) -> str:
+    estado["lead_confirmacion_pendiente"] = False
+    estado["lead_confirmado"] = True
     if not estado.get("lead_id"):
         estado["lead_id"] = str(uuid.uuid4())
     if not estado.get("agente_asignado"):
@@ -2442,6 +2720,26 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             ]
             return {"replies": [{"message": "\n".join(status_msg)}]}
 
+    if estado.get("lead_confirmacion_pendiente"):
+        if es_respuesta_afirmativa(mensaje):
+            estado["lead_confirmacion_pendiente"] = False
+            estado["lead_confirmado"] = True
+            respuesta_confirmacion = await completar_y_asignar_lead(estado)
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_confirmacion)
+            guardar_sesion(sender, estado)
+            return respuesta_confirmacion
+        if es_respuesta_negativa(mensaje):
+            estado["lead_confirmacion_pendiente"] = False
+            estado["lead_confirmado"] = False
+            respuesta_negativa = "Entendido. Indícame qué dato debemos corregir y lo actualizo."
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_negativa)
+            guardar_sesion(sender, estado)
+            return respuesta_negativa
+        estado["lead_confirmacion_pendiente"] = False
+        estado["lead_confirmado"] = False
+
     decision = await decidir_con_ia(mensaje, estado)
     decision = forzar_accion_evidente(decision, mensaje, estado)
     hubo_cambio = aplicar_decision(estado, decision, mensaje)
@@ -2497,6 +2795,20 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         if tipo_prop:
             filtros_actuales["tipo_propiedad"] = tipo_prop
             hubo_cambio = True
+
+    if (
+        filtros_actuales.get("tipo_propiedad")
+        and not estado.get("rol")
+        and not estado.get("pregunta_rol_realizada")
+    ):
+        estado["pregunta_rol_realizada"] = True
+        tipo_legible = normalizar_nombre(filtros_actuales["tipo_propiedad"])
+        pregunta_rol = f"¿Buscas esta {tipo_legible.lower()} para ti o para un cliente?"
+        respuesta_pregunta_rol = await humanizar_texto_con_ia(estado, pregunta_rol, mensaje) or pregunta_rol
+        agregar_historial(estado, "user", mensaje)
+        agregar_historial(estado, "assistant", respuesta_pregunta_rol)
+        guardar_sesion(sender, estado)
+        return respuesta_pregunta_rol
 
     zona_ciudad = detectar_zona_ciudad(texto_normalizado)
     if zona_ciudad:
@@ -2566,7 +2878,35 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     accion = getattr(decision.accion, "tipo", None)
     requiere_confirmar_ciudad = estado.get("requiere_confirmar_ciudad") and not filtros_actuales.get("ciudad")
 
-    if requiere_confirmar_ciudad and accion not in {
+    respuesta_intermedia: Optional[str] = None
+    if estado.get("objetivo") == "captura_lead":
+        puede_interceptar_lead = True
+        if accion in {"reiniciar_busqueda", "buscar_por_codigo", "pedir_codigo_inmueble"}:
+            puede_interceptar_lead = False
+        if accion == "seleccionar_propiedad" and detectar_posicion(mensaje):
+            puede_interceptar_lead = False
+        if puede_interceptar_lead:
+            actualizados_lead, errores_lead = actualizar_lead_desde_mensaje(estado, mensaje)
+            if actualizados_lead:
+                estado["lead_confirmado"] = False
+                estado["lead_confirmacion_pendiente"] = False
+            if errores_lead:
+                respuesta_intermedia = construir_mensaje_errores_lead(errores_lead)
+            else:
+                faltantes_lead = datos_lead_faltantes(estado)
+                if not faltantes_lead:
+                    if not estado.get("lead_confirmacion_pendiente") and not estado.get("lead_confirmado"):
+                        estado["lead_confirmacion_pendiente"] = True
+                        respuesta_intermedia = mensaje_confirmacion_lead(estado)
+                else:
+                    respuesta_intermedia = mensaje_solicitud_datos_lead(
+                        faltantes_lead,
+                        actualizados_lead,
+                    )
+
+    if respuesta_intermedia is not None:
+        respuesta = respuesta_intermedia
+    elif requiere_confirmar_ciudad and accion not in {
         "reiniciar_busqueda",
         "buscar_por_codigo",
         "pedir_codigo_inmueble",
@@ -2588,11 +2928,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         respuesta = await humanizar_texto_con_ia(estado, pregunta_base, mensaje)
         if not respuesta:
             respuesta = pregunta_base
-
     elif accion == "reiniciar_busqueda":
         estado = reiniciar_busqueda(estado)
         respuesta = "¡Nueva búsqueda iniciada! ¿Qué tipo de propiedad necesitas?"
-
     elif accion in ["buscar_por_codigo", "pedir_codigo_inmueble"]:
         codigo = getattr(decision.accion, "codigo", None) or extraer_codigo_inmueble(mensaje)
         if codigo:
@@ -2600,17 +2938,14 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         else:
             estado["esperando_codigo"] = True
             respuesta = "Por favor, envía el código o enlace de la propiedad"
-
     elif accion == "mostrar_mas_propiedades":
         respuesta = (
             await mostrar_propiedades(estado)
             if estado["propiedades_enviadas"]
             else "Primero dime qué propiedad buscas"
         )
-
     elif accion == "seleccionar_propiedad":
         respuesta = await seleccionar_propiedad(estado, getattr(decision.accion, "posicion", None))
-
     elif accion == "buscar_propiedades":
         if requiere_confirmar_ciudad:
             pregunta_base = (
@@ -2623,7 +2958,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 if criterios_suficientes(estado)
                 else obtener_pregunta_faltante(estado)
             )
-
     else:
         if requiere_confirmar_ciudad:
             pregunta = estado.get("accion_sistema") or obtener_pregunta_faltante(estado)
@@ -2633,7 +2967,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 respuesta = decision.mensaje or "¿Podrías confirmarme en qué ciudad debo buscar esa zona?"
         else:
             pregunta = obtener_pregunta_faltante(estado)
-            pregunta_norm = normalizar_texto(pregunta) if pregunta else ""
+            pregunta_norm = normalizar_texto(pregunta) si pregunta else ""
             requiere_dato_prioritario = any(
                 clave in pregunta_norm
                 for clave in ["presupuesto", "caracteristica"]
@@ -2648,7 +2982,11 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                     "Perfecto, cuéntame si hay alguna condición adicional que deba considerar."
                 )
 
-    if estado.get("objetivo") == "captura_lead" and lead_completo(estado):
+    if (
+        estado.get("objetivo") == "captura_lead"
+        and lead_completo(estado)
+        and estado.get("lead_confirmado")
+    ):
         respuesta = await completar_y_asignar_lead(estado)
 
     agregar_historial(estado, "user", mensaje)
