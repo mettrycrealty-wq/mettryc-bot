@@ -1233,8 +1233,6 @@ INMUEBLE ESPECÍFICO
 - Si proporciona código o enlace de Mettryc, usa buscar_por_codigo.
 - Si dice que vio una propiedad en un anuncio, página, Instagram, Facebook o portal, pero no proporciona código ni enlace identificable, usa pedir_codigo_inmueble y solicítalo naturalmente.
 - No asumas que un código de Mercado Libre es el ID de Wasi.
-- Si recibes un mensaje con un enlace de Mercado Libre (ej. "Hola, tengo algunas preguntas sobre tu publicación en Mercado Libre: https://inmueble.mercadolibre.com.ve/MLV-1014940534-oficina-en-venta-en-naguanagua-age-9786467-_JM") usa el codigo que esta antes de "-_JM" como código de en nuestro invetario para ubicar y enviar la ficha del inmueble.
-- Si el primer mensaje que recibes es "precio" ó "información" es por que te estan escribiendo por un anuncio. Debes solicitar que te den el codigo del inmueble y explicar que se encuentra al final del titulo del anuncio o en su descripción.
 
 RESULTADOS
 
