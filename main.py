@@ -635,10 +635,34 @@ def detectar_caracteristicas_extra(texto_normalizado: str) -> List[str]:
 
 FALLBACK_ZONAS_AMBIGUAS = {
     "el trigal": ["Valencia", "Cabudare"],
+    "trigal": ["Valencia", "Cabudare"],
+    "trigal norte": ["Valencia", "Cabudare"],
+    "el trigal norte": ["Valencia", "Cabudare"],
     "los caobos": ["Valencia", "Caracas"],
     "centro": ["Valencia", "Barquisimeto", "Caracas"],
 }
 
+def obtener_ciudades_para_zona(zona: Optional[str]) -> Set[str]:
+    if not zona:
+        return set()
+
+    zona_norm = normalizar_texto(zona)
+    ciudades: Set[str] = set()
+
+    if zona_norm in catalogo_geografico["zonas_por_ciudad"]:
+        ciudades.update(catalogo_geografico["zonas_por_ciudad"][zona_norm])
+
+    tokens_objetivo = tokens_zona(zona_norm)
+    if tokens_objetivo:
+        for clave, ciudades_clave in catalogo_geografico["zonas_por_ciudad"].items():
+            tokens_clave = tokens_zona(clave)
+            if tokens_objetivo.issubset(tokens_clave) or tokens_clave.issubset(tokens_objetivo):
+                ciudades.update(ciudades_clave)
+
+    if not ciudades and zona_norm in FALLBACK_ZONAS_AMBIGUAS:
+        ciudades.update(FALLBACK_ZONAS_AMBIGUAS[zona_norm])
+
+    return ciudades
 
 def reconstruir_catalogo_geografico() -> None:
     catalogo_geografico["ciudades_norm"] = {}
@@ -2871,6 +2895,43 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             estado.pop("requiere_confirmar_ciudad", None)
             estado.pop("accion_sistema", None)
             hubo_cambio = True
+
+        if filtros_actuales.get("zona"):
+        ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
+        if filtros_actuales.get("ciudad"):
+            ciudad_norm = normalizar_texto(filtros_actuales["ciudad"])
+            ciudades_norm = {normalizar_texto(ciudad) for ciudad in ciudades_disponibles}
+            if ciudades_disponibles and ciudad_norm not in ciudades_norm:
+                opciones = sorted(ciudades_disponibles) or FALLBACK_ZONAS_AMBIGUAS.get(
+                    normalizar_texto(filtros_actuales["zona"]), []
+                )
+                estado["requiere_confirmar_ciudad"] = {
+                    "zona": filtros_actuales["zona"],
+                    "opciones": opciones,
+                    "mensaje": (
+                        f"La zona {filtros_actuales['zona']} corresponde a {', '.join(opciones)}. "
+                        "¿En cuál ciudad debo buscar exactamente?"
+                    ),
+                }
+                estado["accion_sistema"] = estado["requiere_confirmar_ciudad"]["mensaje"]
+                filtros_actuales["ciudad"] = None
+                hubo_cambio = True
+        else:
+            opciones = sorted(ciudades_disponibles)
+            if len(opciones) == 1:
+                filtros_actuales["ciudad"] = opciones[0]
+                hubo_cambio = True
+            elif len(opciones) > 1 and not estado.get("requiere_confirmar_ciudad"):
+                estado["requiere_confirmar_ciudad"] = {
+                    "zona": filtros_actuales["zona"],
+                    "opciones": opciones,
+                    "mensaje": (
+                        f"Tengo {filtros_actuales['zona']} en {', '.join(opciones)}. "
+                        "¿Cuál ciudad corresponde?"
+                    ),
+                }
+                estado["accion_sistema"] = estado["requiere_confirmar_ciudad"]["mensaje"]
+                hubo_cambio = True
 
     if not filtros_actuales.get("habitaciones_min"):
         habs = detectar_habitaciones(texto_normalizado)
