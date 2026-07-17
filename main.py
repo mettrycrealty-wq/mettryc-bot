@@ -2967,7 +2967,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 respuesta = decision.mensaje or "¿Podrías confirmarme en qué ciudad debo buscar esa zona?"
         else:
             pregunta = obtener_pregunta_faltante(estado)
-            pregunta_norm = normalizar_texto(pregunta) si pregunta else ""
+            pregunta_norm = normalizar_texto(pregunta) if pregunta else ""
             requiere_dato_prioritario = any(
                 clave in pregunta_norm
                 for clave in ["presupuesto", "caracteristica"]
