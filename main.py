@@ -2896,7 +2896,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             estado.pop("accion_sistema", None)
             hubo_cambio = True
 
-        if filtros_actuales.get("zona"):
+            if filtros_actuales.get("zona"):
         ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
         if filtros_actuales.get("ciudad"):
             ciudad_norm = normalizar_texto(filtros_actuales["ciudad"])
