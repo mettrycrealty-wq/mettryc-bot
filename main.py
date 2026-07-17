@@ -707,61 +707,67 @@ def reconstruir_catalogo_geografico() -> None:
 def detectar_zona_ciudad(texto_normalizado: str) -> Dict[str, Any]:
     if not texto_normalizado:
         return {}
+
     resultado: Dict[str, Any] = {}
+
     for ciudad_norm, ciudad_original in catalogo_geografico.get("frases_ciudades", []):
         if contiene_termino(texto_normalizado, ciudad_norm):
             resultado["ciudad"] = ciudad_original
             break
+
     zona_norm_detectada: Optional[str] = None
-    for zona_norm, zona_preferida in catalogo_geografico.get("frases_zonas", []):
+    zona_preferida: Optional[str] = None
+    for zona_norm, zona_original in catalogo_geografico.get("frases_zonas", []):
         if contiene_termino(texto_normalizado, zona_norm):
-            resultado["zona"] = zona_preferida
             zona_norm_detectada = zona_norm
+            zona_preferida = zona_original
             break
-    if zona_norm_detectada:
-        ciudades_asociadas = catalogo_geografico["zonas_por_ciudad"].get(zona_norm_detectada, set())
-        if not ciudades_asociadas and zona_norm_detectada in FALLBACK_ZONAS_AMBIGUAS:
-            ciudades_asociadas = set(FALLBACK_ZONAS_AMBIGUAS[zona_norm_detectada])
+
+    def aplicar_ciudades_para_zona(zona_etiqueta: str) -> None:
+        ciudades_asociadas = obtener_ciudades_para_zona(zona_etiqueta)
+        if not ciudades_asociadas:
+            return
+
+        ciudades_ordenadas = sorted(ciudades_asociadas)
+        resultado["ciudades_posibles"] = ciudades_ordenadas
+
+        ciudad_norm_actual = normalizar_texto(resultado.get("ciudad") or "")
+        ciudades_norm = {normalizar_texto(ciudad) for ciudad in ciudades_asociadas}
+
         if len(ciudades_asociadas) == 1:
-            ciudad_unica = next(iter(ciudades_asociadas))
-            resultado["ciudad"] = ciudad_unica
-        elif len(ciudades_asociadas) > 1:
-            ciudades_ordenadas = sorted(ciudades_asociadas)
-            resultado["ciudades_posibles"] = ciudades_ordenadas
+            resultado["ciudad"] = ciudades_ordenadas[0]
+            return
 
-            ciudad_norm_actual = normalizar_texto(resultado.get("ciudad") or "")
-            ciudades_norm = {normalizar_texto(ciudad) for ciudad in ciudades_ordenadas}
+        if not ciudad_norm_actual or ciudad_norm_actual not in ciudades_norm:
+            resultado["ambiguedad"] = True
+            resultado.pop("ciudad", None)
+            ciudades_texto = ", ".join(ciudades_ordenadas)
+            resultado["mensaje_ambiguedad"] = (
+                f"La zona {zona_etiqueta} aparece tanto en {ciudades_texto}. "
+                "¿En cuál de esas ciudades deseas buscar?"
+            )
 
-            if ciudad_norm_actual not in ciudades_norm:
-                resultado["ambiguedad"] = True
-                resultado.pop("ciudad", None)
-
-            if resultado.get("ambiguedad"):
-                ciudades_texto = ", ".join(ciudades_ordenadas)
-                resultado["mensaje_ambiguedad"] = (
-                    f"La zona {resultado.get('zona')} aparece tanto en {ciudades_texto}. "
-                    "¿En cuál de esas ciudades deseas buscar?"
-                )
+    if zona_preferida:
+        resultado["zona"] = zona_preferida
+        aplicar_ciudades_para_zona(resultado["zona"])
     else:
-        for zona_alias, ciudades_alias in FALLBACK_ZONAS_AMBIGUAS.items():
+        for zona_alias, _ciudades in FALLBACK_ZONAS_AMBIGUAS.items():
             zona_alias_norm = normalizar_texto(zona_alias)
             if contiene_termino(texto_normalizado, zona_alias_norm):
-                resultado["zona"] = zona_alias.title()
-
-                if resultado.get("ciudad") and resultado["ciudad"] not in ciudades_alias:
-                    resultado["ambiguedad"] = True
-                    resultado["ciudades_posibles"] = ciudades_alias
-                elif not resultado.get("ciudad"):
-                    resultado["ambiguedad"] = True
-                    resultado["ciudades_posibles"] = ciudades_alias
-
-                if resultado.get("ambiguedad"):
-                    resultado.pop("ciudad", None)
-                    resultado["mensaje_ambiguedad"] = (
-                        f"La zona {zona_alias.title()} está disponible en {', '.join(ciudades_alias)}. "
-                        "¿En cuál ciudad la necesitas?"
-                    )
+                zona_formateada = normalizar_nombre(zona_alias)
+                resultado["zona"] = zona_formateada
+                aplicar_ciudades_para_zona(resultado["zona"])
+                if "ambiguedad" not in resultado and "ciudad" not in resultado:
+                    opciones = sorted(obtener_ciudades_para_zona(resultado["zona"]))
+                    if opciones:
+                        resultado["ambiguedad"] = True
+                        resultado["ciudades_posibles"] = opciones
+                        resultado["mensaje_ambiguedad"] = (
+                            f"La zona {resultado['zona']} está disponible en {', '.join(opciones)}. "
+                            "¿En cuál ciudad la necesitas?"
+                        )
                 break
+
     return resultado
 
 # ============================================================
@@ -2905,28 +2911,45 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             estado.pop("requiere_confirmar_ciudad", None)
             estado.pop("accion_sistema", None)
             hubo_cambio = True
-    if filtros_actuales.get("zona"):
-        ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
+        
+        if filtros_actuales.get("zona"):
+            ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
 
-        if filtros_actuales.get("ciudad"):
-            ciudad_norm = normalizar_texto(filtros_actuales["ciudad"])
-            ciudades_norm = {normalizar_texto(ciudad) for ciudad in ciudades_disponibles}
+            if filtros_actuales.get("ciudad"):
+                ciudad_norm = normalizar_texto(filtros_actuales["ciudad"])
+                ciudades_norm = {normalizar_texto(ciudad) for ciudad in ciudades_disponibles}
 
-            if ciudades_disponibles and ciudad_norm not in ciudades_norm:
-                opciones = sorted(ciudades_disponibles) or FALLBACK_ZONAS_AMBIGUAS.get(
-                    normalizar_texto(filtros_actuales["zona"]), []
-                )
-                estado["requiere_confirmar_ciudad"] = {
-                    "zona": filtros_actuales["zona"],
-                    "opciones": opciones,
-                    "mensaje": (
-                        f"La zona {filtros_actuales['zona']} corresponde a {', '.join(opciones)}. "
-                        "¿En cuál ciudad debo buscar exactamente?"
-                    ),
-                }
-                estado["accion_sistema"] = estado["requiere_confirmar_ciudad"]["mensaje"]
-                filtros_actuales["ciudad"] = None
-                hubo_cambio = True
+                if ciudades_disponibles and ciudad_norm not in ciudades_norm:
+                    opciones = sorted(ciudades_disponibles) or FALLBACK_ZONAS_AMBIGUAS.get(
+                        normalizar_texto(filtros_actuales["zona"]), []
+                    )
+                    estado["requiere_confirmar_ciudad"] = {
+                        "zona": filtros_actuales["zona"],
+                        "opciones": opciones,
+                        "mensaje": (
+                            f"La zona {filtros_actuales['zona']} corresponde a {', '.join(opciones)}. "
+                            "¿En cuál ciudad debo buscar exactamente?"
+                        ),
+                    }
+                    estado["accion_sistema"] = estado["requiere_confirmar_ciudad"]["mensaje"]
+                    filtros_actuales["ciudad"] = None
+                    hubo_cambio = True
+            else:
+                opciones = sorted(ciudades_disponibles)
+                if len(opciones) == 1:
+                    filtros_actuales["ciudad"] = opciones[0]
+                    hubo_cambio = True
+                elif len(opciones) > 1 and not estado.get("requiere_confirmar_ciudad"):
+                    estado["requiere_confirmar_ciudad"] = {
+                        "zona": filtros_actuales["zona"],
+                        "opciones": opciones,
+                        "mensaje": (
+                            f"Tengo {filtros_actuales['zona']} en {', '.join(opciones)}. "
+                            "¿Cuál ciudad corresponde?"
+                        ),
+                    }
+                    estado["accion_sistema"] = estado["requiere_confirmar_ciudad"]["mensaje"]
+                    hubo_cambio = True
         else:
             opciones = sorted(ciudades_disponibles)
             if len(opciones) == 1:
