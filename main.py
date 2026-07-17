@@ -1165,6 +1165,7 @@ async def asignar_agente_round_robin() -> Optional[dict]:
         agente = agentes[round_robin_index]
     if not agente.get("nombre"):
         agente["nombre"] = agente.get("name")
+        logger.info("🎯 Round Robin → índice=%s, agente=%s", round_robin_index, agente.get("nombre"))
     return agente
 
 # ============================================================
