@@ -1907,41 +1907,38 @@ def coincide_tipo(propiedad: dict, tipo_buscado: str) -> bool:
     return buscado in tipo_wasi or buscado in titulo
 
 
-def zona_coincide(buscada: str, zona_prop: str, ciudad_prop: str) -> bool:
-    if not buscada:
+def zona_coincide(zona_buscada: Optional[str], zona_propiedad: Optional[str], ciudad_propiedad: Optional[str]) -> bool:
+    if not zona_buscada:
         return True
-    buscada = normalizar_texto(buscada)
-    zona_prop = normalizar_texto(zona_prop)
-    ciudad_prop = normalizar_texto(ciudad_prop)
-    ciudades_clave = {
-        "valencia": ["valencia"],
-        "cabudare": ["cabudare"],
-        "naguanagua": ["naguanagua"],
-        "caracas": ["caracas"],
-    }
-    for ciudad, palabras in ciudades_clave.items():
-        if any(palabra in buscada for palabra in palabras):
-            if not any(palabra in ciudad_prop for palabra in palabras):
-                return False
-    if buscada in f"{zona_prop} {ciudad_prop}":
+
+    zona_buscada_norm = normalizar_texto(zona_buscada)
+    zona_prop_norm = normalizar_texto(zona_propiedad)
+    ciudad_prop_norm = normalizar_texto(ciudad_propiedad)
+
+    if zona_buscada_norm and zona_buscada_norm in f"{zona_prop_norm} {ciudad_prop_norm}".strip():
         return True
-    zonas_clave = {
-        "trigal": ["trigal"],
-        "prebo": ["prebo"],
-        "candiles": ["candiles"],
-        "bosque": ["bosque"],
-    }
-    for zona, palabras in zonas_clave.items():
-        if zona in buscada:
-            if any(p in zona_prop for p in palabras):
-                return True
-    zonas_tokens_buscada = tokens_zona(buscada)
-    zonas_tokens_prop = tokens_zona(zona_prop)
-    if zonas_tokens_buscada and zonas_tokens_prop:
-        interseccion = zonas_tokens_buscada.intersection(zonas_tokens_prop)
-        if interseccion:
-            return True
-    return False
+
+    tokens_buscada = tokens_zona(zona_buscada_norm)
+    tokens_prop = tokens_zona(zona_prop_norm)
+    tokens_ciudad = tokens_zona(ciudad_prop_norm)
+    if tokens_ciudad:
+        tokens_prop -= tokens_ciudad
+
+    if not tokens_prop:
+        tokens_prop = tokens_zona(zona_prop_norm) or tokens_zona(ciudad_prop_norm)
+
+    if not tokens_buscada:
+        return True
+    if not tokens_prop:
+        return False
+
+    if tokens_buscada.issubset(tokens_prop):
+        return True
+    if tokens_prop.issubset(tokens_buscada):
+        return True
+
+    coincidencias = tokens_buscada & tokens_prop
+    return bool(coincidencias) and len(coincidencias) >= max(1, len(tokens_buscada) - 1)
 
 
 def evaluar_propiedad(original: dict, filtros: dict) -> Optional[dict]:
@@ -2078,19 +2075,32 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int) -> Tuple[List[dict],
                 razon="Ciudad no coincide",
             )
             continue
-        zona_ok = True
+                zona_ok = True
         if zona_buscada:
-            zonas_buscadas = [z.strip() for z in zona_buscada.split(",") if z.strip()]
-            zona_ok = any(zb in zona_prop for zb in zonas_buscadas)
-            razon = "Coincidencia EXACTA" if zona_ok else "NO coincide con zona"
+            zonas_buscadas_usuario = [
+                segmento.strip()
+                for segmento in (filtros.get("zona") or "").split(",")
+                if segmento.strip()
+            ] or [filtros.get("zona") or zona_buscada]
+
+            zona_ok = any(
+                zona_coincide(zona_usuario, original.get("zona", ""), original.get("ciudad", ""))
+                for zona_usuario in zonas_buscadas_usuario
+            )
+
+            razon = "Coincidencia por zona" if zona_ok else "NO coincide con zona"
             Chismoso.log_zona(
                 sender=estado.get("numero_canal", "DEBUG"),
-                zona_buscada=zona_buscada,
+                zona_buscada=" / ".join(zonas_buscadas_usuario),
                 zona_prop=original.get("zona", ""),
                 ciudad_prop=original.get("ciudad", ""),
                 coincide=zona_ok,
                 razon=razon,
             )
+
+            if not zona_ok:
+                continue
+            
             if not zona_ok:
                 continue
         precio_aplicable = 0
@@ -2896,11 +2906,13 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             estado.pop("accion_sistema", None)
             hubo_cambio = True
 
-        if filtros_actuales.get("zona"):
-           ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
+            if filtros_actuales.get("zona"):
+        ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
+
         if filtros_actuales.get("ciudad"):
             ciudad_norm = normalizar_texto(filtros_actuales["ciudad"])
             ciudades_norm = {normalizar_texto(ciudad) for ciudad in ciudades_disponibles}
+
             if ciudades_disponibles and ciudad_norm not in ciudades_norm:
                 opciones = sorted(ciudades_disponibles) or FALLBACK_ZONAS_AMBIGUAS.get(
                     normalizar_texto(filtros_actuales["zona"]), []
