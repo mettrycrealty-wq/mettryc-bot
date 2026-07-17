@@ -541,31 +541,14 @@ def detectar_presupuesto(texto: str) -> float:
     return mejor
 
 
-def detectar_operacion(texto: str, presupuesto: float = 0) -> Optional[str]:
-    texto_norm = normalizar_texto(texto)
-    if any(p in texto_norm for p in ["venta", "comprar", "compra", "vend"]):
-        return "venta"
-    if any(p in texto_norm for p in ["alquiler", "alquilar", "renta", "arrend"]):
-        return "alquiler"
-    if presupuesto > 0:
-        return "venta" if presupuesto > 4000 else "alquiler"
-    return None
 def detectar_operacion(texto: str, presupuesto: Any = 0) -> Optional[str]:
     texto_norm = normalizar_texto(texto)
 
-    try:
-        presupuesto_valor = float(presupuesto) if presupuesto not in (None, "") else 0.0
-    except (TypeError, ValueError):
-        presupuesto_valor = 0.0
-
     if any(p in texto_norm for p in ["venta", "comprar", "compra", "vend"]):
         return "venta"
 
     if any(p in texto_norm for p in ["alquiler", "alquilar", "renta", "arrend"]):
         return "alquiler"
-
-    if presupuesto_valor > 0:
-        return "venta" if presupuesto_valor > 4000 else "alquiler"
 
     return None
 
@@ -766,6 +749,8 @@ def crear_sesion(sender: str) -> dict:
         "rol": None,
         "confianza_rol": 0.0,
         "pregunta_rol_realizada": False,
+        "operacion_confirmada": False,
+        "pregunta_presupuesto_colega_realizada": False,
         "objetivo": "conversar",
         "filtros": {
             "tipo_operacion": None,
@@ -1541,7 +1526,7 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
         estado["rol"] = decision.rol
         estado["confianza_rol"] = decision.confianza_rol
         estado["pregunta_rol_realizada"] = True
-    
+
     actualizaciones = decision.actualizaciones.model_dump()
     campos_busqueda = [
         "tipo_operacion",
@@ -1554,6 +1539,7 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
         "garajes_min",
         "caracteristicas",
     ]
+
     for campo in campos_busqueda:
         valor = actualizaciones.get(campo)
         if valor in [None, "", []]:
@@ -1574,6 +1560,11 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
             hubo_cambio_busqueda = True
             if campo in estado["sin_preferencia"]:
                 estado["sin_preferencia"].remove(campo)
+            if campo == "tipo_operacion":
+                estado["operacion_confirmada"] = False
+            if campo == "presupuesto_max":
+                estado["pregunta_presupuesto_colega_realizada"] = True
+
     for campo_original in decision.campos_sin_preferencia:
         campo = normalizar_campo_sin_preferencia(campo_original)
         if not campo:
@@ -1584,26 +1575,35 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
         if estado["filtros"].get(campo) != nuevo_valor:
             estado["filtros"][campo] = nuevo_valor
             hubo_cambio_busqueda = True
+        if campo == "presupuesto_max":
+            estado["pregunta_presupuesto_colega_realizada"] = True
+
     lead = estado["lead"]
+
     nombre = actualizaciones.get("nombre")
     if nombre and nombre_valido(nombre):
         lead["nombre"] = normalizar_nombre(nombre)
+
     correo = extraer_correo(mensaje) or actualizaciones.get("correo")
     if correo and correo_valido(correo):
         lead["correo"] = correo.lower()
+
     telefono = extraer_telefono(mensaje) or actualizaciones.get("whatsapp")
     if telefono:
         telefono = normalizar_telefono(telefono)
         if telefono:
             lead["whatsapp"] = telefono
             lead["whatsapp_confirmado"] = True
+
     if actualizaciones.get("usar_numero_actual") and estado.get("numero_canal"):
         lead["whatsapp"] = estado["numero_canal"]
         lead["whatsapp_confirmado"] = True
+
     if hubo_cambio_busqueda and estado.get("propiedades_enviadas"):
         estado["propiedades_enviadas"] = []
         estado["ultimo_lote"] = []
         estado["propiedad_interes"] = None
+
     return hubo_cambio_busqueda
 
 # ============================================================
@@ -1612,12 +1612,14 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
 
 def criterios_suficientes(estado: dict) -> bool:
     filtros = estado["filtros"]
+    if not estado.get("operacion_confirmada"):
+        return False
     rol = estado.get("rol") or "cliente"
     if rol == "colega_inmobiliario":
         return bool(
             filtros.get("tipo_operacion")
             and filtros.get("tipo_propiedad")
-            and (filtros.get("zona") or filtros.get("ciudad"))
+            and filtros.get("ciudad")
         )
     return bool(
         filtros.get("tipo_operacion")
@@ -2425,12 +2427,16 @@ def obtener_pregunta_faltante(estado: dict) -> str:
                 filtros["zona"] = None
         except (AttributeError, TypeError):
             filtros["zona"] = None
-    if not filtros.get("tipo_operacion"):
-        return "¿Es para la compra o para alquilar?"
+
     if not filtros.get("tipo_propiedad"):
         return "¿Qué tipo de inmueble buscas? (Ej: apartamento, casa, townhouse)"
+
+    if not estado.get("operacion_confirmada") or not filtros.get("tipo_operacion"):
+        return "¿Es para la compra o para alquilar?"
+
     if not filtros.get("zona"):
         return "¿En qué zona o urbanización te gustaría encontrar la propiedad?"
+
     if filtros.get("zona") and not filtros.get("ciudad"):
         zona_norm = normalizar_texto(filtros["zona"])
         ciudades_relacionadas = catalogo_geografico["zonas_por_ciudad"].get(zona_norm, set())
@@ -2443,13 +2449,14 @@ def obtener_pregunta_faltante(estado: dict) -> str:
             filtros["ciudad"] = next(iter(ciudades_relacionadas))
             return "Perfecto, ¿hay alguna característica especial que necesites?"
         return "¿En qué ciudad está esa zona exactamente?"
+
     if not filtros.get("presupuesto_max"):
         tipo_operacion = filtros.get("tipo_operacion", "").lower()
         if "alquiler" in tipo_operacion or "alquilar" in tipo_operacion:
             return "¿Cuál es tu presupuesto máximo para alquilar?"
         return "¿Cuál es tu presupuesto estimado para la compra?"
-    return "¿Hay alguna característica adicional importante? (habitaciones, baños, estacionamiento, jardín, etc.)"
 
+    return "¿Hay alguna característica adicional importante? (habitaciones, baños, estacionamiento, jardín, etc.)"
 
 async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_usuario: str) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY", "")
@@ -2495,10 +2502,25 @@ async def humanizar_texto_con_ia(estado: dict, instruccion_cruda: str, mensaje_u
 
 
 async def mostrar_propiedades(estado: dict) -> str:
-    cantidad = 5 if estado.get("rol") == "colega_inmobiliario" else MAX_PROPIEDADES_POR_LOTE
+    rol = estado.get("rol")
+    cantidad = 5 if rol == "colega_inmobiliario" else MAX_PROPIEDADES_POR_LOTE
     propiedades, motivo_falla = buscar_mejores_propiedades(estado, cantidad)
 
-    if motivo_falla != "resultados_ya_enviados" and len(propiedades) < cantidad:
+    if rol == "colega_inmobiliario" and not propiedades:
+        filtros = estado.get("filtros", {})
+        zona_ref = filtros.get("zona") or filtros.get("ciudad")
+        zona_legible = normalizar_nombre(zona_ref) if zona_ref else "esa zona"
+        if motivo_falla == "precio_o_caracs":
+            return (
+                f"No tengo casas disponibles en {zona_legible} con ese presupuesto o características. "
+                "¿Quieres ajustar el rango o contarme más detalles del cliente?"
+            )
+        return (
+            f"No encontré casas activas en {zona_legible} con los datos actuales. "
+            "¿Podemos ajustar la ciudad, ampliar la zona o definir un presupuesto aproximado?"
+        )
+
+    if rol != "colega_inmobiliario" and len(propiedades) < cantidad:
         propiedades = complementar_propiedades(estado, propiedades, cantidad)
 
     if DEBUG_MODE:
@@ -2660,6 +2682,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado = obtener_sesion(sender)
     estado = verificar_caducidad_y_amnesia(estado)
 
+    estado.setdefault("operacion_confirmada", False)
+    estado.setdefault("pregunta_presupuesto_colega_realizada", False)
+
     mensaje_admin = str(mensaje).strip().lower()
     logger.info(f"DEBUG ADMIN: Mensaje recibido: '{mensaje_admin}'")
     es_admin = str(sender) == os.getenv("TELEGRAM_ADMIN_ID")
@@ -2684,6 +2709,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                     "estado_conversacion": "inicio",
                 }
             )
+            estado["operacion_confirmada"] = False
+            estado["pregunta_presupuesto_colega_realizada"] = False
+            estado["pregunta_rol_realizada"] = False
             guardar_sesion(sender, estado)
             return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
 
@@ -2767,27 +2795,22 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     texto_normalizado = normalizar_texto(mensaje)
     filtros_actuales = estado.setdefault("filtros", {})
 
-    if estado.get("requiere_confirmar_ciudad") and not filtros_actuales.get("ciudad"):
-        opciones_ciudad = estado["requiere_confirmar_ciudad"].get("opciones", [])
-        for ciudad_opcion in opciones_ciudad:
-            ciudad_normalizada = normalizar_texto(ciudad_opcion)
-            if ciudad_normalizada and ciudad_normalizada in texto_normalizado:
-                filtros_actuales["ciudad"] = ciudad_opcion
-                estado.pop("requiere_confirmar_ciudad", None)
-                estado.pop("accion_sistema", None)
-                hubo_cambio = True
-                break
+    operacion_detectada = detectar_operacion(mensaje)
+    if operacion_detectada:
+        if filtros_actuales.get("tipo_operacion") != operacion_detectada:
+            filtros_actuales["tipo_operacion"] = operacion_detectada
+            hubo_cambio = True
+        estado["operacion_confirmada"] = True
+    elif not estado.get("operacion_confirmada") and filtros_actuales.get("tipo_operacion"):
+        filtros_actuales["tipo_operacion"] = None
+        estado["operacion_confirmada"] = False
+        hubo_cambio = True
 
     if not filtros_actuales.get("presupuesto_max"):
         presupuesto_detectado = detectar_presupuesto(mensaje)
         if presupuesto_detectado:
             filtros_actuales["presupuesto_max"] = presupuesto_detectado
-            hubo_cambio = True
-
-    if not filtros_actuales.get("tipo_operacion"):
-        tipo_operacion = detectar_operacion(mensaje, filtros_actuales.get("presupuesto_max"))
-        if tipo_operacion:
-            filtros_actuales["tipo_operacion"] = tipo_operacion
+            estado["pregunta_presupuesto_colega_realizada"] = True
             hubo_cambio = True
 
     if not filtros_actuales.get("tipo_propiedad"):
@@ -2874,127 +2897,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         if nuevas:
             filtros_actuales.setdefault("caracteristicas", []).extend(nuevas)
             hubo_cambio = True
-
-    accion = getattr(decision.accion, "tipo", None)
-    requiere_confirmar_ciudad = estado.get("requiere_confirmar_ciudad") and not filtros_actuales.get("ciudad")
-
-    respuesta_intermedia: Optional[str] = None
-    if estado.get("objetivo") == "captura_lead":
-        puede_interceptar_lead = True
-        if accion in {"reiniciar_busqueda", "buscar_por_codigo", "pedir_codigo_inmueble"}:
-            puede_interceptar_lead = False
-        if accion == "seleccionar_propiedad" and detectar_posicion(mensaje):
-            puede_interceptar_lead = False
-        if puede_interceptar_lead:
-            actualizados_lead, errores_lead = actualizar_lead_desde_mensaje(estado, mensaje)
-            if actualizados_lead:
-                estado["lead_confirmado"] = False
-                estado["lead_confirmacion_pendiente"] = False
-            if errores_lead:
-                respuesta_intermedia = construir_mensaje_errores_lead(errores_lead)
-            else:
-                faltantes_lead = datos_lead_faltantes(estado)
-                if not faltantes_lead:
-                    if not estado.get("lead_confirmacion_pendiente") and not estado.get("lead_confirmado"):
-                        estado["lead_confirmacion_pendiente"] = True
-                        respuesta_intermedia = mensaje_confirmacion_lead(estado)
-                else:
-                    respuesta_intermedia = mensaje_solicitud_datos_lead(
-                        faltantes_lead,
-                        actualizados_lead,
-                    )
-
-    if respuesta_intermedia is not None:
-        respuesta = respuesta_intermedia
-    elif requiere_confirmar_ciudad and accion not in {
-        "reiniciar_busqueda",
-        "buscar_por_codigo",
-        "pedir_codigo_inmueble",
-        "seleccionar_propiedad",
-    }:
-        zona_pendiente = estado["requiere_confirmar_ciudad"].get("zona")
-        opciones = estado["requiere_confirmar_ciudad"].get("opciones", [])
-        pregunta_base = estado["requiere_confirmar_ciudad"].get("mensaje")
-        if not pregunta_base:
-            if not opciones:
-                pregunta_base = (
-                    f"¿En qué ciudad está la zona {zona_pendiente}? Necesito confirmarlo para filtrar correctamente."
-                )
-            else:
-                pregunta_base = (
-                    f"Encontré la zona {zona_pendiente} en varias ciudades. ¿Cuál corresponde? "
-                    f"{', '.join(opciones[:-1])} o {opciones[-1]}."
-                )
-        respuesta = await humanizar_texto_con_ia(estado, pregunta_base, mensaje)
-        if not respuesta:
-            respuesta = pregunta_base
-    elif accion == "reiniciar_busqueda":
-        estado = reiniciar_busqueda(estado)
-        respuesta = "¡Nueva búsqueda iniciada! ¿Qué tipo de propiedad necesitas?"
-    elif accion in ["buscar_por_codigo", "pedir_codigo_inmueble"]:
-        codigo = getattr(decision.accion, "codigo", None) or extraer_codigo_inmueble(mensaje)
-        if codigo:
-            respuesta = await mostrar_inmueble_especifico(estado, codigo)
-        else:
-            estado["esperando_codigo"] = True
-            respuesta = "Por favor, envía el código o enlace de la propiedad"
-    elif accion == "mostrar_mas_propiedades":
-        respuesta = (
-            await mostrar_propiedades(estado)
-            if estado["propiedades_enviadas"]
-            else "Primero dime qué propiedad buscas"
-        )
-    elif accion == "seleccionar_propiedad":
-        respuesta = await seleccionar_propiedad(estado, getattr(decision.accion, "posicion", None))
-    elif accion == "buscar_propiedades":
-        if requiere_confirmar_ciudad:
-            pregunta_base = (
-                estado["requiere_confirmar_ciudad"].get("mensaje") or "¿En qué ciudad debo buscar exactamente?"
-            )
-            respuesta = await humanizar_texto_con_ia(estado, pregunta_base, mensaje) or pregunta_base
-        else:
-            respuesta = (
-                await mostrar_propiedades(estado)
-                if criterios_suficientes(estado)
-                else obtener_pregunta_faltante(estado)
-            )
-    else:
-        if requiere_confirmar_ciudad:
-            pregunta = estado.get("accion_sistema") or obtener_pregunta_faltante(estado)
-            if pregunta:
-                respuesta = await humanizar_texto_con_ia(estado, pregunta, mensaje)
-            else:
-                respuesta = decision.mensaje or "¿Podrías confirmarme en qué ciudad debo buscar esa zona?"
-        else:
-            pregunta = obtener_pregunta_faltante(estado)
-            pregunta_norm = normalizar_texto(pregunta) if pregunta else ""
-            requiere_dato_prioritario = any(
-                clave in pregunta_norm
-                for clave in ["presupuesto", "caracteristica"]
-            )
-
-            if pregunta and (not criterios_suficientes(estado) or requiere_dato_prioritario):
-                respuesta = await humanizar_texto_con_ia(estado, pregunta, mensaje)
-            elif hubo_cambio and criterios_suficientes(estado):
-                respuesta = await mostrar_propiedades(estado)
-            else:
-                respuesta = decision.mensaje or (
-                    "Perfecto, cuéntame si hay alguna condición adicional que deba considerar."
-                )
-
-    if (
-        estado.get("objetivo") == "captura_lead"
-        and lead_completo(estado)
-        and estado.get("lead_confirmado")
-    ):
-        respuesta = await completar_y_asignar_lead(estado)
-
-    agregar_historial(estado, "user", mensaje)
-    agregar_historial(estado, "assistant", respuesta)
-    guardar_sesion(sender, estado)
-
-    return respuesta
-
 # ============================================================
 # INICIALIZACIÓN
 # ============================================================
