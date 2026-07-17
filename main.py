@@ -2140,8 +2140,8 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int) -> Tuple[List[dict],
                 razon="Ciudad no coincide",
             )
             continue
-            zona_ok = True
-            if zona_buscada:
+        zona_ok = True
+        if zona_buscada:
             zonas_buscadas_usuario = [
                 segmento.strip()
                 for segmento in (filtros.get("zona") or "").split(",")
