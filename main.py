@@ -2905,8 +2905,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             estado.pop("requiere_confirmar_ciudad", None)
             estado.pop("accion_sistema", None)
             hubo_cambio = True
-
-            if filtros_actuales.get("zona"):
+    if filtros_actuales.get("zona"):
         ciudades_disponibles = obtener_ciudades_para_zona(filtros_actuales["zona"])
 
         if filtros_actuales.get("ciudad"):
@@ -2944,7 +2943,8 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 }
                 estado["accion_sistema"] = estado["requiere_confirmar_ciudad"]["mensaje"]
                 hubo_cambio = True
-
+    
+    
     if not filtros_actuales.get("habitaciones_min"):
         habs = detectar_habitaciones(texto_normalizado)
         if habs:
