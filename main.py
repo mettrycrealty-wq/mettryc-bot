@@ -524,6 +524,16 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
     patron = r"\b" + re.escape(termino) + r"\b"
     return re.search(patron, texto_normalizado) is not None
 
+MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
+PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info"}
+
+
+def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
+    if not texto:
+        return None
+    coincidencia = MERCADOLIBRE_URL_RE.search(texto)
+    return coincidencia.group(1) if coincidencia else None
+
 # ============================================================
 # DETECCIONES AUTOMÁTICAS
 # ============================================================
@@ -2899,7 +2909,102 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         confianza=getattr(decision, "confianza_rol", 0),
     )
 
-    texto_normalizado = normalizar_texto(mensaje)
+        texto_normalizado = normalizar_texto(mensaje)
+
+    # --- Manejo de consultas provenientes de Mercado Libre ---
+    if estado.get("consulta_mercadolibre", {}).get("pendiente"):
+        consulta_ml = estado["consulta_mercadolibre"]
+        consulta_ml["pendiente"] = False
+        codigo_ml = consulta_ml["codigo"]
+
+        respuesta_ml = await mostrar_inmueble_especifico(estado, codigo_ml)
+        if not respuesta_ml:
+            respuesta_ml = (
+                "No encontré esa propiedad en nuestro inventario. "
+                "¿Podrías confirmarme el enlace o el código del anuncio?"
+            )
+
+        agregar_historial(estado, "user", mensaje)
+        agregar_historial(estado, "assistant", respuesta_ml)
+        guardar_sesion(sender, estado)
+        return respuesta_ml
+
+    codigo_mercadolibre = extraer_codigo_mercadolibre(mensaje)
+    if codigo_mercadolibre:
+        estado["consulta_mercadolibre"] = {
+            "codigo": codigo_mercadolibre,
+            "pendiente": True,
+        }
+        saludo = "¡Hola! " if not estado.get("saludo_realizado") else ""
+        respuesta = (
+            f"{saludo}Gracias por escribirnos sobre la propiedad que viste en Mercado Libre. "
+            "¿Qué información te gustaría conocer de esa propiedad? "
+            "Puedo ayudarte con el precio, características o coordinar una visita."
+        )
+
+        agregar_historial(estado, "user", mensaje)
+        agregar_historial(estado, "assistant", respuesta)
+        guardar_sesion(sender, estado)
+        return respuesta
+
+    # --- Mensajes que empiezan con solicitud directa de precio/info ---
+    tokens_normalizados = texto_normalizado.split()
+    if tokens_normalizados and tokens_normalizados[0] in PALABRAS_CONSULTA_DIRECTA:
+        codigo_directo = extraer_codigo_inmueble(mensaje)
+        if codigo_directo:
+            estado["esperando_codigo"] = False
+            estado.pop("accion_sistema", None)
+
+            respuesta_propiedad = await mostrar_inmueble_especifico(estado, codigo_directo)
+            if not respuesta_propiedad:
+                respuesta_propiedad = (
+                    "No logro ubicar esa propiedad. Si tienes otro código o enlace, compártelo y te ayudo."
+                )
+
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_propiedad)
+            guardar_sesion(sender, estado)
+            return respuesta_propiedad
+
+        estado["esperando_codigo"] = True
+        respuesta_codigo = (
+            "Hola, para poder darte el precio necesito que me escribas el código que aparece al final "
+            "del título o en la descripción del anuncio."
+        )
+        estado["accion_sistema"] = respuesta_codigo
+
+        agregar_historial(estado, "user", mensaje)
+        agregar_historial(estado, "assistant", respuesta_codigo)
+        guardar_sesion(sender, estado)
+        return respuesta_codigo
+
+    if estado.get("esperando_codigo"):
+        codigo_capturado = extraer_codigo_inmueble(mensaje) or extraer_codigo_mercadolibre(mensaje)
+        if codigo_capturado:
+            estado["esperando_codigo"] = False
+            estado.pop("accion_sistema", None)
+
+            respuesta_codigo = await mostrar_inmueble_especifico(estado, codigo_capturado)
+            if not respuesta_codigo:
+                respuesta_codigo = (
+                    "No logro ubicar esa propiedad. ¿Puedes confirmar si el código es correcto o enviarme el enlace?"
+                )
+
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_codigo)
+            guardar_sesion(sender, estado)
+            return respuesta_codigo
+
+        recordatorio = (
+            "Todavía necesito el código para ubicar la propiedad. "
+            "Está al final del título o dentro de la descripción del anuncio."
+        )
+        estado["accion_sistema"] = recordatorio
+
+        agregar_historial(estado, "user", mensaje)
+        agregar_historial(estado, "assistant", recordatorio)
+        guardar_sesion(sender, estado)
+        return recordatorio
     filtros_actuales = estado.setdefault("filtros", {})
 
     operacion_detectada = detectar_operacion(mensaje)
