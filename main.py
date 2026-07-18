@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -2903,6 +2904,35 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     es_admin = str(sender) == os.getenv("TELEGRAM_ADMIN_ID")
 
     if es_admin:
+        if mensaje_admin.startswith("/pause"):
+            partes = mensaje_admin.split()
+            minutos = 30
+            if len(partes) > 1:
+                try:
+                    minutos = max(1, min(240, int(partes[1])))
+                except ValueError:
+                    pass
+
+            pausa_hasta = datetime.utcnow() + timedelta(minutes=minutos)
+            estado["pausa_hasta"] = pausa_hasta.isoformat()
+            guardar_sesion(sender, estado)
+
+            return {
+                "replies": [
+                    {
+                        "message": (
+                            f"⏸️ Bot pausado en este chat por {minutos} min. "
+                            "Usa /play para reanudarlo antes si lo necesitas."
+                        )
+                    }
+                ]
+            }
+
+        if mensaje_admin.startswith("/play"):
+            if estado.pop("pausa_hasta", None):
+                guardar_sesion(sender, estado)
+                return {"replies": [{"message": "▶️ Bot reanudado en este chat."}]}
+            return {"replies": [{"message": "ℹ️ Este chat no estaba en pausa."}]}
         if mensaje_admin == "/reiniciar":
             estado.update(
                 {
@@ -2960,7 +2990,23 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 f"📈 Exceso presupuesto: {float(os.getenv('MAX_EXCESO_PRESUPUESTO', '1.1'))*100:.0f}%",
             ]
             return {"replies": [{"message": "\n".join(status_msg)}]}
+    
+    pausa_hasta_str = estado.get("pausa_hasta")
+    if pausa_hasta_str:
+        try:
+            pausa_hasta = datetime.fromisoformat(pausa_hasta_str)
+        except ValueError:
+            pausa_hasta = None
 
+        if pausa_hasta and datetime.utcnow() < pausa_hasta and not es_admin:
+            agregar_historial(estado, "user", mensaje)
+            guardar_sesion(sender, estado)
+            return {"replies": []}
+
+        if pausa_hasta and datetime.utcnow() >= pausa_hasta:
+            estado.pop("pausa_hasta", None)
+            guardar_sesion(sender, estado)
+            
     if estado.get("lead_confirmacion_pendiente"):
         if es_respuesta_afirmativa(mensaje):
             estado["lead_confirmacion_pendiente"] = False
