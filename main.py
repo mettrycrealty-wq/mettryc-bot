@@ -582,7 +582,7 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
     return re.search(patron, texto_normalizado) is not None
 
 MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
-PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info"}
+PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "¿sigue disponible?", "¿sigue estando disponible?"}
 
 
 def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
