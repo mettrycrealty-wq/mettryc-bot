@@ -1540,10 +1540,11 @@ def decision_fallback(mensaje: str, estado: dict) -> DecisionAgente:
 
 def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
     patrones = [
-        r"mettryc\.com/inmueble/(\d+)",
-        r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
-        r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
-        r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
+    r"mettryc\.com/inmueble/(\d+)",
+    r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
+    r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
+    r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
+    r"\b[A-Z0-9]{1,6}[ \-._]?(\d{4,})\b",
     ]
     for patron in patrones:
         coincidencia = re.search(patron, mensaje or "", re.IGNORECASE)
