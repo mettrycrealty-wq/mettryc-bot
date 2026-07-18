@@ -582,7 +582,7 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
     return re.search(patron, texto_normalizado) is not None
 
 MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
-PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "¿sigue disponible?", "¿sigue estando disponible?"}
+PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "sigue disponible", "sigue estando disponible"}
 
 
 def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
@@ -3045,8 +3045,14 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         return respuesta
 
     # --- Mensajes que empiezan con solicitud directa de precio/info ---
-    tokens_normalizados = texto_normalizado.split()
-    if tokens_normalizados and tokens_normalizados[0] in PALABRAS_CONSULTA_DIRECTA:
+       tokens_normalizados = texto_normalizado.split()
+
+    consulta_directa = any(
+        texto_normalizado.startswith(frase) or texto_normalizado == frase
+        for frase in PALABRAS_CONSULTA_DIRECTA
+    )
+
+    if consulta_directa:
         codigo_directo = extraer_codigo_inmueble(mensaje)
         if codigo_directo:
             estado["esperando_codigo"] = False
