@@ -2899,97 +2899,102 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado.setdefault("operacion_confirmada", False)
     estado.setdefault("pregunta_presupuesto_colega_realizada", False)
 
-    mensaje_admin = str(mensaje).strip().lower()
+    mensaje_admin_raw = str(mensaje).strip()
+    mensaje_admin = mensaje_admin_raw.lower()
     logger.info(f"DEBUG ADMIN: Mensaje recibido: '{mensaje_admin}'")
-    es_admin = str(sender) == os.getenv("TELEGRAM_ADMIN_ID")
 
-    if es_admin:
-        if mensaje_admin.startswith("/pause"):
-            partes = mensaje_admin.split()
-            minutos = 30
-            if len(partes) > 1:
-                try:
-                    minutos = max(1, min(240, int(partes[1])))
-                except ValueError:
-                    pass
+    # --- Comandos de control (sin validar IDs) ---
+    if mensaje_admin.startswith("/pause"):
+        partes = mensaje_admin.split()
+        minutos = 30
+        if len(partes) > 1:
+            try:
+                minutos = max(1, min(240, int(partes[1])))
+            except ValueError:
+                pass
 
-            pausa_hasta = datetime.utcnow() + timedelta(minutes=minutos)
-            estado["pausa_hasta"] = pausa_hasta.isoformat()
-            guardar_sesion(sender, estado)
-
-            return {
-                "replies": [
-                    {
-                        "message": (
-                            f"⏸️ Bot pausado en este chat por {minutos} min. "
-                            "Usa /play para reanudarlo antes si lo necesitas."
-                        )
-                    }
-                ]
-            }
-
-        if mensaje_admin.startswith("/play"):
-            if estado.pop("pausa_hasta", None):
-                guardar_sesion(sender, estado)
-                return {"replies": [{"message": "▶️ Bot reanudado en este chat."}]}
-            return {"replies": [{"message": "ℹ️ Este chat no estaba en pausa."}]}
-        if mensaje_admin == "/reiniciar":
-            estado.update(
+        pausa_hasta = datetime.utcnow() + timedelta(minutes=minutos)
+        estado["pausa_hasta"] = pausa_hasta.isoformat()
+        guardar_sesion(sender, estado)
+        return {
+            "replies": [
                 {
-                    "historial": [],
-                    "filtros": {
-                        "tipo_operacion": None,
-                        "tipo_propiedad": None,
-                        "ciudad": None,
-                        "zona": None,
-                        "presupuesto_max": None,
-                        "habitaciones_min": None,
-                        "banos_min": None,
-                        "garajes_min": None,
-                        "caracteristicas": [],
-                    },
-                    "propiedades_enviadas": [],
-                    "estado_conversacion": "inicio",
+                    "message": (
+                        f"⏸️ Bot pausado en este chat por {minutos} min. "
+                        "Usa /play para reanudarlo antes si lo necesitas."
+                    )
                 }
-            )
-            estado["operacion_confirmada"] = False
-            estado["pregunta_presupuesto_colega_realizada"] = False
-            estado["pregunta_rol_realizada"] = False
+            ]
+        }
+
+    if mensaje_admin.startswith("/play"):
+        if estado.pop("pausa_hasta", None):
             guardar_sesion(sender, estado)
-            return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
+            return {"replies": [{"message": "▶️ Bot reanudado en este chat."}]}
+        return {"replies": [{"message": "ℹ️ Este chat no estaba en pausa."}]}
 
-        if mensaje_admin == "/restart":
-            def reiniciar_asincrono():
-                import time as _time
-                import os as _os
-                _time.sleep(1)
-                _os._exit(1)
+    if mensaje_admin == "/reiniciar":
+        estado.update(
+            {
+                "historial": [],
+                "filtros": {
+                    "tipo_operacion": None,
+                    "tipo_propiedad": None,
+                    "ciudad": None,
+                    "zona": None,
+                    "presupuesto_max": None,
+                    "habitaciones_min": None,
+                    "banos_min": None,
+                    "garajes_min": None,
+                    "caracteristicas": [],
+                },
+                "propiedades_enviadas": [],
+                "estado_conversacion": "inicio",
+            }
+        )
+        estado["operacion_confirmada"] = False
+        estado["pregunta_presupuesto_colega_realizada"] = False
+        estado["pregunta_rol_realizada"] = False
+        estado.pop("pausa_hasta", None)
+        guardar_sesion(sender, estado)
+        return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
 
-            import threading
-            threading.Thread(target=reiniciar_asincrono).start()
-            return {"replies": [{"message": "🔄 Reiniciando servidor..."}]}
+    if mensaje_admin == "/restart":
+        def reiniciar_asincrono():
+            import time as _time
+            import os as _os
+            _time.sleep(1)
+            _os._exit(1)
 
-        if mensaje_admin == "/test":
-            pruebas = [
-                f"📊 Google Sheets: {len(sheets_cache.get('agentes', []))} agentes",
-                f"🏢 Wasi API: {len(inventory_cache.get('inventario', []))} propiedades",
-                f"📲 Telegram: {'✅ OK' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌ No configurado'}",
-                f"🧠 IA: {'✅ ' + os.getenv('MODELO_ANALISIS_PRINCIPAL', '') if os.getenv('OPENROUTER_API_KEY') else '❌ No configurado'}",
-            ]
-            return {"replies": [{"message": "🔍 Resultados de pruebas:\n" + "\n".join(pruebas)}]}
+        import threading
+        threading.Thread(target=reiniciar_asincrono).start()
+        return {"replies": [{"message": "🔄 Reiniciando servidor..."}]}
 
-        if mensaje_admin == "/status":
-            from datetime import datetime as _datetime
+    if mensaje_admin == "/test":
+        pruebas = [
+            f"📊 Google Sheets: {len(sheets_cache.get('agentes', []))} agentes",
+            f"🏢 Wasi API: {len(inventory_cache.get('inventario', []))} propiedades",
+            f"📲 Telegram: {'✅ OK' if os.getenv('TELEGRAM_BOT_TOKEN') else '❌ No configurado'}",
+            f"🧠 IA: {'✅ ' + os.getenv('MODELO_ANALISIS_PRINCIPAL', '') if os.getenv('OPENROUTER_API_KEY') else '❌ No configurado'}",
+        ]
+        return {"replies": [{"message": "🔍 Resultados de pruebas:\n" + "\n".join(pruebas)}]}
 
-            status_msg = [
-                f"🖥️ Estado del Bot - {_datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"👥 Usuarios activos: {len(sesiones)}",
-                f"🏠 Propiedades cargadas: {len(inventory_cache.get('inventario', []))}",
-                f"🔄 Última actualización: {inventory_cache.get('ultima_actualizacion', 'N/D')}",
-                f"⚙️ Modelo IA: {os.getenv('MODELO_ANALISIS_PRINCIPAL', 'N/D')}",
-                f"📈 Exceso presupuesto: {float(os.getenv('MAX_EXCESO_PRESUPUESTO', '1.1'))*100:.0f}%",
-            ]
-            return {"replies": [{"message": "\n".join(status_msg)}]}
+    if mensaje_admin == "/status":
+        from datetime import datetime as _datetime
+
+        status_msg = [
+            f"🖥️ Estado del Bot - {_datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"👥 Usuarios activos: {len(sesiones)}",
+            f"🏠 Propiedades cargadas: {len(inventory_cache.get('inventario', []))}",
+            f"🔄 Última actualización: {inventory_cache.get('ultima_actualizacion', 'N/D')}",
+            f"⚙️ Modelo IA: {os.getenv('MODELO_ANALISIS_PRINCIPAL', 'N/D')}",
+            f"📈 Exceso presupuesto: {float(os.getenv('MAX_EXCESO_PRESUPUESTO', '1.1'))*100:.0f}%",
+        ]
+        return {"replies": [{"message": "\n".join(status_msg)}]}
+
+    es_admin = False
+    if "es_sender_admin" in globals():
+        es_admin = es_sender_admin(sender)
     
     pausa_hasta_str = estado.get("pausa_hasta")
     if pausa_hasta_str:
