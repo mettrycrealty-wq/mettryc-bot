@@ -1540,11 +1540,10 @@ def decision_fallback(mensaje: str, estado: dict) -> DecisionAgente:
 
 def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
     patrones = [
-    r"mettryc\.com/inmueble/(\d+)",
-    r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
-    r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
-    r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
-    r"\b[A-Z0-9]{1,6}[ \-._]?(\d{4,})\b",
+        r"mettryc\.com/inmueble/(\d+)",
+        r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
+        r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
+        r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
     ]
     for patron in patrones:
         coincidencia = re.search(patron, mensaje or "", re.IGNORECASE)
@@ -3045,41 +3044,23 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         return respuesta
 
     # --- Mensajes que empiezan con solicitud directa de precio/info ---
-        tokens_normalizados = texto_normalizado.split()
+    tokens_normalizados = texto_normalizado.split()
+    if tokens_normalizados and tokens_normalizados[0] in PALABRAS_CONSULTA_DIRECTA:
+        codigo_directo = extraer_codigo_inmueble(mensaje)
+        if codigo_directo:
+            estado["esperando_codigo"] = False
+            estado.pop("accion_sistema", None)
 
-        consulta_directa = any(
-            texto_normalizado.startswith(frase) or texto_normalizado == frase
-            for frase in PALABRAS_CONSULTA_DIRECTA
-        )
-
-        if consulta_directa:
-            codigo_directo = extraer_codigo_inmueble(mensaje)
-            if codigo_directo:
-                estado["esperando_codigo"] = False
-                estado.pop("accion_sistema", None)
-
-                respuesta_propiedad = await mostrar_inmueble_especifico(estado, codigo_directo)
-                if not respuesta_propiedad:
-                    respuesta_propiedad = (
-                        "No logro ubicar esa propiedad. Si tienes otro código o enlace, compártelo y te ayudo."
-                    )
-
-                agregar_historial(estado, "user", mensaje)
-                agregar_historial(estado, "assistant", respuesta_propiedad)
-                guardar_sesion(sender, estado)
-                return respuesta_propiedad
-
-            estado["esperando_codigo"] = True
-            respuesta_codigo = (
-                "Hola, para poder darte el precio necesito que me escribas el código que aparece al final "
-                "del título o en la descripción del anuncio."
-            )
-            estado["accion_sistema"] = respuesta_codigo
+            respuesta_propiedad = await mostrar_inmueble_especifico(estado, codigo_directo)
+            if not respuesta_propiedad:
+                respuesta_propiedad = (
+                    "No logro ubicar esa propiedad. Si tienes otro código o enlace, compártelo y te ayudo."
+                )
 
             agregar_historial(estado, "user", mensaje)
-            agregar_historial(estado, "assistant", respuesta_codigo)
+            agregar_historial(estado, "assistant", respuesta_propiedad)
             guardar_sesion(sender, estado)
-            return respuesta_codigo
+            return respuesta_propiedad
 
         estado["esperando_codigo"] = True
         respuesta_codigo = (
