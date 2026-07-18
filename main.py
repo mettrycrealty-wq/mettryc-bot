@@ -598,30 +598,47 @@ def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
 def detectar_presupuesto(texto: str) -> float:
     if not texto:
         return 0.0
-    texto_lower = texto.lower()
-    patrones = re.findall(
+
+    patron = re.compile(
         r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+)\s*(millones|millón|m|mil|k)?\s*(usd|dolares|dólares|\$)?",
-        texto_lower,
+        re.IGNORECASE,
     )
     mejor = 0.0
-    for valor_bruto, multiplicador, _moneda in patrones:
+    texto_original = texto
+    texto_norm = texto.lower()
+
+    for coincidencia in patron.finditer(texto_norm):
+        valor_bruto, multiplicador, _moneda = coincidencia.groups()
+        inicio, fin = coincidencia.span(1)
+
+        antes = texto_original[inicio - 1] if inicio > 0 else " "
+        despues = texto_original[fin] if fin < len(texto_original) else " "
+        if antes.isdigit() or despues.isdigit():
+            continue
+
+        fragmento = texto_original[coincidencia.start(1):coincidencia.end(1)]
+        fragmento_sin_espacios = fragmento.replace(" ", "")
+        if re.fullmatch(r"\+?\d{7,}", fragmento_sin_espacios):
+            continue
+
         try:
-            limpio = valor_bruto.replace(",", "").replace(".", "")
-            if "." in valor_bruto and "," in valor_bruto:
-                limpio = valor_bruto.replace(".", "").replace(",", ".")
-            elif "," in valor_bruto and valor_bruto.count(",") == 1 and valor_bruto.count(".") == 0:
-                limpio = valor_bruto.replace(",", ".")
-            numero = float(limpio)
+            numero = fragmento.replace(".", "").replace(",", "")
+            numero_float = float(numero)
         except ValueError:
             continue
-        factor = 1
-        if multiplicador in {"mil", "k"}:
-            factor = 1000
-        elif multiplicador in {"millones", "millón", "m"}:
-            factor = 1_000_000
-        monto = numero * factor
+
+        factor = 1.0
+        if multiplicador:
+            multiplicador = multiplicador.lower()
+            if multiplicador in {"mil", "k"}:
+                factor = 1_000.0
+            elif multiplicador in {"millones", "millón", "m"}:
+                factor = 1_000_000.0
+
+        monto = numero_float * factor
         if monto > mejor:
             mejor = monto
+
     return mejor
 
 
