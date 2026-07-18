@@ -2964,7 +2964,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             import time as _time
             import os as _os
             _time.sleep(1)
-            _os._exit(1)
+            _os._exit(0)
 
         import threading
         threading.Thread(target=reiniciar_asincrono).start()
