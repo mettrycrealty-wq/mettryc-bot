@@ -587,8 +587,6 @@ PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "s
 FRASES_BLOQUEO_RESPUESTA = {
     "ofrece en venta",
     "ofrece en alquiler",
-    "en venta",
-    "en alquiler",
     "vendo",
     "vende",
     "alquila",
@@ -607,20 +605,11 @@ FRASES_BLOQUEO_RESPUESTA = {
     "bondades del conjunto",
     "condiciones de arrendamiento",
     "condiciones de la negociacion",
-    "apartamento en venta",
-    "casa en venta",
-    "townhouse en venta",
-    "local en alquiler",
-    "habitacion en alquiler",
-    "galpon en venta",
-    "galpon en alquiler",
-    "terreno en venta",
-    "aparto quinta en venta",
-    "fondo de comercio",
     "obra blanca",
     "obra gris",
     "en exclusiva",
     "vuelve al mercado",
+    "new listing"
 }
 
 
