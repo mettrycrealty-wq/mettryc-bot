@@ -340,6 +340,63 @@ def convertir_entero(valor: Any) -> int:
     except (TypeError, ValueError):
         return 0
 
+def extraer_area_principal_wasi(payload: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(payload, dict):
+        return None
+
+    candidatos = [
+        payload.get("area"),
+        payload.get("constructed_area"),
+        payload.get("construction_area"),
+        payload.get("built_area"),
+        payload.get("building_area"),
+        payload.get("total_area"),
+        payload.get("surface"),
+        payload.get("surface_total"),
+        payload.get("lot_area"),
+        payload.get("land_area"),
+    ]
+
+    for valor in candidatos:
+        if valor in (None, "", "N/D", 0, "0", "0.0"):
+            continue
+
+        if isinstance(valor, (int, float)):
+            if valor > 0:
+                return float(valor)
+
+        if isinstance(valor, str):
+            numero = re.sub(r"[^\d.,]", "", valor)
+            if not numero:
+                continue
+            try:
+                numero_float = float(numero.replace(".", "").replace(",", "."))
+            except ValueError:
+                continue
+            if numero_float > 0:
+                return numero_float
+
+        if isinstance(valor, dict):
+            posible = (
+                valor.get("value")
+                or valor.get("valor")
+                or valor.get("amount")
+                or valor.get("number")
+            )
+            if posible is not None:
+                if isinstance(posible, (int, float)):
+                    if posible > 0:
+                        return float(posible)
+                elif isinstance(posible, str):
+                    numero = re.sub(r"[^\d.,]", "", posible)
+                    if numero:
+                        try:
+                            numero_float = float(numero.replace(".", "").replace(",", "."))
+                        except ValueError:
+                            continue
+                        if numero_float > 0:
+                            return numero_float
+    return None
 
 def formato_moneda(valor: Any) -> str:
     numero = convertir_float(valor)
@@ -1008,10 +1065,13 @@ async def obtener_inventario_wasi() -> List[dict]:
                     convertir_caracteristicas(valor.get("external_features")),
                 ]
             ).strip()
-            captador = f"{usuario.get('first_name', '')} {usuario.get('last_name', '')}".strip()
+            captador = f"{usuario.get("first_name", "")} {usuario.get("last_name", "")}".strip()
             localidad_wasi = str(valor.get("location_label") or "").strip()
             zona_wasi = str(valor.get("zone_label") or "").strip()
             zona_combinada = f"{localidad_wasi} {zona_wasi}".strip() or "N/D"
+
+            area_principal = extraer_area_principal_wasi(valor)
+
             propiedades.append(
                 {
                     "id": str(property_id),
@@ -1024,7 +1084,7 @@ async def obtener_inventario_wasi() -> List[dict]:
                     "precio_alquiler": parsear_precio_wasi(valor.get("rent_price"), valor.get("rent_price_label")),
                     "precio_venta_label": valor.get("sale_price_label", "N/D"),
                     "precio_alquiler_label": valor.get("rent_price_label", "N/D"),
-                    "area": valor.get("area", "N/D"),
+                    "area": area_principal if area_principal else "N/D",
                     "habitaciones": valor.get("bedrooms", "N/D"),
                     "banos": valor.get("bathrooms", "N/D"),
                     "garajes": valor.get("garages", "N/D"),
@@ -2346,8 +2406,8 @@ async def formatear_ficha(propiedad: dict, es_colega: bool, posicion: Optional[i
     titulo = propiedad.get("titulo", "Propiedad Mettryc")
     if posicion:
         titulo = f"Opción {posicion}: {titulo}"
-    area = propiedad.get("area", "N/D")
-    area_texto = f"{area} m²" if str(area) not in {"", "N/D", "None"} else "N/D"
+    area_valor = convertir_float(propiedad.get("area"))
+    area_texto = f"{area_valor:,.0f} m²".replace(",", ".") if area_valor > 0 else "N/D"
     lineas = [
         f"*{titulo}*",
         f"📍 {propiedad.get('zona', 'N/D')}, {propiedad.get('ciudad', 'N/D')}",
@@ -2675,9 +2735,28 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
             f"No encontré un inmueble activo con el código {codigo}. Revisa si está escrito correctamente "
             "o envíame el enlace de la propiedad."
         )
+
+    # Enriquecer precio y área
+    precio_venta = convertir_float(propiedad.get("precio_venta"))
+    precio_alquiler = convertir_float(propiedad.get("precio_alquiler"))
+    propiedad["precio_venta_float"] = precio_venta
+    propiedad["precio_renta_float"] = precio_alquiler
+
+    area_principal = convertir_float(propiedad.get("area"))
+    if area_principal <= 0:
+        area_principal = extraer_area_principal_wasi(propiedad)
+        if area_principal:
+            propiedad["area"] = area_principal
+
     operacion = estado["filtros"].get("tipo_operacion")
     if not operacion:
-        operacion = "venta" if propiedad.get("precio_venta_float", 0) > 0 else "alquiler"
+        if precio_venta > 0:
+            operacion = "venta"
+        elif precio_alquiler > 0:
+            operacion = "alquiler"
+        else:
+            operacion = "venta"
+
     propiedad["operacion_buscada"] = operacion
     property_id = str(propiedad["id"])
     estado["ultimo_lote"] = [property_id]
@@ -2685,8 +2764,8 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
         estado["propiedades_enviadas"].append(property_id)
     estado["esperando_codigo"] = False
     estado["objetivo"] = "evaluar_resultados"
-    return await construir_respuesta_fichas(estado, [propiedad], especifica=True)
 
+    return await construir_respuesta_fichas(estado, [propiedad], especifica=True)
 
 async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
     lote = estado.get("ultimo_lote", [])
