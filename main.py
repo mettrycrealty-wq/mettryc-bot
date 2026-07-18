@@ -587,6 +587,8 @@ PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "s
 FRASES_BLOQUEO_RESPUESTA = {
     "ofrece en venta",
     "ofrece en alquiler",
+    "en venta",
+    "en alquiler",
     "vendo",
     "vende",
     "alquila",
