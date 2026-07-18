@@ -584,6 +584,42 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
 
 MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
 PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "sigue disponible", "sigue estando disponible"}
+FRASES_BLOQUEO_RESPUESTA = {
+    "ofrece en venta",
+    "ofrece en alquiler",
+    "vendo",
+    "vende",
+    "alquila",
+    "se alquila",
+    "se vende",
+    "nueva captacion",
+    "captacion nueva",
+    "precio ref",
+    "canon mensual",
+    "listo para la firma",
+    "listo para firmar",
+    "firma por registro",
+    "consta de",
+    "distribuidos en",
+    "bondades del edificio",
+    "bondades del conjunto",
+    "condiciones de arrendamiento",
+    "condiciones de la negociacion",
+    "apartamento en venta",
+    "casa en venta",
+    "townhouse en venta",
+    "local en alquiler",
+    "habitacion en alquiler",
+    "galpon en venta",
+    "galpon en alquiler",
+    "terreno en venta",
+    "aparto quinta en venta",
+    "fondo de comercio",
+    "obra blanca",
+    "obra gris",
+    "en exclusiva",
+    "vuelve al mercado",
+}
 
 
 def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
@@ -3057,6 +3093,11 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     )
 
     texto_normalizado = normalizar_texto(mensaje)
+
+    if any(frase in texto_normalizado for frase in FRASES_BLOQUEO_RESPUESTA):
+        agregar_historial(estado, "user", mensaje)
+        guardar_sesion(sender, estado)
+        return {"replies": []}
 
     # --- Manejo de consultas provenientes de Mercado Libre ---
     if estado.get("consulta_mercadolibre", {}).get("pendiente"):
