@@ -40,7 +40,6 @@ WASI_TOKEN = os.getenv("WASI_TOKEN", "")
 WASI_COMPANY_ID = os.getenv("WASI_COMPANY_ID", "")
 GOOGLE_SHEET_TURNOS_URL = os.getenv("GOOGLE_SHEET_TURNOS_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-BASE_CONOCIMIENTO_PATH = os.getenv("BASE_CONOCIMIENTO_PATH", "conocimiento_mettryc.json")
 
 MODELO_AGENTE_PRINCIPAL = os.getenv(
     "MODELO_AGENTE_PRINCIPAL",
@@ -270,12 +269,6 @@ class DecisionAgente(BaseModel):
 class TextoResultado(BaseModel):
     introduccion: str
     cierre: str
-class RespuestaConocimiento(BaseModel):
-    respuesta: str = ""
-    activar_busqueda: bool = False
-    activar_captacion_propietario: bool = False
-    rol_detectado: Literal["cliente", "colega", "indefinido"] = "indefinido"
-    notas: str = ""
 
 # ============================================================
 # ESTADO EN MEMORIA
@@ -294,11 +287,6 @@ sheets_cache: Dict[str, Any] = {
     "agentes": [],
     "captadores": {},
     "ultima_actualizacion": None,
-}
-
-knowledge_cache: Dict[str, Any] = {
-    "contenido": {},
-    "ultima_carga": None,
 }
 
 catalogo_geografico: Dict[str, Any] = {
@@ -923,9 +911,6 @@ def crear_sesion(sender: str) -> dict:
         "operacion_confirmada": False,
         "pregunta_presupuesto_colega_realizada": False,
         "objetivo": "conversar",
-        "fase_conversacion": "conocimiento",
-        "apertura_calida_enviada": False,
-        "tipo_lead": None,
         "filtros": {
             "tipo_operacion": None,
             "tipo_propiedad": None,
@@ -991,9 +976,8 @@ def reiniciar_busqueda(estado: dict) -> dict:
     nuevo["pregunta_rol_realizada"] = bool(rol)
     nuevo["historial"] = historial
     nuevo["numero_canal"] = numero_canal
-    nuevo["fase_conversacion"] = "busqueda"
-    nuevo["apertura_calida_enviada"] = True
     return nuevo
+
 
 def mensaje_es_duplicado(sender: str, message_id: str) -> bool:
     ahora = time.time()
@@ -1524,177 +1508,6 @@ async def decidir_con_ia(mensaje: str, estado: dict) -> DecisionAgente:
         return decision
     return decision_fallback(mensaje, estado)
 
-PROMPT_CONOCIMIENTO = """
-Eres Paty, asistente virtual de Mettryc Realty. Eres cálida, breve (máximo 30 palabras), profesional y usas emojis solo cuando aporten cercanía.
-
-TAREA:
-1. Usa exclusivamente el conocimiento provisto en la base `conocimiento_mettryc`.
-2. Analiza el mensaje del usuario y el historial reciente.
-3. Responde en español venezolano, natural y sin parecer un formulario.
-4. Jamás inventes datos, promesas ni precios que no estén en la base.
-5. No compartas información de propietarios ni invites a contactarlos directamente.
-6. No solicites datos personales cuando quien consulta es un colega o agente inmobiliario.
-7. Si el mensaje trae audio o imagen menciona: "Como soy un Bot aun no he aprendido a escuchar audios ni ver imágenes, pero si me escribes podré ayudarte más rápido. 😊"
-8. Si preguntan por negociabilidad: "Sería cuestión de que usted plantee una oferta y nosotros con gusto se la haremos saber al propietario para que la evalúe."
-9. Si piden honorarios o cuánto cobramos: "El honorario es el 5% del precio en ventas o un mes de comisión en alquiler, tal como lo establece la Cámara Inmobiliaria de Venezuela."
-10. Si desean unirse al equipo: comparte el formulario https://forms.gle/kJu3ogn32WWNxByE7 y menciona que la inversión es $50 e incluye curso, material y credenciales. Si consultan por estatus del formulario, indica que el departamento de reclutamiento revisa y contacta a quienes cumplen el perfil y que confirmarás internamente.
-11. Si alguien desea vender o alquilar su propiedad, solicita ubicación y precio deseado; luego marca activación de captación.
-12. Cuando el usuario exprese necesidad de buscar una propiedad (compra, alquiler, requisitos inmobiliarios), marca activación de búsqueda.
-13. Mantén coherencia con redes sociales (@mettryc), correo (mettryc.realty@gmail.com) y web (https://www.mettryc.com).
-
-SALIDA:
-Devuelve un JSON con las claves:
-
-{
-  "respuesta": "<texto breve y humano>",
-  "activar_busqueda": true|false,
-  "activar_captacion_propietario": true|false,
-  "rol_detectado": "cliente"|"colega"|"indefinido",
-  "notas": "<detalle opcional para el sistema>"
-}
-
-- `activar_busqueda`: true cuando el usuario solicita ayuda para encontrar un inmueble.
-- `activar_captacion_propietario`: true cuando desea ofrecer su propio inmueble en venta o alquiler.
-- `rol_detectado`: intenta clasificar al interlocutor; si no está claro usa "indefinido".
-- `notas`: usa frases cortas para aclarar contexto al sistema; puede ser cadena vacía.
-
-Si ninguna acción aplica, usa false y deja notas breves o vacías. Evita repetir información innecesaria.
-"""
-
-
-async def cargar_base_conocimiento(force: bool = False) -> bool:
-    if knowledge_cache.get("contenido") and not force:
-        return False
-    ruta = BASE_CONOCIMIENTO_PATH
-    if not ruta:
-        logger.warning("⚠️ BASE_CONOCIMIENTO_PATH no está configurada.")
-        return False
-
-    try:
-        def _leer_archivo() -> dict:
-            with open(ruta, "r", encoding="utf-8") as archivo:
-                return json.load(archivo)
-
-        contenido = await asyncio.to_thread(_leer_archivo)
-        knowledge_cache["contenido"] = contenido or {}
-        knowledge_cache["ultima_carga"] = datetime.utcnow()
-        logger.info("📚 Base de conocimiento cargada (%s)", ruta)
-        return True
-    except FileNotFoundError:
-        logger.warning("⚠️ No se encontró el archivo de conocimiento: %s", ruta)
-        knowledge_cache["contenido"] = {}
-    except json.JSONDecodeError as exc:
-        logger.error("❌ Error parseando conocimiento (%s): %s", ruta, exc)
-        knowledge_cache["contenido"] = {}
-    except Exception as exc:
-        logger.error("❌ Error cargando conocimiento (%s): %s", ruta, exc)
-        knowledge_cache["contenido"] = {}
-    return False
-
-
-async def responder_conocimiento(estado: dict, mensaje: str) -> RespuestaConocimiento:
-    if not knowledge_cache.get("contenido"):
-        await cargar_base_conocimiento()
-
-    contexto = {
-        "historial": estado.get("historial", [])[-6:],
-        "mensaje_actual": mensaje,
-        "conocimiento": knowledge_cache.get("contenido", {}),
-    }
-    mensajes = [
-        {"role": "system", "content": PROMPT_CONOCIMIENTO},
-        {
-            "role": "user",
-            "content": json.dumps(contexto, ensure_ascii=False),
-        },
-    ]
-
-    resultado = await llamar_openrouter_json(RespuestaConocimiento, mensajes, temperatura=0.45)
-    if resultado:
-        return resultado
-
-    return RespuestaConocimiento(
-        respuesta="Puedo ayudarte con información de Mettryc, ¿qué te gustaría saber?",
-        activar_busqueda=False,
-        activar_captacion_propietario=False,
-        rol_detectado="indefinido",
-        notas="fallback",
-    )
-
-
-def detectar_transicion_busqueda(mensaje: str) -> bool:
-    texto_norm = normalizar_texto(mensaje)
-    if not texto_norm:
-        return False
-
-    if detectar_operacion(mensaje) or detectar_tipo_propiedad(mensaje):
-        return True
-
-    patrones = [
-        "busco",
-        "necesito",
-        "quiero ver",
-        "quisiera ver",
-        "tienen disponible",
-        "propiedad en",
-        "apartamento en",
-        "casa en",
-        "me interesa ver",
-        "inmueble en",
-    ]
-    if any(patron in texto_norm for patron in patrones):
-        return True
-
-    posible_zona = detectar_zona_ciudad(texto_norm)
-    if posible_zona.get("ciudad") or posible_zona.get("zona"):
-        disparadores = ["propiedad", "inmueble", "apartamento", "casa", "local", "galpon", "galpón", "townhouse", "opciones"]
-        if any(p in texto_norm for p in disparadores):
-            return True
-
-    return False
-
-
-def detectar_captacion_propietario(texto_normalizado: str) -> bool:
-    if not texto_normalizado:
-        return False
-
-    patrones = [
-        "quiero vender mi",
-        "quiero alquilar mi",
-        "quiero poner mi",
-        "quiero poner en venta",
-        "quiero poner en alquiler",
-        "pueden vender mi",
-        "pueden alquilar mi",
-        "gestionar mi inmueble",
-        "ofrecer mi propiedad",
-        "ofrecer mi inmueble",
-        "tengo una propiedad para",
-        "tengo un inmueble para",
-        "nueva captacion personal",
-        "nueva captación personal",
-    ]
-    return any(patron in texto_normalizado for patron in patrones)
-
-
-def mensaje_solicitud_datos_propietario(
-    faltantes: List[str],
-    actualizados: Optional[List[str]] = None,
-) -> str:
-    actualizados = list(dict.fromkeys(actualizados or []))
-    intro = (
-        "Perfecto, para asignarte un asesor que evalúe tu inmueble necesito tus datos de contacto."
-        if not actualizados
-        else f"¡Gracias! Registré {formatear_campos_para_respuesta(actualizados)}. Ahora necesito:"
-    )
-    cuerpo = preparar_lista_datos_lead(faltantes)
-    cierre = (
-        "Incluye ubicación del inmueble y precio deseado si no me lo has dicho todavía."
-        if "nombre completo" in faltantes or "correo electrónico" in faltantes or "confirmación del número de WhatsApp" in faltantes
-        else "Con eso podremos coordinar la valoración de tu inmueble."
-    )
-    return "\n\n".join(part for part in [intro, cuerpo, cierre] if part).strip()
-
 # ============================================================
 # FALLBACK IA
 # ============================================================
@@ -2155,33 +1968,6 @@ def mensaje_solicitud_datos_lead(
         partes.append("Si todo está correcto, dime “sí” para asignarte al asesor.")
     return "\n\n".join(parte.strip() for parte in partes if parte).strip()
 
-def mensaje_solicitud_datos_propietario(
-    faltantes: List[str],
-    actualizados: Optional[List[str]] = None,
-    saludo: bool = False,
-) -> str:
-    actualizados = list(dict.fromkeys(actualizados or []))
-    partes = []
-    if saludo:
-        partes.append(
-            "¡Excelente! Para asignarte un asesor que evalúe tu inmueble necesito tus datos de contacto."
-        )
-    elif actualizados:
-        partes.append(f"¡Gracias! Registré {formatear_campos_para_respuesta(actualizados)}.")
-        partes.append("Ahora indícame lo siguiente:")
-    else:
-        partes.append("Para asignarte un asesor que evalúe tu inmueble necesito:")
-    if faltantes:
-        partes.append(preparar_lista_datos_lead(faltantes))
-        partes.append(
-            "Incluye ubicación exacta y precio deseado si no me lo has dicho todavía. "
-            "Puedes escribir todo en un solo mensaje separado por comas."
-        )
-    else:
-        partes.append(
-            "Si todo está completo, dime “sí” y coordinamos la valoración de tu inmueble."
-        )
-    return "\n\n".join(parte.strip() for parte in partes if parte).strip()
 
 def resumen_datos_lead(estado: dict) -> str:
     lead = estado["lead"]
@@ -3037,8 +2823,6 @@ async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
         if estado.get("propiedad_interes"):
             faltantes = datos_lead_faltantes(estado)
             if faltantes:
-                if estado.get("tipo_lead") == "propietario":
-                    return mensaje_solicitud_datos_propietario(faltantes)
                 return mensaje_solicitud_datos_lead(faltantes)
             if estado.get("lead_confirmacion_pendiente"):
                 return mensaje_confirmacion_lead(estado)
@@ -3086,9 +2870,9 @@ async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
         )
 
     estado["objetivo"] = "captura_lead"
-    estado["tipo_lead"] = "cliente"
     faltantes = datos_lead_faltantes(estado)
     return mensaje_solicitud_datos_lead(faltantes, saludo=True)
+
 
 async def completar_y_asignar_lead(estado: dict) -> str:
     estado["lead_confirmacion_pendiente"] = False
@@ -3100,25 +2884,11 @@ async def completar_y_asignar_lead(estado: dict) -> str:
     if not estado.get("notificacion_enviada"):
         estado["notificacion_enviada"] = await notificar_lead(estado)
     estado["objetivo"] = "lead_asignado"
-
-    es_propietario = estado.get("tipo_lead") == "propietario"
     agente = estado.get("agente_asignado")
-    estado["tipo_lead"] = None
-
     if agente:
-        if es_propietario:
-            return (
-                f"¡Listo, {estado['lead']['nombre']}! {agente.get('nombre')} recibió los datos de tu inmueble "
-                "y te contactará por WhatsApp para coordinar la valoración. ¡Gracias por confiar en Mettryc Realty!"
-            )
         return (
             f"¡Listo, {estado['lead']['nombre']}! {agente.get('nombre')} recibió tu solicitud y "
             "te contactará por WhatsApp para ayudarte con la propiedad. ¡Gracias por confiar en Mettryc Realty!"
-        )
-    if es_propietario:
-        return (
-            f"¡Listo, {estado['lead']['nombre']}! Registré tu inmueble y el equipo de Mettryc Realty "
-            "te contactará por WhatsApp para la valoración."
         )
     return (
         f"¡Listo, {estado['lead']['nombre']}! Registré tu solicitud y el equipo de Mettryc Realty "
@@ -3155,9 +2925,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     estado.setdefault("operacion_confirmada", False)
     estado.setdefault("pregunta_presupuesto_colega_realizada", False)
-    estado.setdefault("fase_conversacion", "conocimiento")
-    estado.setdefault("apertura_calida_enviada", False)
-    estado.setdefault("tipo_lead", None)
 
     mensaje_admin_raw = str(mensaje).strip()
     mensaje_admin = mensaje_admin_raw.lower()
@@ -3215,10 +2982,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["operacion_confirmada"] = False
         estado["pregunta_presupuesto_colega_realizada"] = False
         estado["pregunta_rol_realizada"] = False
-        estado["fase_conversacion"] = "conocimiento"
-        estado["apertura_calida_enviada"] = False
-        estado["objetivo"] = "conversar"
-        estado["tipo_lead"] = None
         estado.pop("pausa_hasta", None)
         guardar_sesion(sender, estado)
         return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
@@ -3259,7 +3022,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     es_admin = False
     if "es_sender_admin" in globals():
         es_admin = es_sender_admin(sender)
-
+    
     pausa_hasta_str = estado.get("pausa_hasta")
     if pausa_hasta_str:
         try:
@@ -3275,66 +3038,20 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         if pausa_hasta and datetime.utcnow() >= pausa_hasta:
             estado.pop("pausa_hasta", None)
             guardar_sesion(sender, estado)
-
-    respuesta_conocimiento_prependida: Optional[str] = None
-
-    if estado.get("fase_conversacion") == "conocimiento":
-        resultado_conocimiento = await responder_conocimiento(estado, mensaje)
-        texto_norm_conocimiento = normalizar_texto(mensaje)
-
-        activar_busqueda = resultado_conocimiento.activar_busqueda
-        activar_captacion = resultado_conocimiento.activar_captacion_propietario
-
-        if not activar_busqueda and not activar_captacion:
-            activar_busqueda = detectar_transicion_busqueda(mensaje)
-            activar_captacion = detectar_captacion_propietario(texto_norm_conocimiento)
-
-        if resultado_conocimiento.rol_detectado == "cliente" and not estado.get("rol"):
-            estado["rol"] = "cliente"
-            estado["confianza_rol"] = 0.85
-        elif resultado_conocimiento.rol_detectado == "colega" and not estado.get("rol"):
-            estado["rol"] = "colega_inmobiliario"
-            estado["confianza_rol"] = 0.85
-
-        respuesta_conocimiento = (
-            resultado_conocimiento.respuesta.strip()
-            or "Puedo ayudarte con información de Mettryc, ¿qué te gustaría saber?"
-        )
-
-        if activar_captacion:
-            estado["fase_conversacion"] = "busqueda"
-            estado["objetivo"] = "captura_lead"
-            estado["tipo_lead"] = "propietario"
-            respuesta_conocimiento_prependida = respuesta_conocimiento
-            estado["apertura_calida_enviada"] = True
-        elif activar_busqueda:
-            estado["fase_conversacion"] = "busqueda"
-            respuesta_conocimiento_prependida = respuesta_conocimiento
-            estado["apertura_calida_enviada"] = True
-        else:
-            agregar_historial(estado, "user", mensaje)
-            agregar_historial(estado, "assistant", respuesta_conocimiento)
-            guardar_sesion(sender, estado)
-            return respuesta_conocimiento
-
+            
     if estado.get("lead_confirmacion_pendiente"):
         if es_respuesta_afirmativa(mensaje):
             estado["lead_confirmacion_pendiente"] = False
             estado["lead_confirmado"] = True
             respuesta_confirmacion = await completar_y_asignar_lead(estado)
-            respuesta_final = respuesta_confirmacion
-            if respuesta_conocimiento_prependida:
-                respuesta_final = f"{respuesta_conocimiento_prependida}\n\n{respuesta_confirmacion}".strip()
             agregar_historial(estado, "user", mensaje)
-            agregar_historial(estado, "assistant", respuesta_final)
+            agregar_historial(estado, "assistant", respuesta_confirmacion)
             guardar_sesion(sender, estado)
-            return respuesta_final
+            return respuesta_confirmacion
         if es_respuesta_negativa(mensaje):
             estado["lead_confirmacion_pendiente"] = False
             estado["lead_confirmado"] = False
             respuesta_negativa = "Entendido. Indícame qué dato debemos corregir y lo actualizo."
-            if respuesta_conocimiento_prependida:
-                respuesta_negativa = f"{respuesta_conocimiento_prependida}\n\n{respuesta_negativa}".strip()
             agregar_historial(estado, "user", mensaje)
             agregar_historial(estado, "assistant", respuesta_negativa)
             guardar_sesion(sender, estado)
@@ -3386,9 +3103,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 "¿Podrías confirmarme el enlace o el código del anuncio?"
             )
 
-        if respuesta_conocimiento_prependida:
-            respuesta_ml = f"{respuesta_conocimiento_prependida}\n\n{respuesta_ml}".strip()
-
         agregar_historial(estado, "user", mensaje)
         agregar_historial(estado, "assistant", respuesta_ml)
         guardar_sesion(sender, estado)
@@ -3406,9 +3120,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             "¿Qué información te gustaría conocer de esa propiedad? "
             "Puedo ayudarte con el precio, características o coordinar una visita."
         )
-
-        if respuesta_conocimiento_prependida:
-            respuesta = f"{respuesta_conocimiento_prependida}\n\n{respuesta}".strip()
 
         agregar_historial(estado, "user", mensaje)
         agregar_historial(estado, "assistant", respuesta)
@@ -3429,9 +3140,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                     "No logro ubicar esa propiedad. Si tienes otro código o enlace, compártelo y te ayudo."
                 )
 
-            if respuesta_conocimiento_prependida:
-                respuesta_propiedad = f"{respuesta_conocimiento_prependida}\n\n{respuesta_propiedad}".strip()
-
             agregar_historial(estado, "user", mensaje)
             agregar_historial(estado, "assistant", respuesta_propiedad)
             guardar_sesion(sender, estado)
@@ -3443,9 +3151,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             "del título o en la descripción del anuncio."
         )
         estado["accion_sistema"] = respuesta_codigo
-
-        if respuesta_conocimiento_prependida:
-            respuesta_codigo = f"{respuesta_conocimiento_prependida}\n\n{respuesta_codigo}".strip()
 
         agregar_historial(estado, "user", mensaje)
         agregar_historial(estado, "assistant", respuesta_codigo)
@@ -3464,9 +3169,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                     "No logro ubicar esa propiedad. ¿Puedes confirmar si el código es correcto o enviarme el enlace?"
                 )
 
-            if respuesta_conocimiento_prependida:
-                respuesta_codigo = f"{respuesta_conocimiento_prependida}\n\n{respuesta_codigo}".strip()
-
             agregar_historial(estado, "user", mensaje)
             agregar_historial(estado, "assistant", respuesta_codigo)
             guardar_sesion(sender, estado)
@@ -3477,9 +3179,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             "Está al final del título o dentro de la descripción del anuncio."
         )
         estado["accion_sistema"] = recordatorio
-
-        if respuesta_conocimiento_prependida:
-            recordatorio = f"{respuesta_conocimiento_prependida}\n\n{recordatorio}".strip()
 
         agregar_historial(estado, "user", mensaje)
         agregar_historial(estado, "assistant", recordatorio)
@@ -3520,8 +3219,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         tipo_legible = normalizar_nombre(filtros_actuales["tipo_propiedad"])
         pregunta_rol = f"¿Buscas esta {tipo_legible.lower()} para ti o para un cliente?"
         respuesta_pregunta_rol = await humanizar_texto_con_ia(estado, pregunta_rol, mensaje) or pregunta_rol
-        if respuesta_conocimiento_prependida:
-            respuesta_pregunta_rol = f"{respuesta_conocimiento_prependida}\n\n{respuesta_pregunta_rol}".strip()
         agregar_historial(estado, "user", mensaje)
         agregar_historial(estado, "assistant", respuesta_pregunta_rol)
         guardar_sesion(sender, estado)
@@ -3798,7 +3495,6 @@ async def inicializar_datos() -> None:
     resultados = await asyncio.gather(
         actualizar_inventario(force=True),
         sincronizar_google_sheet(force=True),
-        cargar_base_conocimiento(force=True),
         return_exceptions=True,
     )
     for resultado in resultados:
