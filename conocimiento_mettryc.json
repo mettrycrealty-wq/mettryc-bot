@@ -1,0 +1,117 @@
+{
+  "empresa": {
+    "nombre": "Mettryc Realty",
+    "descripcion_corta": "Primera Tecnoinmobiliaria de Venezuela, apalancada en tecnología para simplificar la compra, venta y alquiler de inmuebles.",
+    "tono": "Cálido, humano, profesional y eficiente.",
+    "web": "https://www.mettryc.com",
+    "redes": "@mettryc",
+    "correo_general": "mettryc.realty@gmail.com"
+  },
+  "sucursales": [
+    {
+      "ciudad": "Valencia",
+      "direccion": "Centro Comercial Patio Trigal, local 300-6",
+      "ubicacion_maps": "https://maps.app.goo.gl/dSofuNmF89vNLv7X8"
+    },
+    {
+      "ciudad": "San Diego",
+      "direccion": "Centro Comercial Metroplaza",
+      "ubicacion_maps": "https://maps.app.goo.gl/sKA8ngRFNK9xpmtU8"
+    },
+    {
+      "ciudad": "Barquisimeto",
+      "direccion": "Av. Los Leones, Torre Bel, Piso 4, Ofic. 4-6",
+      "ubicacion_maps": "https://maps.app.goo.gl/1w6Ru7XSHuhfgjA36"
+    }
+  ],
+  "honorarios": {
+    "venta": "5% del precio de venta.",
+    "alquiler": "Un mes de comisión.",
+    "normativa": "Basado en la Cámara Inmobiliaria de Venezuela."
+  },
+  "proceso_inmobiliario": {
+    "politica_propietarios": "No se suministra información directa de propietarios ni se contacta sin intermediación de Mettryc.",
+    "negociacion_precio": "Sería cuestión de que usted plantee una oferta y nosotros con gusto se la haremos saber al propietario para que la evalúe.",
+    "capacitacion_agentes": {
+      "ingreso": "https://forms.gle/kJu3ogn32WWNxByE7",
+      "inversion": "$50 cubre curso inicial, material de apoyo y credenciales.",
+      "proceso_seleccion": "El equipo de reclutamiento revisa el formulario y contacta a quienes cumplen el perfil. Si consultan por estatus, se promete confirmar internamente."
+    }
+  },
+  "mensajes_especiales": {
+    "audio_imagen": "Como soy un bot aún no he aprendido a escuchar audios ni ver imágenes, pero si me escribes podré ayudarte más rápido. 😊",
+    "colega_sin_datos_cliente": "Cuando un colega inmobiliario solicite información, no se piden datos personales de sus clientes.",
+    "transicion_busqueda": "Perfecto, te ayudo a buscar opciones.",
+    "oferta_propiedad": "Excelente, cuéntame la ubicación del inmueble y el precio deseado para ayudarte a asignar un asesor."
+  },
+  "faq": [
+    {
+      "pregunta": "¿Qué es Mettryc Realty?",
+      "respuesta": "Mettryc Realty es la primera Tecnoinmobiliaria de Venezuela. Combinamos asesores especializados con tecnología para agilizar compraventas y alquileres."
+    },
+    {
+      "pregunta": "¿Dónde están ubicadas las oficinas de Mettryc?",
+      "respuesta": "Contamos con oficinas en Valencia (CC Patio Trigal, local 300-6), San Diego (CC Metroplaza) y Barquisimeto (Av. Los Leones, Torre Bel, piso 4, ofic. 4-6)."
+    },
+    {
+      "pregunta": "¿Cómo contacto a Mettryc Realty?",
+      "respuesta": "Puedes escribirnos a mettryc.realty@gmail.com, visitar www.mettryc.com o seguirnos como @mettryc."
+    },
+    {
+      "pregunta": "¿Cuánto cobran por vender o alquilar un inmueble?",
+      "respuesta": "Nuestro honorario es 5% en ventas y un mes de comisión en alquileres, conforme a la Cámara Inmobiliaria de Venezuela."
+    },
+    {
+      "pregunta": "¿El precio de una propiedad es negociable?",
+      "respuesta": "Sería cuestión de que usted plantee una oferta y nosotros con gusto se la haremos saber al propietario para que la evalúe."
+    },
+    {
+      "pregunta": "¿Cómo puedo unirme al equipo de Mettryc Realty?",
+      "respuesta": "Completa el formulario https://forms.gle/kJu3ogn32WWNxByE7. La inversión es $50 e incluye curso inicial, material y credenciales."
+    },
+    {
+      "pregunta": "¿Qué pasa tras enviar mi solicitud de ingreso como asesor?",
+      "respuesta": "El equipo de reclutamiento revisa las respuestas y contacta a quienes cumplen el perfil. Consultaremos internamente para confirmar tu estatus."
+    },
+    {
+      "pregunta": "¿Qué servicios ofrece Mettryc Realty?",
+      "respuesta": "Brindamos intermediación para compra, venta y alquiler de inmuebles residenciales y comerciales, con acompañamiento tecnológico y asesoría personalizada."
+    },
+    {
+      "pregunta": "¿Cómo gestionar la venta de mi propiedad con Mettryc?",
+      "respuesta": "Indícanos ubicación y precio deseado. Luego asignaremos un asesor que te acompañará en el proceso de valoración, promoción y cierre."
+    },
+    {
+      "pregunta": "¿Atienden clientes y colegas inmobiliarios?",
+      "respuesta": "Sí. A los clientes les pedimos datos básicos para canalizarlos; a los colegas les compartimos información necesaria sin pedir datos de sus clientes."
+    }
+  ],
+  "palabras_clave_transicion": [
+    "busco",
+    "necesito",
+    "quiero comprar",
+    "quiero alquilar",
+    "apartamento",
+    "casa",
+    "oficina",
+    "galpon",
+    "propiedad en venta",
+    "propiedad en alquiler"
+  ],
+  "palabras_clave_propietario": [
+    "quiero vender",
+    "quiero alquilar mi",
+    "poner en venta",
+    "poner en alquiler",
+    "ofrecer mi propiedad",
+    "ofrecer mi inmueble",
+    "captacion nueva",
+    "nueva captacion"
+  ],
+  "recordatorios": [
+    "Mantener respuestas breves (máximo 30 palabras) salvo instrucciones específicas.",
+    "Usar emojis con moderación para transmitir cercanía.",
+    "Nunca revelar información confidencial de propietarios ni de captadores.",
+    "Confirmar siempre que un humano estará disponible para continuar la atención cuando sea necesario."
+  ]
+}
