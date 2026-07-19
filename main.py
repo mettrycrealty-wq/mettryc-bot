@@ -1574,19 +1574,28 @@ def decision_fallback(mensaje: str, estado: dict) -> DecisionAgente:
 # ============================================================
 
 def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
+    texto = str(mensaje or "").strip()
+
     patrones = [
         r"mettryc\.com/inmueble/(\d+)",
         r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
         r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
         r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
+        r"\b[A-Z]{1,5}[-.\s]*(\d{4,})\b",
     ]
+
     for patron in patrones:
-        coincidencia = re.search(patron, mensaje or "", re.IGNORECASE)
+        coincidencia = re.search(patron, texto, re.IGNORECASE)
         if coincidencia:
-            return coincidencia.group(1)
-    texto = str(mensaje or "").strip()
-    if re.fullmatch(r"\d{6,10}", texto):
-        return texto
+            codigo = coincidencia.group(1)
+            codigo_numerico = re.sub(r"\D", "", codigo)
+            if re.fullmatch(r"\d{4,}", codigo_numerico):
+                return codigo_numerico
+
+    solo_digitos = re.sub(r"\D", "", texto)
+    if re.fullmatch(r"\d{4,10}", solo_digitos):
+        return solo_digitos
+
     return None
 
 
