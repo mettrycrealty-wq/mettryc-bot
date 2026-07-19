@@ -3191,8 +3191,8 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             return respuesta_codigo
 
         recordatorio = (
-            "Todavía necesito el código para ubicar la propiedad. "
-            "Está al final del título o dentro de la descripción del anuncio."
+            "Disculpa, ese dato no me sirve para ubicar la propiedad. "
+            "El código debería estar al final del título o dentro de la descripción del anuncio.Está al final del título o dentro de la descripción del anuncio. (ej. AM-9935990 ó 9935990)"
         )
         estado["accion_sistema"] = recordatorio
 
