@@ -2985,6 +2985,26 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado.setdefault("rol", None)
     estado.setdefault("confianza_rol", 0.0)
 
+    def _normalizar_operacion_detectada(valor: Optional[str]) -> Optional[str]:
+        if not valor:
+            return None
+        op = normalizar_texto(valor)
+        if op in {"comprar", "compra", "venta", "vender", "vendo", "compro"}:
+            return "venta"
+        if op in {
+            "alquilar",
+            "alquiler",
+            "alquileres",
+            "rent",
+            "renta",
+            "renting",
+            "arrendar",
+            "arrendamiento",
+            "arriendo",
+        }:
+            return "alquiler"
+        return valor
+
     mensaje_admin_raw = str(mensaje).strip()
     mensaje_admin = mensaje_admin_raw.lower()
     logger.info(f"DEBUG ADMIN: Mensaje recibido: '{mensaje_admin}'")
@@ -3296,8 +3316,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         return recordatorio
 
     filtros_actuales = estado.setdefault("filtros", {})
+    if filtros_actuales.get("tipo_operacion"):
+        filtros_actuales["tipo_operacion"] = _normalizar_operacion_detectada(filtros_actuales["tipo_operacion"])
 
-    operacion_detectada = detectar_operacion(mensaje)
+    operacion_detectada = _normalizar_operacion_detectada(detectar_operacion(mensaje))
     if operacion_detectada:
         if filtros_actuales.get("tipo_operacion") != operacion_detectada:
             filtros_actuales["tipo_operacion"] = operacion_detectada
