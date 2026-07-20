@@ -2979,6 +2979,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     estado.setdefault("operacion_confirmada", False)
     estado.setdefault("pregunta_presupuesto_colega_realizada", False)
+    estado.setdefault("pregunta_rol_realizada", False)
+    estado.setdefault("rol_pregunta_pendiente", False)
+    estado.setdefault("rol", None)
+    estado.setdefault("confianza_rol", 0.0)
 
     mensaje_admin_raw = str(mensaje).strip()
     mensaje_admin = mensaje_admin_raw.lower()
@@ -3036,6 +3040,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["operacion_confirmada"] = False
         estado["pregunta_presupuesto_colega_realizada"] = False
         estado["pregunta_rol_realizada"] = False
+        estado["rol_pregunta_pendiente"] = False
+        estado["rol"] = None
+        estado["confianza_rol"] = 0.0
         estado.pop("pausa_hasta", None)
         estado["esperando_presupuesto"] = False
         guardar_sesion(sender, estado)
@@ -3140,6 +3147,53 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     texto_normalizado = normalizar_texto(mensaje)
 
+    if estado.get("rol_pregunta_pendiente"):
+        respuestas_para_cliente = {
+            "para un cliente",
+            "para una cliente",
+            "para mi cliente",
+            "para mi comprador",
+            "es para un cliente",
+            "es para mi cliente",
+            "para cliente",
+            "para clientes",
+            "para nuestro cliente",
+            "para mi compradora",
+        }
+        negaciones_cliente = {
+            "no es para un cliente",
+            "no lo busco para un cliente",
+            "no es para cliente",
+        }
+        respuestas_para_si_mismo = {
+            "para mi",
+            "para mí",
+            "para mi uso",
+            "para mi familia",
+            "para mi mamá",
+            "para nosotros",
+            "para mi hijo",
+            "para uso personal",
+            "para mi esposa",
+            "para mi esposo",
+            "para mi pareja",
+            "para mi mismo",
+            "para mi misma",
+            "para mi madre",
+            "para mi padre",
+        }
+
+        if any(frase in texto_normalizado for frase in negaciones_cliente):
+            pass
+        elif any(frase in texto_normalizado for frase in respuestas_para_cliente):
+            estado["rol"] = "colega"
+            estado["confianza_rol"] = max(estado.get("confianza_rol", 0.0), 0.85)
+            estado["rol_pregunta_pendiente"] = False
+        elif any(frase in texto_normalizado for frase in respuestas_para_si_mismo) and "cliente" not in texto_normalizado:
+            estado["rol"] = "cliente"
+            estado["confianza_rol"] = max(estado.get("confianza_rol", 0.0), 0.85)
+            estado["rol_pregunta_pendiente"] = False
+
     if any(frase in texto_normalizado for frase in FRASES_BLOQUEO_RESPUESTA):
         agregar_historial(estado, "user", mensaje)
         guardar_sesion(sender, estado)
@@ -3239,6 +3293,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         agregar_historial(estado, "assistant", recordatorio)
         guardar_sesion(sender, estado)
         return recordatorio
+
     filtros_actuales = estado.setdefault("filtros", {})
 
     operacion_detectada = detectar_operacion(mensaje)
@@ -3268,10 +3323,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     if (
         filtros_actuales.get("tipo_propiedad")
-        and not estado.get("rol")
         and not estado.get("pregunta_rol_realizada")
     ):
         estado["pregunta_rol_realizada"] = True
+        estado["rol_pregunta_pendiente"] = True
         tipo_legible = normalizar_nombre(filtros_actuales["tipo_propiedad"])
         pregunta_rol = f"¿Buscas esta {tipo_legible.lower()} para ti o para un cliente?"
         respuesta_pregunta_rol = await humanizar_texto_con_ia(estado, pregunta_rol, mensaje) or pregunta_rol
@@ -3430,8 +3485,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                         actualizados_lead,
                     )
 
+    rol_actual = estado.get("rol")
     necesita_presupuesto_colega = (
-        estado.get("rol") == "colega_inmobiliario"
+        rol_actual in {"colega", "colega_inmobiliario"}
         and respuesta_intermedia is None
         and accion in {"buscar_propiedades", "mostrar_mas_propiedades", "responder"}
         and not filtros_actuales.get("presupuesto_max")
