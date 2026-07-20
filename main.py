@@ -3186,7 +3186,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         if any(frase in texto_normalizado for frase in negaciones_cliente):
             pass
         elif any(frase in texto_normalizado for frase in respuestas_para_cliente):
-            estado["rol"] = "colega"
+            estado["rol"] = "colega_inmobiliario"
             estado["confianza_rol"] = max(estado.get("confianza_rol", 0.0), 0.85)
             estado["rol_pregunta_pendiente"] = False
         elif any(frase in texto_normalizado for frase in respuestas_para_si_mismo) and "cliente" not in texto_normalizado:
