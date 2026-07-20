@@ -2914,11 +2914,23 @@ async def completar_y_asignar_lead(estado: dict) -> str:
 
 
 def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict) -> DecisionAgente:
+    texto_norm = normalizar_texto(mensaje)
+
+    # ➤ Si veníamos pidiendo presupuesto, no interpretes números como código
     if estado.get("esperando_presupuesto"):
         presupuesto = detectar_presupuesto(mensaje)
         if presupuesto > 0:
             if hasattr(decision, "actualizaciones") and decision.actualizaciones:
-                decision.actualizaciones.presupuesto_max = presupuesto
+                try:
+                    decision.actualizaciones.presupuesto_max = presupuesto
+                except AttributeError:
+                    if isinstance(decision.actualizaciones, dict):
+                        decision.actualizaciones["presupuesto_max"] = presupuesto
+                    else:
+                        decision.actualizaciones = ActualizacionesConversacion(
+                            **decision.actualizaciones.model_dump()
+                        )
+                        decision.actualizaciones.presupuesto_max = presupuesto
             else:
                 decision.actualizaciones = ActualizacionesConversacion(presupuesto_max=presupuesto)
 
@@ -2926,13 +2938,23 @@ def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict)
             estado["esperando_presupuesto"] = False
             estado["esperando_codigo"] = False
             return decision
-    else:
-        estado["esperando_presupuesto"] = False
+        else:
+            estado["esperando_presupuesto"] = False
 
+    # ➤ Detecta código solo si realmente lo esperamos o si el mensaje lo menciona
     codigo = extraer_codigo_inmueble(mensaje)
     if codigo:
-        decision.accion = AccionAgente(tipo="buscar_por_codigo", codigo=codigo)
-        return decision
+        condiciones_codigo = (
+            estado.get("esperando_codigo")
+            or "codigo" in texto_norm
+            or "código" in texto_norm
+            or "cod " in texto_norm
+            or "http" in texto_norm
+            or "www" in texto_norm
+        )
+        if condiciones_codigo:
+            decision.accion = AccionAgente(tipo="buscar_por_codigo", codigo=codigo)
+            return decision
 
     if pide_mas_opciones(mensaje):
         decision.accion = AccionAgente(tipo="mostrar_mas_propiedades")
@@ -2945,6 +2967,7 @@ def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict)
 
     if menciona_anuncio_sin_codigo(mensaje):
         decision.accion = AccionAgente(tipo="pedir_codigo_inmueble")
+
     return decision
 # ============================================================
 # PROCESAMIENTO PRINCIPAL
