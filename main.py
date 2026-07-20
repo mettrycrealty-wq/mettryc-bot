@@ -296,6 +296,11 @@ sheets_cache: Dict[str, Any] = {
     "ultima_actualizacion": None,
 }
 
+knowledge_cache: Dict[str, Any] = {
+    "contenido": {},
+    "ultima_carga": None,
+}
+
 catalogo_geografico: Dict[str, Any] = {
     "ciudades_norm": {},
     "zonas_norm": {},
