@@ -3147,8 +3147,8 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         logger.exception("Fallo decidir_con_ia; usando fallback", exc_info=exc)
         decision = DecisionAgente(
             accion=AccionAgente(tipo="responder"),
-            mensaje=None,
-            actualizaciones=None,
+            mensaje="",
+            actualizaciones=ActualizacionesConversacion(),
             confianza_rol=estado.get("confianza_rol", 0.0),
         )
     decision = forzar_accion_evidente(decision, mensaje, estado)
