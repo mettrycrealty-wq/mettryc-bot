@@ -3141,8 +3141,8 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
 
-        try:
-    decision = await decidir_con_ia(mensaje, estado)
+    try:
+        decision = await decidir_con_ia(mensaje, estado)
     except Exception as exc:
         logger.exception("Fallo decidir_con_ia; usando fallback", exc_info=exc)
         decision = DecisionAgente(
