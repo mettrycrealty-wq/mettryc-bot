@@ -585,8 +585,7 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
 MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
 PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "sigue disponible", "sigue estando disponible"}
 FRASES_BLOQUEO_RESPUESTA = {
-    "ofrece en venta",
-    "ofrece en alquiler",
+    "ofrece en",
     "vendo",
     "vende",
     "alquila",
