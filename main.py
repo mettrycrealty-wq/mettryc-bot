@@ -943,6 +943,7 @@ def crear_sesion(sender: str) -> dict:
         "historial": [],
         "creado_en": datetime.utcnow().isoformat(),
         "actualizado_en": datetime.utcnow().isoformat(),
+        "esperando_presupuesto": False,
     }
 
 
@@ -2913,6 +2914,11 @@ async def completar_y_asignar_lead(estado: dict) -> str:
 
 
 def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict) -> DecisionAgente:
+    texto = mensaje.strip()
+    if estado.get("esperando_presupuesto"):
+        presupuesto = detectar_presupuesto(mensaje)
+        if presupuesto > 0:
+            return decision
     codigo = extraer_codigo_inmueble(mensaje)
     if codigo:
         decision.accion = AccionAgente(tipo="buscar_por_codigo", codigo=codigo)
@@ -2999,6 +3005,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["pregunta_presupuesto_colega_realizada"] = False
         estado["pregunta_rol_realizada"] = False
         estado.pop("pausa_hasta", None)
+        estado["esperando_presupuesto"] = False
         guardar_sesion(sender, estado)
         return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
 
@@ -3218,6 +3225,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         if presupuesto_detectado:
             filtros_actuales["presupuesto_max"] = presupuesto_detectado
             estado["pregunta_presupuesto_colega_realizada"] = True
+            estado["esperando_presupuesto"] = False
             hubo_cambio = True
 
     if not filtros_actuales.get("tipo_propiedad"):
@@ -3403,6 +3411,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     )
     if necesita_presupuesto_colega:
         estado["pregunta_presupuesto_colega_realizada"] = True
+        estado["esperando_presupuesto"] = True
         instruccion_presupuesto = (
             "¿Manejas un presupuesto estimado para tu cliente en esa zona o prefieres dejarlo abierto? "
             "Si tiene alguna característica clave, también cuéntamela."
