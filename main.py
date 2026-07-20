@@ -2914,11 +2914,16 @@ async def completar_y_asignar_lead(estado: dict) -> str:
 
 
 def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict) -> DecisionAgente:
-    texto = mensaje.strip()
     if estado.get("esperando_presupuesto"):
         presupuesto = detectar_presupuesto(mensaje)
         if presupuesto > 0:
+            if hasattr(decision, "actualizaciones") and decision.actualizaciones:
+                decision.actualizaciones.presupuesto_max = presupuesto
+            estado["esperando_presupuesto"] = False
             return decision
+    else:
+        estado["esperando_presupuesto"] = False
+        
     codigo = extraer_codigo_inmueble(mensaje)
     if codigo:
         decision.accion = AccionAgente(tipo="buscar_por_codigo", codigo=codigo)
