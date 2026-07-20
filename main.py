@@ -675,7 +675,7 @@ def detectar_operacion(texto: str, presupuesto: Any = 0) -> Optional[str]:
     if any(p in texto_norm for p in ["venta", "comprar", "compra", "vend"]):
         return "venta"
 
-    if any(p in texto_norm for p in ["alquiler", "alquilar", "renta", "arrend"]):
+    if any(p in texto_norm for p in ["alquiler", "alquilar", "renta", "arrendar"]):
         return "alquiler"
 
     return None
@@ -3141,7 +3141,16 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
 
+        try:
     decision = await decidir_con_ia(mensaje, estado)
+    except Exception as exc:
+        logger.exception("Fallo decidir_con_ia; usando fallback", exc_info=exc)
+        decision = DecisionAgente(
+            accion=AccionAgente(tipo="responder"),
+            mensaje=None,
+            actualizaciones=None,
+            confianza_rol=estado.get("confianza_rol", 0.0),
+        )
     decision = forzar_accion_evidente(decision, mensaje, estado)
     hubo_cambio = aplicar_decision(estado, decision, mensaje)
 
