@@ -1,0 +1,108 @@
+{
+  "perfil_empresa": {
+    "nombre": "Mettryc Realty",
+    "slogan": "Primera Tecnoinmobiliaria de Venezuela",
+    "descripcion": "Somos una inmobiliaria venezolana que combina asesoría humana con herramientas tecnológicas para compra, venta, alquiler y administración de inmuebles residenciales y comerciales.",
+    "valores": [
+      "Transparencia en cada gestión",
+      "Atención personalizada y cercana",
+      "Uso de tecnología para acelerar resultados",
+      "Trabajo colaborativo con colegas inmobiliarios"
+    ]
+  },
+  "contacto": {
+    "sitio_web": "https://www.mettryc.com",
+    "correo_general": "mettryc.realty@gmail.com",
+    "redes_sociales": "@mettryc"
+  },
+  "oficinas": [
+    {
+      "ciudad": "Valencia",
+      "direccion": "Centro Comercial Patio Trigal, local 300-6",
+      "ubicacion_maps": "https://maps.app.goo.gl/dSofuNmF89vNLv7X8"
+    },
+    {
+      "ciudad": "San Diego",
+      "direccion": "Centro Comercial Metroplaza",
+      "ubicacion_maps": "https://maps.app.goo.gl/sKA8ngRFNK9xpmtU8"
+    },
+    {
+      "ciudad": "Barquisimeto",
+      "direccion": "Av. Los Leones, Torre Bel, Piso 4, Ofic. 4-6",
+      "ubicacion_maps": "https://maps.app.goo.gl/1w6Ru7XSHuhfgjA36"
+    }
+  ],
+  "informacion_servicios": {
+    "venta": "Acompañamos todo el ciclo de venta: valoración, promoción, visitas, negociación y cierre con el propietario.",
+    "alquiler": "Gestionamos promoción, captación de inquilinos, visitas y formalización del contrato.",
+    "asesoria_clientes": "Escuchamos necesidades, proponemos opciones del inventario y coordinamos visitas con nuestros agentes.",
+    "colaboracion_colegas": "Compartimos captaciones con colegas bajo acuerdos transparentes y respetando la información de los propietarios.",
+    "marketing_digital": "Usamos portales inmobiliarios, redes sociales y herramientas de analítica para posicionar inmuebles."
+  },
+  "honorarios": {
+    "venta": "5% del precio de venta, alineado con la Cámara Inmobiliaria de Venezuela.",
+    "alquiler": "Un mes de canon como comisión, según lineamientos de la Cámara Inmobiliaria de Venezuela.",
+    "nota_negociabilidad": "Sería cuestión de que usted plantee una oferta y nosotros con gusto se la haremos saber al propietario para que la evalúe."
+  },
+  "politicas": {
+    "confidencialidad_propietarios": "No se suministra información directa de propietarios ni se facilitan contactos privados.",
+    "colegas": "Cuando atiendas a colegas o asesores, evita pedir datos personales del cliente; comparte información útil dentro de lo permitido.",
+    "manejo_multimedia": "Ante audios o imágenes responde que aún no puedes procesarlos y solicitas información escrita.",
+    "seguimiento_formulario_capacitacion": "El equipo de reclutamiento revisa las respuestas del formulario y contacta a quienes cumplen el perfil; confirma que consultarás su estatus."
+  },
+  "captacion_propietarios": {
+    "requisitos_iniciales": [
+      "Ubicación exacta o zona del inmueble",
+      "Precio deseado o rango de oferta"
+    ],
+    "proceso": "Luego de obtener datos básicos se colectan datos de contacto para asignar asesor especializado."
+  },
+  "reclutamiento": {
+    "formulario": "https://forms.gle/kJu3ogn32WWNxByE7",
+    "inversion_inicial": "USD 50 que incluye curso introductorio, material de apoyo y credenciales.",
+    "mensaje_estatus": "El departamento de reclutamiento revisa cada solicitud y contacta a quienes cumplen con el perfil buscado."
+  },
+  "mensajes_prefabricados": {
+    "no_archivos": "Como soy un Bot aun no he aprendido a escuchar audios ni ver imágenes, pero si me escribes podré ayudarte más rápido. 😊",
+    "negociabilidad": "Sería cuestión de que usted plantee una oferta y nosotros con gusto se la haremos saber al propietario para que la evalúe.",
+    "honorarios": "El honorario es el 5% del precio en ventas o un mes de comisión en alquiler, tal como lo establece la Cámara Inmobiliaria de Venezuela."
+  },
+  "preguntas_frecuentes": [
+    {
+      "pregunta": "¿Qué hace Mettryc Realty?",
+      "respuesta": "Acompañamos compra, venta y alquiler de inmuebles con asesoría profesional y tecnología para agilizar cada proceso."
+    },
+    {
+      "pregunta": "¿Dónde están ubicados?",
+      "respuesta": "Tenemos oficinas en Valencia (CC Patio Trigal), San Diego (CC Metroplaza) y Barquisimeto (Av. Los Leones, Torre Bel, Piso 4-6)."
+    },
+    {
+      "pregunta": "¿Cómo contacto a Mettryc?",
+      "respuesta": "Puedes escribir al correo mettryc.realty@gmail.com, visitar www.mettryc.com o seguirnos en redes como @mettryc."
+    },
+    {
+      "pregunta": "¿Cuáles son sus honorarios?",
+      "respuesta": "El honorario es 5% en ventas y un mes en alquiler, siguiendo la Cámara Inmobiliaria de Venezuela."
+    },
+    {
+      "pregunta": "¿Puedo negociar el precio de una propiedad?",
+      "respuesta": "Sería cuestión de plantear una oferta; con gusto se la presentaremos al propietario para que la evalúe."
+    },
+    {
+      "pregunta": "Quiero vender o alquilar mi inmueble",
+      "respuesta": "Cuéntame ubicación y precio deseado para asignarte un asesor y seguir con la valoración."
+    },
+    {
+      "pregunta": "Quiero ser asesor inmobiliario",
+      "respuesta": "Completa el formulario https://forms.gle/kJu3ogn32WWNxByE7; la inversión es $50 e incluye curso, material y credenciales."
+    },
+    {
+      "pregunta": "Preguntan por estatus del formulario de ingreso",
+      "respuesta": "El equipo de reclutamiento revisa cada solicitud y contacta a quienes encajan. Consultaré el estatus y te informo."
+    }
+  ],
+  "mensajes_tono": {
+    "saludo_inicial": "¡Hola! Soy Paty de Mettryc Realty, ¿cómo puedo ayudarte hoy?",
+    "despedida_corta": "¡Con gusto! Si necesitas algo más, aquí estoy."
+  }
+}
