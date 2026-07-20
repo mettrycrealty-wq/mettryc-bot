@@ -2919,29 +2919,33 @@ def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict)
         if presupuesto > 0:
             if hasattr(decision, "actualizaciones") and decision.actualizaciones:
                 decision.actualizaciones.presupuesto_max = presupuesto
+            else:
+                decision.actualizaciones = ActualizacionesConversacion(presupuesto_max=presupuesto)
+
+            decision.accion = AccionAgente(tipo="responder")
             estado["esperando_presupuesto"] = False
+            estado["esperando_codigo"] = False
             return decision
     else:
         estado["esperando_presupuesto"] = False
-        
+
     codigo = extraer_codigo_inmueble(mensaje)
     if codigo:
         decision.accion = AccionAgente(tipo="buscar_por_codigo", codigo=codigo)
         return decision
-    if estado.get("esperando_codigo") and re.fullmatch(r"\d{4,10}", mensaje.strip()):
-        decision.accion = AccionAgente(tipo="buscar_por_codigo", codigo=mensaje.strip())
-        return decision
+
     if pide_mas_opciones(mensaje):
         decision.accion = AccionAgente(tipo="mostrar_mas_propiedades")
         return decision
+
     posicion = detectar_posicion(mensaje)
     if posicion and estado.get("ultimo_lote"):
         decision.accion = AccionAgente(tipo="seleccionar_propiedad", posicion=posicion)
         return decision
+
     if menciona_anuncio_sin_codigo(mensaje):
         decision.accion = AccionAgente(tipo="pedir_codigo_inmueble")
     return decision
-
 # ============================================================
 # PROCESAMIENTO PRINCIPAL
 # ============================================================
