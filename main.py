@@ -2874,6 +2874,35 @@ PALABRAS_CLAVE_PRESUPUESTO = {
     "bolívares",
 }
 
+PALABRAS_PREGUNTA_PRESUPUESTO = {
+    "presupuesto",
+    "precio",
+    "máximo",
+    "maximo",
+    "mínimo",
+    "minimo",
+    "canon",
+    "renta",
+    "alquiler",
+    "monto",
+    "tope",
+    "inversion",
+    "inversión",
+    "cuánto puedes pagar",
+    "cuanto puedes pagar",
+    "cuánto estarías pagando",
+    "cuanto estarias pagando",
+}
+
+def marcar_pregunta_presupuesto(respuesta: str, estado: dict) -> None:
+    if not respuesta:
+        return
+    texto_norm = normalizar_texto(respuesta)
+    if "?" not in respuesta:
+        return
+    if any(palabra in texto_norm for palabra in PALABRAS_PREGUNTA_PRESUPUESTO):
+        estado["esperando_presupuesto"] = True
+
 def es_contexto_presupuesto(texto: str) -> bool:
     if not texto:
         return False
@@ -3860,18 +3889,14 @@ def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict)
             decision.actualizaciones.presupuesto_max = presupuesto
             estado["esperando_presupuesto"] = False
 
-    codigo = extraer_codigo_inmueble(mensaje)
+    extraer_codigo_permitido = not estado.get("esperando_presupuesto") or re.search(
+        r"c[oó]d|inmueble|mettryc|mlv|https?://", mensaje, re.IGNORECASE
+    )
+    codigo = None
+    if extraer_codigo_permitido:
+        codigo = extraer_codigo_inmueble(mensaje)
     if codigo:
-        condiciones_codigo = (
-            estado.get("esperando_codigo")
-            or "codigo" in texto_norm
-            or "código" in texto_norm
-            or "cod " in texto_norm
-            or "http" in texto_norm
-            or "www" in texto_norm
-        )
-        if condiciones_codigo:
-            acciones.insert(0, AccionAgente(tipo="buscar_por_codigo", codigo=codigo))
+        acciones.insert(0, AccionAgente(tipo="buscar_por_codigo", codigo=codigo))
 
     if pide_mas_opciones(mensaje):
         acciones.append(AccionAgente(tipo="mostrar_mas_propiedades"))
@@ -4200,7 +4225,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             hubo_cambio = True
 
     # --- Manejo directo de códigos de inmueble ---
-    codigo_manual = extraer_codigo_inmueble(mensaje)
+    extraer_manual_permitido = not estado.get("esperando_presupuesto") or re.search(
+        r"c[oó]d|inmueble|mettryc|mlv|https?://", mensaje, re.IGNORECASE
+    )
+    codigo_manual = extraer_codigo_inmueble(mensaje) if extraer_manual_permitido else None
     if codigo_manual and estado.get("objetivo") != "captura_lead":
         estado["esperando_codigo"] = False
         estado.setdefault("historial_codigos", []).append(codigo_manual)
@@ -4360,6 +4388,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         ):
             estado["asesor_confirmacion_pendiente"] = True
 
+    estado["esperando_presupuesto"] = False
+    marcar_pregunta_presupuesto(respuesta, estado)
+    
     agregar_historial(estado, "user", mensaje)
     agregar_historial(estado, "assistant", respuesta)
     guardar_sesion(sender, estado)
