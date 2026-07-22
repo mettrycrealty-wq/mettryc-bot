@@ -2847,9 +2847,46 @@ def decision_fallback(mensaje: str, estado: dict) -> DecisionAgente:
 # EXTRACCIÓN DE DATOS - UTILIDADES EXTRA
 # ============================================================
 
+PALABRAS_CLAVE_PRESUPUESTO = {
+    "presupuesto",
+    "precio",
+    "maximo",
+    "máximo",
+    "minimo",
+    "mínimo",
+    "hasta",
+    "tope",
+    "alquiler",
+    "renta",
+    "canon",
+    "cuesta",
+    "usd",
+    "dolares",
+    "dólares",
+    "mensual",
+    "mensuales",
+    "mensualidad",
+    "mensualidades",
+    "mantenimiento",
+    "mensualmente",
+    "bs",
+    "bolivares",
+    "bolívares",
+}
+
+def es_contexto_presupuesto(texto: str) -> bool:
+    if not texto:
+        return False
+    texto_norm = normalizar_texto(texto)
+    if any(simbolo in texto for simbolo in ("$", "€", "₽", "₹", "¥", "₿")):
+        return True
+    return any(palabra in texto_norm for palabra in PALABRAS_CLAVE_PRESUPUESTO)
+
 def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
     original = str(mensaje or "").strip()
     texto = original
+    contexto_presupuesto_global = es_contexto_presupuesto(original)
+
     patrones = [
         r"mettryc\.com/inmueble/(\d+)",
         r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
@@ -2861,11 +2898,17 @@ def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
         coincidencia = re.search(patron, texto, re.IGNORECASE)
         if not coincidencia:
             continue
+
         codigo = coincidencia.group(1)
         inicio, fin = coincidencia.span()
-        palabra_completa = original[max(0, inicio - 40): min(len(original), fin + 40)]
-        if "@" in codigo or "@" in palabra_completa:
+        fragmento_contexto = original[max(0, inicio - 40): min(len(original), fin + 40)]
+
+        if "@" in codigo or "@" in fragmento_contexto:
             continue
+
+        if es_contexto_presupuesto(fragmento_contexto) and not re.search(r"c[oó]d|mettryc|inmueble", fragmento_contexto, re.IGNORECASE):
+            continue
+
         codigo_numerico = re.sub(r"\D", "", codigo)
         if re.fullmatch(r"\d{4,}", codigo_numerico):
             return codigo_numerico
@@ -2873,6 +2916,10 @@ def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
     texto_sin_correos = re.sub(r"\S+@\S+", " ", texto)
     texto = texto_sin_correos
     solo_digitos = re.sub(r"\D", "", texto)
+
+    if contexto_presupuesto_global and not re.search(r"c[oó]d|mettryc|inmueble", normalizar_texto(original), re.IGNORECASE):
+        return None
+
     if re.fullmatch(r"\d{4,10}", solo_digitos):
         return solo_digitos
     return None
