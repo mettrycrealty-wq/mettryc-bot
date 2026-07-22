@@ -1035,6 +1035,7 @@ def verificar_caducidad_y_amnesia(estado: dict) -> dict:
 
 def detectar_rol_explicito(mensaje: str) -> Optional[str]:
     texto = normalizar_texto(mensaje)
+
     patrones_colega = [
         r"\bsoy\s+(asesor|asesora|agente|corredor|corredora|broker|realtor)\b",
         r"\bsoy\s+colega\b",
@@ -1042,9 +1043,11 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
         r"\bbusco\s+para\s+un\s+cliente\b",
         r"\btrabajo\s+en\s+una\s+inmobiliaria\b",
         r"\bcomparto\s+comision\b",
+        r"\bcomparto\s+comisión\b",
         r"\bpara\s+un\s+cliente\b",
         r"\bpara\s+mi\s+cliente\b",
     ]
+
     patrones_cliente = [
         r"\bno\s+soy\s+(asesor|agente|corredor|broker|realtor)\b",
         r"\bsoy\s+cliente\b",
@@ -1053,9 +1056,10 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
         r"\bpara\s+mi\b",
         r"\bpara\s+m[ií]\b",
     ]
+
     patrones_saludo_colega = [
-        r"\b(hola|buenas|saludos|hey)\s+(mi\s+)?colega(s)?\b",
-        r"\bcolega(s)?\s+(hola|buenas|saludos)\b",
+        r"\b(hola|buenas|saludos|hey)(?:\s+\w+){0,3}\s+colega(s)?\b",
+        r"\bcolega(s)?(?:\s+\w+){0,3}\s+(saludos|hola|buenas)\b",
     ]
 
     if any(re.search(patron, texto) for patron in patrones_cliente):
