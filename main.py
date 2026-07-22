@@ -3299,6 +3299,21 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         ):
             respuesta = await mostrar_propiedades(estado)
 
+    # --- Fallback automático para ejecutar la búsqueda cuando ya hay criterios ---
+    acciones_tipos = {a.tipo for a in acciones}
+    busqueda_pendiente = acciones_tipos.isdisjoint(
+        {"buscar_propiedades", "mostrar_mas_propiedades", "buscar_por_codigo", "seleccionar_propiedad"}
+    )
+
+    if (
+        respuesta_intermedia is None
+        and busqueda_pendiente
+        and criterios_suficientes(estado)
+        and not requiere_confirmar_ciudad
+        and (hubo_cambio or any(token in texto_normalizado for token in ["busca", "muestr", "ver", "opcion", "opción"]))
+    ):
+        respuesta = await mostrar_propiedades(estado)
+        
         if not respuesta:
             if requiere_confirmar_ciudad:
                 pregunta_base = (
