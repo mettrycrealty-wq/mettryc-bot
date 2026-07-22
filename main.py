@@ -1495,17 +1495,39 @@ PALABRAS_NEGOCIACION_OBJETIVO = {
     "condicion",
     "condiciones",
     "negociacion",
+    "negociación",
     "deposito",
+    "depósito",
     "adelantado",
     "adelantados",
-    "comision",
-    "canon",
     "meses",
     "mes",
+    "comision",
+    "comisión",
+    "canon",
     "redaccion",
+    "redacción",
     "documento",
+    "documentos",
     "contrato",
 }
+
+PALABRAS_NEGOCIACION_NORM = {normalizar_texto(p) for p in PALABRAS_NEGOCIACION_OBJETIVO}
+NEGOCIACION_TOKENS_NORM = {normalizar_texto(p) for p in NEGOCIACION_TOKENS}
+
+PATRONES_NEGOCIACION = {
+    "depositos": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?dep[oó]sit", re.IGNORECASE),
+    "adelantados": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?adelant", re.IGNORECASE),
+    "comision": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?comisi[oó]n", re.IGNORECASE),
+}
+PATRON_CONTRATO = re.compile(
+    r"(?:redacci[oó]n(?:\s+de)?(?:\s+documento[s]?)?|contrato|documentaci[oó]n)\D{0,40}(\d+(?:[.,]\d{3})*(?:[.,]\d+)?)",
+    re.IGNORECASE,
+)
+PATRON_CONTRATO_FRASE = re.compile(
+    r"(redacci[oó]n(?:\s+de)?(?:\s+documento[s]?)?|contrato|documentaci[oó]n)[^.;]{0,80}",
+    re.IGNORECASE,
+)
 
 def recopilar_secciones_propiedad(propiedad: dict) -> List[Tuple[str, str]]:
     secciones: List[Tuple[str, str]] = []
@@ -1657,8 +1679,8 @@ NEGOCIACION_TOKENS = {
 
 def preparar_tokens_busqueda(tokens: Set[str]) -> Set[str]:
     tokens_expandidos = set(tokens)
-    if tokens_expandidos & {"negociacion", "condicion", "condiciones"}:
-        tokens_expandidos |= NEGOCIACION_TOKENS
+    if tokens_expandidos & PALABRAS_NEGOCIACION_NORM:
+        tokens_expandidos |= NEGOCIACION_TOKENS_NORM
     if tokens_expandidos & {"mes", "meses"}:
         tokens_expandidos.update({"mes", "meses", "deposito", "adelantado", "comision", "canon"})
     if tokens_expandidos & {"pago", "pagos", "pagar"}:
@@ -1690,6 +1712,131 @@ def filtrar_fragmento_relevante(fragmento: str, tokens_objetivo: Set[str]) -> st
         return " ".join(dict.fromkeys(relevantes))
     return fragmento.strip()
 
+def normalizar_valor_decimal(valor: str) -> Optional[float]:
+    if not valor:
+        return None
+    numero = re.sub(r"[^\d.,]", "", valor)
+    if not numero:
+        return None
+    if "." in numero and "," in numero:
+        if numero.rfind(",") > numero.rfind("."):
+            numero = numero.replace(".", "").replace(",", ".")
+        else:
+            numero = numero.replace(",", "")
+    elif "." in numero:
+        if len(numero.split(".")[-1]) == 3:
+            numero = numero.replace(".", "")
+    elif "," in numero:
+        if len(numero.split(",")[-1]) == 3:
+            numero = numero.replace(",", "")
+        else:
+            numero = numero.replace(",", ".")
+    try:
+        return float(numero)
+    except ValueError:
+        return None
+
+
+def es_pregunta_negociacion(tokens: Set[str]) -> bool:
+    return bool(tokens & PALABRAS_NEGOCIACION_NORM)
+
+
+def parsear_detalles_negociacion(texto: str) -> Dict[str, Any]:
+    resultado: Dict[str, Any] = {
+        "depositos": None,
+        "adelantados": None,
+        "comision": None,
+        "contrato_monto": None,
+        "contrato_texto": None,
+        "contrato_flag": False,
+    }
+    if not texto:
+        return resultado
+
+    for clave, patron in PATRONES_NEGOCIACION.items():
+        coincidencia = patron.search(texto)
+        if coincidencia:
+            try:
+                resultado[clave] = int(coincidencia.group(1))
+            except ValueError:
+                resultado[clave] = None
+
+    contrato_match = PATRON_CONTRATO.search(texto)
+    if contrato_match:
+        monto = normalizar_valor_decimal(contrato_match.group(1))
+        if monto is not None:
+            resultado["contrato_monto"] = monto
+
+    frase_match = PATRON_CONTRATO_FRASE.search(texto)
+    if frase_match:
+        resultado["contrato_texto"] = frase_match.group(0).strip(" .")
+        resultado["contrato_flag"] = True
+    elif re.search(r"redacci[oó]n|contrato|documento", texto, re.IGNORECASE):
+        resultado["contrato_flag"] = True
+
+    return resultado
+
+
+def obtener_detalles_negociacion(propiedad: dict) -> Optional[Dict[str, Any]]:
+    secciones = recopilar_secciones_propiedad(propiedad)
+    fragmentos: List[str] = []
+
+    destacado = buscar_fragmento_negociacion(secciones)
+    if destacado:
+        fragmentos.append(destacado[1])
+
+    for _, fragmento in secciones:
+        fragmento_limpio = limpiar_html_a_texto(fragmento)
+        if not fragmento_limpio:
+            continue
+        tokens_linea = tokens_significativos(fragmento_limpio)
+        if tokens_linea & PALABRAS_NEGOCIACION_NORM and fragmento_limpio not in fragmentos:
+            fragmentos.append(fragmento_limpio)
+
+    if not fragmentos:
+        return None
+
+    texto_negociacion = " ".join(dict.fromkeys(fragmentos))
+    detalles = parsear_detalles_negociacion(texto_negociacion)
+    detalles["fragmento"] = texto_negociacion
+    return detalles
+
+
+def formatear_detalles_negociacion(detalles: Dict[str, Any]) -> Optional[str]:
+    if not detalles:
+        return None
+
+    partes: List[str] = []
+    for clave, etiqueta in [
+        ("depositos", "depósito"),
+        ("adelantados", "adelantado"),
+        ("comision", "comisión"),
+    ]:
+        valor = detalles.get(clave)
+        if isinstance(valor, int) and valor >= 0:
+            plural = "mes" if valor == 1 else "meses"
+            partes.append(f"{valor} {plural} de {etiqueta}")
+
+    contrato_texto: Optional[str] = None
+    if detalles.get("contrato_monto") is not None:
+        contrato_texto = f"Redacción de contrato: {formato_moneda(detalles['contrato_monto'])}"
+    elif detalles.get("contrato_flag"):
+        crudo = detalles.get("contrato_texto") or "Redacción de contrato: monto no especificado"
+        contrato_texto = crudo if crudo.lower().startswith("redacci") else f"Redacción de contrato: {crudo}"
+
+    if partes or contrato_texto:
+        componentes = []
+        if partes:
+            componentes.append(", ".join(partes))
+        if contrato_texto:
+            componentes.append(contrato_texto)
+        cuerpo = ". ".join(componentes)
+        return f"Según la ficha (condiciones de negociación), {cuerpo}."
+
+    fragmento = detalles.get("fragmento")
+    if fragmento:
+        return f"Según la ficha (condiciones de negociación), {fragmento.strip()}."
+    return None
 
 def es_pregunta_info_adicional(mensaje: str) -> bool:
     if not mensaje:
@@ -1763,12 +1910,16 @@ def buscar_fragmento_negociacion(secciones: List[Tuple[str, str]]) -> Optional[T
     secundarios: List[Tuple[str, str]] = []
 
     for campo, fragmento in secciones:
-        texto_norm = normalizar_texto(fragmento)
-        if any(palabra in texto_norm for palabra in PALABRAS_NEGOCIACION_OBJETIVO):
-            if re.search(r"\d", fragmento):
-                prioritarios.append((campo, fragmento.strip()))
-            else:
-                secundarios.append((campo, fragmento.strip()))
+        fragmento_limpio = limpiar_html_a_texto(fragmento)
+        if not fragmento_limpio:
+            continue
+        tokens_linea = tokens_significativos(fragmento_limpio)
+        if not (tokens_linea & PALABRAS_NEGOCIACION_NORM):
+            continue
+        if re.search(r"\d", fragmento_limpio):
+            prioritarios.append((campo, fragmento_limpio.strip()))
+        else:
+            secundarios.append((campo, fragmento_limpio.strip()))
 
     if prioritarios:
         return prioritarios[0]
@@ -1794,6 +1945,14 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
     for _, frag in secciones:
         tokens_propiedad |= tokens_significativos(frag)
 
+    es_negociacion = es_pregunta_negociacion(tokens_busqueda)
+    if es_negociacion:
+        detalles_negociacion = obtener_detalles_negociacion(propiedad)
+        if detalles_negociacion:
+            respuesta_negociacion = formatear_detalles_negociacion(detalles_negociacion)
+            if respuesta_negociacion:
+                return respuesta_negociacion
+
     hay_palabra_clave = es_pregunta_info_adicional(mensaje)
     hay_interseccion = bool(tokens_propiedad & tokens_busqueda)
     es_pregunta = "?" in mensaje or texto_norm.endswith(("informacion", "información", "detalles"))
@@ -1808,27 +1967,33 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
     )
     if descripcion_local:
         if any(palabra in texto_norm for palabra in ["descripcion", "descripción", "detalles", "informacion", "información"]):
-            fragmento = filtrar_fragmento_relevante(descripcion_local, tokens_busqueda)
-            if fragmento:
-                return f"Esta es la descripción oficial del anuncio:\n\n{fragmento}"
+            fragmento_desc = filtrar_fragmento_relevante(descripcion_local, tokens_busqueda)
+            if fragmento_desc:
+                if es_negociacion:
+                    datos_desc = parsear_detalles_negociacion(fragmento_desc)
+                    datos_desc["fragmento"] = fragmento_desc
+                    respuesta_negociacion = formatear_detalles_negociacion(datos_desc)
+                    if respuesta_negociacion:
+                        return respuesta_negociacion
+                return f"Esta es la descripción oficial del anuncio:\n\n{fragmento_desc}"
 
     resultado = buscar_fragmento_info_propiedad(propiedad, mensaje, tokens_busqueda)
     if resultado:
         campo, fragmento = resultado
+        if es_negociacion:
+            datos_directos = parsear_detalles_negociacion(fragmento)
+            datos_directos["fragmento"] = fragmento
+            respuesta_negociacion = formatear_detalles_negociacion(datos_directos)
+            if respuesta_negociacion:
+                return respuesta_negociacion
         origen_legible = {
             "descripcion": "en la descripción extendida",
             "caracteristicas": "en las características internas",
             "caracteristicas_exteriores": "en las características exteriores",
             "equipamiento": "en el equipamiento",
         }.get(campo, "en la ficha")
-
-        fragmento_respuesta = fragmento.rstrip(".") + "."
-        if "no restaurant" in fragmento.lower():
-            fragmento_respuesta = "no se permite restaurant en este local."
-        elif "no se permite" in fragmento.lower() or "no se permiten" in fragmento.lower():
-            fragmento_respuesta = fragmento_respuesta[0].upper() + fragmento_respuesta[1:]
-
-        return f"Según la ficha ({origen_legible}), {fragmento_respuesta}"
+        fragmento_formateado = fragmento if fragmento.endswith(".") else f"{fragmento}."
+        return f"Según la ficha ({origen_legible}), {fragmento_formateado}"
 
     html_ficha = await obtener_html_ficha(propiedad)
     if html_ficha:
@@ -1852,25 +2017,40 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
                         propiedad["caracteristicas"].append(item)
                         existentes.add(item)
 
+        if es_negociacion:
+            detalles_negociacion = obtener_detalles_negociacion(propiedad)
+            if detalles_negociacion:
+                respuesta_negociacion = formatear_detalles_negociacion(detalles_negociacion)
+                if respuesta_negociacion:
+                    return respuesta_negociacion
+
         nuevo_resultado = buscar_fragmento_info_propiedad(propiedad, mensaje, tokens_busqueda)
         if nuevo_resultado:
             campo, fragmento = nuevo_resultado
+            if es_negociacion:
+                datos_directos = parsear_detalles_negociacion(fragmento)
+                datos_directos["fragmento"] = fragmento
+                respuesta_negociacion = formatear_detalles_negociacion(datos_directos)
+                if respuesta_negociacion:
+                    return respuesta_negociacion
             origen_legible = {
                 "descripcion": "en la descripción extendida",
                 "caracteristicas": "en las características internas",
                 "caracteristicas_exteriores": "en las características exteriores",
                 "equipamiento": "en el equipamiento",
             }.get(campo, "en la ficha")
-            fragmento_respuesta = fragmento.rstrip(".") + "."
-            if "no restaurant" in fragmento.lower():
-                fragmento_respuesta = "no se permite restaurant en este local."
-            elif "no se permite" in fragmento.lower() or "no se permiten" in fragmento.lower():
-                fragmento_respuesta = fragmento_respuesta[0].upper() + fragmento_respuesta[1:]
-            return f"Según la ficha ({origen_legible}), {fragmento_respuesta}"
+            fragmento_formateado = fragmento if fragmento.endswith(".") else f"{fragmento}."
+            return f"Según la ficha ({origen_legible}), {fragmento_formateado}"
 
         if descripcion_extra:
             fragmento = filtrar_fragmento_relevante(descripcion_extra, tokens_busqueda)
             if fragmento:
+                if es_negociacion:
+                    datos_directos = parsear_detalles_negociacion(fragmento)
+                    datos_directos["fragmento"] = fragmento
+                    respuesta_negociacion = formatear_detalles_negociacion(datos_directos)
+                    if respuesta_negociacion:
+                        return respuesta_negociacion
                 return (
                     "Esto es lo que indica la descripción publicada en el portal:\n\n"
                     f"{fragmento}"
