@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 import httpx
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
@@ -54,6 +55,7 @@ OPENROUTER_TIMEOUT = float(os.getenv("OPENROUTER_TIMEOUT", "30"))
 WASI_TIMEOUT = float(os.getenv("WASI_TIMEOUT", "40"))
 SHEETS_TIMEOUT = float(os.getenv("SHEETS_TIMEOUT", "20"))
 TELEGRAM_TIMEOUT = float(os.getenv("TELEGRAM_TIMEOUT", "15"))
+FICHA_TIMEOUT_SEG = int(os.getenv("FICHA_TIMEOUT_SEG", "8"))
 
 MAX_PROPIEDADES_POR_LOTE = int(os.getenv("MAX_PROPIEDADES_POR_LOTE", "3"))
 MAX_EXCESO_PRESUPUESTO = float(os.getenv("MAX_EXCESO_PRESUPUESTO", "0.20"))
@@ -1428,13 +1430,14 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
     "cuenta",
     "incluye",
     "negociacion",
+    "negociación",
     "deposito",
+    "depósito",
     "adelantado",
     "meses",
     "contrato",
     "juridica",
     "juridico",
-    "contrato",
     "dispone",
     "aceptan",
     "acepta",
@@ -1486,7 +1489,7 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
 
 def recopilar_secciones_propiedad(propiedad: dict) -> List[Tuple[str, str]]:
     secciones: List[Tuple[str, str]] = []
-    descripcion = propiedad.get("descripcion_amplia")
+    descripcion = propiedad.get("descripcion_amplia") or propiedad.get("descripcion") or ""
     if descripcion:
         for fragmento in re.split(r"[.\n]+", descripcion):
             fragmento_limpio = fragmento.strip()
@@ -1501,6 +1504,73 @@ def recopilar_secciones_propiedad(propiedad: dict) -> List[Tuple[str, str]]:
                 secciones.append((campo, item_texto))
     return secciones
 
+async def obtener_html_ficha(propiedad: dict) -> Optional[str]:
+    url = (
+        propiedad.get("url_publica")
+        or propiedad.get("url_wasi")
+        or propiedad.get("enlace")
+        or propiedad.get("url")
+    )
+    if not url:
+        return None
+
+    cache_ficha = propiedad.setdefault("cache_ficha", {})
+    html_cacheado = cache_ficha.get("html")
+    expira_en = cache_ficha.get("expira")
+
+    if html_cacheado and expira_en and expira_en > datetime.utcnow().timestamp():
+        return html_cacheado
+
+    try:
+        async with httpx.AsyncClient(timeout=FICHA_TIMEOUT_SEG, headers={"User-Agent": "PatyBot/1.0"}) as client:
+            respuesta = await client.get(url)
+            respuesta.raise_for_status()
+    except Exception as exc:
+        logger.warning("No se pudo descargar ficha %s: %s", url, exc)
+        return None
+
+    html = respuesta.text
+    cache_ficha["html"] = html
+    cache_ficha["expira"] = (datetime.utcnow() + timedelta(minutes=30)).timestamp()
+    return html
+
+
+def extraer_texto_ficha(html: str) -> Dict[str, str]:
+    soup = BeautifulSoup(html, "html.parser")
+
+    selectores_descripcion = [
+        ".property-description",
+        ".descripcion",
+        ".description",
+        "[data-testid='descripcion']",
+        "#descripcion",
+    ]
+    descripcion_texto = ""
+    for selector in selectores_descripcion:
+        nodo = soup.select_one(selector)
+        if nodo:
+            descripcion_texto = nodo.get_text("\n", strip=True)
+            break
+    if not descripcion_texto:
+        candidato = soup.select_one("main") or soup.body
+        if candidato:
+            descripcion_texto = candidato.get_text("\n", strip=True)[:3000]
+
+    selectores_caracteristicas = [
+        ".property-features li",
+        ".caracteristicas li",
+        ".features li",
+        ".amenities li",
+        "[data-testid='caracteristica']",
+    ]
+    caracteristicas_texto = "\n".join(
+        item.get_text(strip=True) for item in soup.select(",".join(selectores_caracteristicas))
+    )
+
+    return {
+        "descripcion": descripcion_texto.strip(),
+        "caracteristicas": caracteristicas_texto.strip(),
+    }
 
 def tokens_coinciden(a: str, b: str) -> bool:
     if a == b:
@@ -1574,7 +1644,7 @@ def buscar_fragmento_info_propiedad(propiedad: dict, pregunta: str) -> Optional[
     return mejor
 
 
-def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
+async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
     propiedad = obtener_propiedad_contexto(estado)
     if not propiedad:
         return None
@@ -1596,10 +1666,10 @@ def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]
     if not (hay_palabra_clave or (es_pregunta and hay_interseccion)):
         return None
 
-    descripcion = propiedad.get("descripcion_amplia")
-    if descripcion:
+    descripcion_local = propiedad.get("descripcion_amplia") or propiedad.get("descripcion")
+    if descripcion_local:
         if any(palabra in texto_norm for palabra in ["descripcion", "descripción", "detalles", "informacion", "información"]):
-            return f"Esta es la descripción oficial del anuncio:\n\n{descripcion.strip()}"
+            return f"Esta es la descripción oficial del anuncio:\n\n{descripcion_local.strip()}"
 
     resultado = buscar_fragmento_info_propiedad(propiedad, mensaje)
     if resultado:
@@ -1613,8 +1683,35 @@ def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]
         fragmento_formateado = fragmento if fragmento.endswith(".") else f"{fragmento}."
         return f"Según la ficha ({origen_legible}), {fragmento_formateado}"
 
-    if descripcion:
-        return f"Esto es lo que indica la descripción oficial del aviso:\n\n{descripcion.strip()}"
+    # --- Fallback: descargar la ficha pública ---
+    html = await obtener_html_ficha(propiedad)
+    if html:
+        ficha_extra = extraer_texto_ficha(html)
+        if ficha_extra.get("descripcion") and not propiedad.get("descripcion_amplia"):
+            propiedad["descripcion_amplia"] = ficha_extra["descripcion"]
+        if ficha_extra.get("caracteristicas"):
+            caracteristicas_lista = [
+                item.strip()
+                for item in ficha_extra["caracteristicas"].splitlines()
+                if item.strip()
+            ]
+            if caracteristicas_lista:
+                propiedad.setdefault("caracteristicas", list(dict.fromkeys(caracteristicas_lista)))
+
+        texto_busqueda = "\n".join(filter(None, ficha_extra.values()))
+        tokens_ficha = tokens_significativos(texto_busqueda)
+
+        if tokens_ficha & tokens_pregunta:
+            if ficha_extra.get("descripcion"):
+                return (
+                    "Esto es lo que indica la descripción publicada en el portal:\n\n"
+                    f"{ficha_extra['descripcion']}"
+                )
+            if ficha_extra.get("caracteristicas"):
+                return (
+                    "Las características listadas en el portal son:\n"
+                    f"{ficha_extra['caracteristicas']}"
+                )
 
     estado["asesor_confirmacion_pendiente"] = True
     return (
@@ -3131,6 +3228,10 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
             "o envíame el enlace de la propiedad para buscarlo."
         )
 
+    estado["propiedad_interes"] = propiedad
+    if not propiedad.get("url_publica"):
+        propiedad["url_publica"] = propiedad.get("enlace")
+
     precio_venta = convertir_float(propiedad.get("precio_venta"))
     precio_alquiler = convertir_float(propiedad.get("precio_alquiler"))
     propiedad["precio_venta_float"] = precio_venta
@@ -3631,7 +3732,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             respuesta_intermedia = respuesta_captador
 
     if respuesta_intermedia is None:
-        respuesta_info_adicional = manejar_pregunta_info_adicional(estado, mensaje)
+        respuesta_info_adicional = await manejar_pregunta_info_adicional(estado, mensaje)
         if respuesta_info_adicional:
             respuesta_intermedia = respuesta_info_adicional
 
