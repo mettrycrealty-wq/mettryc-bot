@@ -1427,6 +1427,19 @@ STOPWORDS_INFO_PROPIEDAD = {
 }
 
 PALABRAS_CLAVE_INFO_ADICIONAL = {
+    "disponible",
+    "disponibilidad",
+    "visita",
+    "visitar",
+    "agenda",
+    "agendar",
+    "cita",
+    "recorrido",
+    "tour",
+    "mostrar",
+    "mostrame",
+    "verlo",
+    "verla",
     "tiene",
     "cuenta",
     "incluye",
@@ -1675,6 +1688,40 @@ NEGOCIACION_TOKENS = {
     "garantias",
 }
 
+PALABRAS_DISPONIBILIDAD = {
+    "disponible",
+    "disponibilidad",
+    "todavia",
+    "todavía",
+    "aun",
+    "aún",
+    "sigue",
+    "libre",
+    "ocupado",
+    "estatus",
+    "status",
+}
+
+PALABRAS_VISITA = {
+    "visita",
+    "visitar",
+    "agenda",
+    "agendar",
+    "cita",
+    "mostrar",
+    "mostrarla",
+    "mostrarlo",
+    "tour",
+    "recorrer",
+    "recorrido",
+    "verlo",
+    "verla",
+    "ensename",
+    "enséñame",
+}
+
+PALABRAS_DISPONIBILIDAD_NORM = {normalizar_texto(p) for p in PALABRAS_DISPONIBILIDAD}
+PALABRAS_VISITA_NORM = {normalizar_texto(p) for p in PALABRAS_VISITA}
 PALABRAS_NEGOCIACION_NORM = {normalizar_texto(p) for p in PALABRAS_NEGOCIACION_OBJETIVO}
 NEGOCIACION_TOKENS_NORM = {normalizar_texto(p) for p in NEGOCIACION_TOKENS}
 
@@ -1940,6 +1987,33 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
 
     tokens_busqueda = preparar_tokens_busqueda(tokens_pregunta)
     texto_norm = normalizar_texto(mensaje)
+
+    # --- NUEVO: detectar intención de visita y disponibilidad ---
+    if tokens_pregunta & PALABRAS_VISITA_NORM:
+        estado["objetivo"] = "captura_lead"
+        estado["lead_confirmacion_pendiente"] = False
+        estado["lead_confirmado"] = False
+        estado["asesor_confirmacion_pendiente"] = False
+        faltantes = datos_lead_faltantes(estado)
+        return mensaje_solicitud_datos_lead(faltantes, saludo=True)
+
+    if tokens_pregunta & PALABRAS_DISPONIBILIDAD_NORM:
+        operacion = propiedad.get("operacion_buscada")
+        if not operacion:
+            renta = convertir_float(propiedad.get("precio_alquiler"))
+            venta = convertir_float(propiedad.get("precio_venta"))
+            if renta > 0 and (renta >= venta):
+                operacion = "alquiler"
+            elif venta > 0:
+                operacion = "venta"
+            else:
+                operacion = "alquiler"
+        texto_operacion = "alquiler" if operacion == "alquiler" else "venta"
+        return (
+            f"Sí, según nuestro inventario esta propiedad sigue disponible para {texto_operacion}. "
+            "¿Quieres que coordinemos la visita?"
+        )
+    # --- FIN NUEVO ---
 
     secciones = recopilar_secciones_propiedad(propiedad)
     tokens_propiedad: Set[str] = set()
