@@ -1529,6 +1529,13 @@ def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]
     if not propiedad:
         return None
 
+    texto_norm = normalizar_texto(mensaje)
+
+    descripcion = propiedad.get("descripcion_amplia")
+    if descripcion:
+        if any(palabra in texto_norm for palabra in ["descripcion", "descripción", "detalles", "informacion", "información"]):
+            return f"Esta es la descripción oficial del anuncio:\n\n{descripcion.strip()}"
+
     resultado = buscar_fragmento_info_propiedad(propiedad, mensaje)
     if resultado:
         campo, fragmento = resultado
@@ -1541,6 +1548,9 @@ def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]
 
         fragmento_formateado = fragmento if fragmento.endswith(".") else f"{fragmento}."
         return f"Según la ficha ({origen_legible}), {fragmento_formateado}"
+
+    if descripcion:
+        return f"Esto es lo que indica la descripción oficial del aviso:\n\n{descripcion.strip()}"
 
     estado["asesor_confirmacion_pendiente"] = True
     return (
@@ -3509,6 +3519,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     if codigo_manual:
         estado["esperando_codigo"] = False
         estado.setdefault("historial_codigos", []).append(codigo_manual)
+        propiedad_manual = buscar_por_codigo(codigo_manual)         
+        if propiedad_manual:                                        
+            estado["propiedad_interes"] = propiedad_manual          
         try:
             respuesta_manual = await mostrar_inmueble_especifico(estado, codigo_manual)
         except Exception:
@@ -3583,6 +3596,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             if accion.tipo == "buscar_por_codigo":
                 codigo = accion.codigo or extraer_codigo_inmueble(mensaje)
                 if codigo:
+                    estado.setdefault("historial_codigos", []).append(codigo)          
+                    propiedad_seleccionada = buscar_por_codigo(codigo)                 
+                    if propiedad_seleccionada:                                         
+                        estado["propiedad_interes"] = propiedad_seleccionada           
                     respuesta = await mostrar_inmueble_especifico(estado, codigo)
                 else:
                     estado["esperando_codigo"] = True
