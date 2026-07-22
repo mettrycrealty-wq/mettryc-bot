@@ -1650,43 +1650,109 @@ def limpiar_json_modelo(contenido: str) -> str:
         return texto[inicio : fin + 1]
     return texto
 
-def construir_estado_para_ia(estado: dict) -> dict:
-    propiedad_interes = estado.get("propiedad_interes")
-    lead_info = estado.get("lead", {})
-    faltantes_lead: List[str] = []
-    if "datos_lead_faltantes" in globals():
-        try:
-            faltantes_lead = datos_lead_faltantes(estado)
-        except Exception:
-            faltantes_lead = []
-    return {
-        "rol": estado.get("rol"),
-        "confianza_rol": estado.get("confianza_rol"),
-        "objetivo": estado.get("objetivo"),
-        "operacion_confirmada": estado.get("operacion_confirmada"),
-        "pregunta_presupuesto_colega_realizada": estado.get("pregunta_presupuesto_colega_realizada"),
-        "filtros": estado.get("filtros"),
-        "sin_preferencia": estado.get("sin_preferencia"),
-        "esperando_codigo": estado.get("esperando_codigo"),
-        "esperando_presupuesto": estado.get("esperando_presupuesto"),
-        "ultimo_lote": estado.get("ultimo_lote"),
-        "requiere_confirmar_ciudad": estado.get("requiere_confirmar_ciudad"),
-        "accion_sugerida": estado.get("accion_sistema"),
-        "propiedad_interes": (
-            {"id": propiedad_interes.get("id"), "titulo": propiedad_interes.get("titulo")}
-            if propiedad_interes
-            else None
-        ),
-        "lead": {
-            "nombre": lead_info.get("nombre"),
-            "correo": lead_info.get("correo"),
-            "whatsapp": "disponible" if lead_info.get("whatsapp") else None,
-            "numero_actual_disponible": bool(estado.get("numero_canal")),
-            "faltantes": faltantes_lead,
-            "confirmacion_pendiente": estado.get("lead_confirmacion_pendiente"),
-            "confirmado": estado.get("lead_confirmado"),
-        },
+
+def acondicionar_decision_json(texto: str) -> str:
+    try:
+        data = json.loads(texto)
+    except json.JSONDecodeError:
+        return texto
+    if not isinstance(data, dict):
+        return json.dumps(data, ensure_ascii=False)
+
+    acciones = data.get("acciones")
+    accion_unica = data.get("accion")
+
+    if isinstance(acciones, dict):
+        acciones = [acciones]
+    elif acciones is None:
+        acciones = []
+    elif isinstance(acciones, list):
+        acciones = [elem for elem in acciones if isinstance(elem, dict)]
+    else:
+        acciones = []
+
+    if isinstance(accion_unica, dict):
+        acciones.insert(0, accion_unica)
+
+    data.pop("accion", None)
+    data["acciones"] = acciones
+
+    if not isinstance(data.get("actualizaciones"), dict):
+        data["actualizaciones"] = {}
+
+    return json.dumps(data, ensure_ascii=False)
+
+
+async def llamar_openrouter_json(modelo_pydantic, mensajes: List[dict], temperatura: float = 0.2):
+    if not OPENROUTER_API_KEY:
+        return None
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://www.mettryc.com",
+        "X-Title": "Mettryc Realty Paty",
     }
+    modelos = [MODELO_AGENTE_PRINCIPAL, MODELO_AGENTE_RESPALDO]
+    for modelo in modelos:
+        formatos = [
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": modelo_pydantic.__name__,
+                    "strict": True,
+                    "schema": modelo_pydantic.model_json_schema(),
+                },
+            },
+            {"type": "json_object"},
+        ]
+        for response_format in formatos:
+            contenido_limpio = ""
+            payload = {
+                "model": modelo,
+                "messages": mensajes,
+                "temperature": temperatura,
+                "max_tokens": 900,
+                "response_format": response_format,
+            }
+            try:
+                respuesta = await http_client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=OPENROUTER_TIMEOUT,
+                )
+                respuesta.raise_for_status()
+                contenido = respuesta.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                if isinstance(contenido, list):
+                    contenido = "".join(
+                        elemento.get("text", "") for elemento in contenido if isinstance(elemento, dict)
+                    )
+                contenido_limpio = limpiar_json_modelo(contenido)
+                if modelo_pydantic is DecisionAgente:
+                    contenido_limpio = acondicionar_decision_json(contenido_limpio)
+                return modelo_pydantic.model_validate_json(contenido_limpio)
+            except (ValidationError, ValueError, httpx.HTTPError) as exc:
+                if DEBUG_MODE and contenido_limpio:
+                    logger.warning(
+                        "OpenRouter payload rechazado (%s | %s): %s",
+                        modelo,
+                        response_format.get("type"),
+                        contenido_limpio[:600],
+                    )
+                logger.warning(
+                    "OpenRouter JSON modelo=%s formato=%s tipo=%s",
+                    modelo,
+                    response_format.get("type"),
+                    type(exc).__name__,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "OpenRouter modelo=%s tipo=%s detalle=%s",
+                    modelo,
+                    type(exc).__name__,
+                    str(exc)[:150],
+                )
+    return None
 
 async def llamar_openrouter_json(modelo_pydantic, mensajes: List[dict], temperatura: float = 0.2):
     if not OPENROUTER_API_KEY:
@@ -2862,7 +2928,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         if estado.pop("pausa_hasta", None):
             guardar_sesion(sender, estado)
             return {"replies": [{"message": "▶️ Bot reanudado en este chat."}]}
-    
         return {"replies": [{"message": "ℹ️ Este chat no estaba en pausa."}]}
 
     if mensaje_admin == "/reiniciar":
@@ -3108,6 +3173,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         respuesta = respuesta_intermedia
     else:
         respuesta = decision.mensaje or ""
+        acciones_tipos = {a.tipo for a in acciones}
 
         for accion in acciones:
             if accion.tipo == "buscar_propiedades":
@@ -3158,6 +3224,16 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 faltantes = datos_lead_faltantes(estado)
                 respuesta = mensaje_solicitud_datos_lead(faltantes)
                 continue
+
+        if (
+            criterios_suficientes(estado)
+            and not requiere_confirmar_ciudad
+            and acciones_tipos.isdisjoint(
+                {"buscar_propiedades", "mostrar_mas_propiedades", "buscar_por_codigo", "seleccionar_propiedad"}
+            )
+            and (hubo_cambio or "busc" in texto_normalizado or "muestr" in texto_normalizado)
+        ):
+            respuesta = await mostrar_propiedades(estado)
 
         if not respuesta:
             if requiere_confirmar_ciudad:
