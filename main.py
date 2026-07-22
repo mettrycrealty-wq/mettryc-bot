@@ -3303,6 +3303,24 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             filtros_actuales.setdefault("caracteristicas", []).extend(nuevas)
             hubo_cambio = True
 
+    # --- Manejo directo de códigos de inmueble ---
+    codigo_manual = extraer_codigo_inmueble(mensaje)
+    if codigo_manual:
+        estado["esperando_codigo"] = False
+        estado.setdefault("historial_codigos", []).append(codigo_manual)
+        try:
+            respuesta_manual = await mostrar_inmueble_especifico(estado, codigo_manual)
+        except Exception:
+            respuesta_manual = (
+                "Intenté abrir la ficha con ese código, pero no la encontré. "
+                "¿Puedes confirmar el número o compartir el enlace del anuncio?"
+            )
+        if respuesta_manual:
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_manual)
+            guardar_sesion(sender, estado)
+            return respuesta_manual
+    
     respuesta_intermedia: Optional[str] = None
     if estado.get("objetivo") == "captura_lead":
         puede_interceptar_lead = True
