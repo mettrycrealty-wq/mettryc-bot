@@ -1601,6 +1601,21 @@ def tokens_significativos(texto: str) -> Set[str]:
     tokens = re.findall(r"[a-záéíóúñü0-9]+", normalizar_texto(texto or ""))
     return {token for token in tokens if len(token) > 2 and token not in STOPWORDS_INFO_PROPIEDAD}
 
+def limpiar_html_a_texto(contenido: str) -> str:
+    if not contenido:
+        return ""
+    texto = contenido
+    if "<" in contenido and ">" in contenido:
+        try:
+            soup = BeautifulSoup(contenido, "html.parser")
+            texto = soup.get_text(separator="\n")
+        except Exception:
+            texto = contenido
+    texto = html.unescape(texto)
+    texto = re.sub(r"\r\n?", "\n", texto)
+    texto = re.sub(r"[ \t\xa0]+", " ", texto)
+    texto = re.sub(r"\n{2,}", "\n", texto)
+    return texto.strip()
 
 def es_pregunta_info_adicional(mensaje: str) -> bool:
     if not mensaje:
