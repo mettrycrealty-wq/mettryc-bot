@@ -1427,11 +1427,21 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
     "tiene",
     "cuenta",
     "incluye",
+    "negociacion",
+    "deposito",
+    "adelantado",
+    "meses",
+    "contrato",
+    "juridica",
+    "juridico",
+    "contrato",
     "dispone",
     "aceptan",
     "acepta",
     "permiten",
     "permite",
+    "permitido",
+    "permitida",
     "mascota",
     "mascotas",
     "amoblado",
@@ -1453,8 +1463,57 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
     "información",
     "adicional",
     "gastos",
+    "puedo",
+    "puedes",
+    "podria",
+    "podría",
+    "montar",
+    "instalar",
+    "abrir",
+    "acceso",
+    "entrar",
+    "entrada",
+    "ingreso",
+    "local",
+    "actividad",
+    "actividades",
+    "negocio",
+    "negocios",
+    "restaurante",
+    "restaurant",
+    "restaur",
 }
 
+def recopilar_secciones_propiedad(propiedad: dict) -> List[Tuple[str, str]]:
+    secciones: List[Tuple[str, str]] = []
+    descripcion = propiedad.get("descripcion_amplia")
+    if descripcion:
+        for fragmento in re.split(r"[.\n]+", descripcion):
+            fragmento_limpio = fragmento.strip()
+            if fragmento_limpio:
+                secciones.append(("descripcion", fragmento_limpio))
+
+    for campo in ("caracteristicas", "caracteristicas_exteriores", "equipamiento"):
+        valores = propiedad.get(campo) or []
+        for item in valores:
+            item_texto = str(item).strip()
+            if item_texto:
+                secciones.append((campo, item_texto))
+    return secciones
+
+
+def tokens_coinciden(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if len(a) >= 5 and len(b) >= 5:
+        prefijo_a = a[:5]
+        prefijo_b = b[:5]
+        if a.startswith(prefijo_b) or b.startswith(prefijo_a):
+            return True
+    if len(a) >= 5 and len(b) >= 5 and (a in b or b in a):
+        return True
+    return False
+    
 
 def tokens_significativos(texto: str) -> Set[str]:
     tokens = re.findall(r"[a-záéíóúñü0-9]+", normalizar_texto(texto or ""))
@@ -1486,32 +1545,26 @@ def obtener_propiedad_contexto(estado: dict) -> Optional[dict]:
 def buscar_fragmento_info_propiedad(propiedad: dict, pregunta: str) -> Optional[Tuple[str, str]]:
     if not propiedad:
         return None
+
     tokens_pregunta = tokens_significativos(pregunta)
     if not tokens_pregunta:
         return None
 
-    secciones: List[Tuple[str, str]] = []
-    descripcion = propiedad.get("descripcion_amplia")
-    if descripcion:
-        for fragmento in re.split(r"[.\n]+", descripcion):
-            fragmento_limpio = fragmento.strip()
-            if fragmento_limpio:
-                secciones.append(("descripcion", fragmento_limpio))
-
-    for campo in ("caracteristicas", "caracteristicas_exteriores", "equipamiento"):
-        valores = propiedad.get(campo) or []
-        for item in valores:
-            item_texto = str(item).strip()
-            if item_texto:
-                secciones.append((campo, item_texto))
+    secciones = recopilar_secciones_propiedad(propiedad)
 
     mejor: Optional[Tuple[str, str]] = None
     mejor_score = 0
+
     for campo, fragmento in secciones:
         tokens_fragmento = tokens_significativos(fragmento)
         if not tokens_fragmento:
             continue
-        score = len(tokens_pregunta & tokens_fragmento)
+
+        score = 0
+        for token_pregunta in tokens_pregunta:
+            if any(tokens_coinciden(token_pregunta, token_fragmento) for token_fragmento in tokens_fragmento):
+                score += 1
+
         if score > mejor_score:
             mejor = (campo, fragmento.strip())
             mejor_score = score
@@ -1522,14 +1575,26 @@ def buscar_fragmento_info_propiedad(propiedad: dict, pregunta: str) -> Optional[
 
 
 def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
-    if not es_pregunta_info_adicional(mensaje):
-        return None
-
     propiedad = obtener_propiedad_contexto(estado)
     if not propiedad:
         return None
 
+    tokens_pregunta = tokens_significativos(mensaje)
+    if not tokens_pregunta:
+        return None
+
     texto_norm = normalizar_texto(mensaje)
+    secciones = recopilar_secciones_propiedad(propiedad)
+    tokens_propiedad: Set[str] = set()
+    for _, frag in secciones:
+        tokens_propiedad |= tokens_significativos(frag)
+
+    hay_palabra_clave = es_pregunta_info_adicional(mensaje)
+    hay_interseccion = bool(tokens_propiedad & tokens_pregunta)
+    es_pregunta = "?" in mensaje or texto_norm.endswith(("informacion", "información", "detalles"))
+
+    if not (hay_palabra_clave or (es_pregunta and hay_interseccion)):
+        return None
 
     descripcion = propiedad.get("descripcion_amplia")
     if descripcion:
@@ -1545,7 +1610,6 @@ def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]
             "caracteristicas_exteriores": "en las características exteriores",
             "equipamiento": "en el equipamiento",
         }.get(campo, "en la ficha")
-
         fragmento_formateado = fragmento if fragmento.endswith(".") else f"{fragmento}."
         return f"Según la ficha ({origen_legible}), {fragmento_formateado}"
 
