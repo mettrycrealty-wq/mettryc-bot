@@ -1053,9 +1053,16 @@ def detectar_rol_explicito(mensaje: str) -> Optional[str]:
         r"\bpara\s+mi\b",
         r"\bpara\s+m[ií]\b",
     ]
+    patrones_saludo_colega = [
+        r"\b(hola|buenas|saludos|hey)\s+(mi\s+)?colega(s)?\b",
+        r"\bcolega(s)?\s+(hola|buenas|saludos)\b",
+    ]
+
     if any(re.search(patron, texto) for patron in patrones_cliente):
         return "cliente"
     if any(re.search(patron, texto) for patron in patrones_colega):
+        return "colega_inmobiliario"
+    if any(re.search(patron, texto) for patron in patrones_saludo_colega):
         return "colega_inmobiliario"
     return None
 
@@ -1302,6 +1309,91 @@ def actualizar_lead_desde_mensaje(estado: dict, mensaje: str) -> Tuple[List[str]
     actualizados = list(dict.fromkeys(actualizados))
     errores = list(dict.fromkeys(errores))
     return actualizados, errores
+
+def detectar_peticion_captador(texto: str) -> bool:
+    texto_norm = normalizar_texto(texto)
+    if not texto_norm:
+        return False
+    palabras_clave = ["captador", "captadores", "contacto del captador", "dato del captador"]
+    return any(palabra in texto_norm for palabra in palabras_clave)
+
+
+def extraer_codigos_inmueble_multiple(texto: str) -> List[str]:
+    if not texto:
+        return []
+    patrones = [
+        r"mettryc\.com/inmueble/(\d+)",
+        r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
+        r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
+        r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
+        r"\b[A-Z]{1,5}[-.\s]*(\d{4,})\b",
+    ]
+    encontrados: List[str] = []
+
+    for patron in patrones:
+        for match in re.finditer(patron, texto, flags=re.IGNORECASE):
+            codigo = re.sub(r"\D", "", match.group(1))
+            if re.fullmatch(r"\d{4,}", codigo) and codigo not in encontrados:
+                encontrados.append(codigo)
+
+    if not encontrados:
+        for bruto in re.findall(r"\b\d{4,10}\b", texto):
+            if bruto not in encontrados:
+                encontrados.append(bruto)
+
+    return encontrados
+
+
+async def construir_respuesta_captadores(estado: dict, codigos: List[str]) -> Optional[str]:
+    if not codigos:
+        return None
+
+    await sincronizar_google_sheet()
+
+    lineas = []
+    for codigo in codigos:
+        propiedad = buscar_por_codigo(codigo)
+        if not propiedad:
+            continue
+        cruce = cruzar_captador_con_sheet(propiedad.get("captador_wasi", ""))
+        nombre = cruce.get("nombre") or propiedad.get("captador_wasi") or "Captador Mettryc"
+        telefono = cruce.get("telefono")
+        if telefono:
+            contacto = f"https://wa.me/{telefono}"
+        else:
+            contacto = "WhatsApp no disponible en el directorio."
+
+        titulo = propiedad.get("titulo", f"Propiedad {codigo}")
+        lineas.append(f"{titulo} (ID {codigo}): {nombre} | {contacto}")
+
+    if not lineas:
+        return (
+            "No pude localizar a los captadores en el directorio con esos códigos. "
+            "¿Puedes confirmarlos o compartir otro ID?"
+        )
+
+    cuerpo = "\n".join(f"{idx}. {linea}" for idx, linea in enumerate(lineas, start=1))
+    return f"Aquí tienes los contactos de los captadores:\n{cuerpo}"
+
+
+async def manejar_peticion_captador(estado: dict, mensaje: str) -> Optional[str]:
+    if estado.get("rol") != "colega_inmobiliario":
+        return None
+    if not detectar_peticion_captador(mensaje):
+        return None
+
+    codigos = extraer_codigos_inmueble_multiple(mensaje)
+    if not codigos:
+        ultimo_lote = estado.get("ultimo_lote") or []
+        codigos = [str(codigo) for codigo in ultimo_lote[:5]]
+
+    if not codigos:
+        return (
+            "Para darte el contacto directo del captador necesito el código del inmueble. "
+            "¿Me compartes el ID o el enlace específico?"
+        )
+
+    return await construir_respuesta_captadores(estado, codigos)
 
 # ============================================================
 # WASI
@@ -3233,6 +3325,11 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     requiere_confirmar_ciudad = estado.get("requiere_confirmar_ciudad") and not filtros_actuales.get("ciudad")
 
+    if respuesta_intermedia is None:
+        respuesta_captador = await manejar_peticion_captador(estado, mensaje)
+        if respuesta_captador:
+            respuesta_intermedia = respuesta_captador
+
     if respuesta_intermedia is not None:
         respuesta = respuesta_intermedia
     else:
@@ -3289,31 +3386,17 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 respuesta = mensaje_solicitud_datos_lead(faltantes)
                 continue
 
+        # Fallback automático si ya hay criterios suficientes pero no se disparó la búsqueda
         if (
             criterios_suficientes(estado)
             and not requiere_confirmar_ciudad
             and acciones_tipos.isdisjoint(
                 {"buscar_propiedades", "mostrar_mas_propiedades", "buscar_por_codigo", "seleccionar_propiedad"}
             )
-            and (hubo_cambio or "busc" in texto_normalizado or "muestr" in texto_normalizado)
+            and (hubo_cambio or any(token in texto_normalizado for token in ["busca", "muestr", "ver", "opcion", "opción"]))
         ):
             respuesta = await mostrar_propiedades(estado)
 
-    # --- Fallback automático para ejecutar la búsqueda cuando ya hay criterios ---
-    acciones_tipos = {a.tipo for a in acciones}
-    busqueda_pendiente = acciones_tipos.isdisjoint(
-        {"buscar_propiedades", "mostrar_mas_propiedades", "buscar_por_codigo", "seleccionar_propiedad"}
-    )
-
-    if (
-        respuesta_intermedia is None
-        and busqueda_pendiente
-        and criterios_suficientes(estado)
-        and not requiere_confirmar_ciudad
-        and (hubo_cambio or any(token in texto_normalizado for token in ["busca", "muestr", "ver", "opcion", "opción"]))
-    ):
-        respuesta = await mostrar_propiedades(estado)
-        
         if not respuesta:
             if requiere_confirmar_ciudad:
                 pregunta_base = (
