@@ -1515,7 +1515,7 @@ PALABRAS_NEGOCIACION_OBJETIVO = {
     
 PATRONES_NEGOCIACION = {
     "depositos": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?dep[oó]sit", re.IGNORECASE),
-    "adelantados": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?adelant", re.IGNORECASE),
+    "adelantados": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:por\s+)?(?:de\s+)?adelant", re.IGNORECASE),
     "comision": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?comisi[oó]n", re.IGNORECASE),
 }
 PATRON_CONTRATO = re.compile(
