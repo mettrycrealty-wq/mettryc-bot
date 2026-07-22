@@ -2746,11 +2746,17 @@ def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
     ]
     for patron in patrones:
         coincidencia = re.search(patron, texto, re.IGNORECASE)
-        if coincidencia:
-            codigo = coincidencia.group(1)
-            codigo_numerico = re.sub(r"\D", "", codigo)
-            if re.fullmatch(r"\d{4,}", codigo_numerico):
-                return codigo_numerico
+        if not coincidencia:
+            continue
+        codigo = coincidencia.group(1)
+        inicio, fin = coincidencia.span()
+        palabra_completa = original[max(0, inicio - 40): min(len(original), fin + 40)]
+        if "@" in codigo or "@" in palabra_completa:
+            continue
+        codigo_numerico = re.sub(r"\D", "", codigo)
+        if re.fullmatch(r"\d{4,}", codigo_numerico):
+            return codigo_numerico
+
     texto_sin_correos = re.sub(r"\S+@\S+", " ", texto)
     texto = texto_sin_correos
     solo_digitos = re.sub(r"\D", "", texto)
