@@ -1815,6 +1815,70 @@ async def llamar_openrouter_json(modelo_pydantic, mensajes: List[dict], temperat
                 )
     return None
 
+def construir_estado_para_ia(estado: dict) -> dict:
+    propiedad_interes = estado.get("propiedad_interes")
+    lead_info = estado.get("lead", {})
+    faltantes_lead: List[str] = []
+    try:
+        faltantes_lead = datos_lead_faltantes(estado)
+    except Exception:
+        faltantes_lead = []
+
+    return {
+        "rol": estado.get("rol"),
+        "confianza_rol": estado.get("confianza_rol"),
+        "objetivo": estado.get("objetivo"),
+        "operacion_confirmada": estado.get("operacion_confirmada"),
+        "pregunta_presupuesto_colega_realizada": estado.get("pregunta_presupuesto_colega_realizada"),
+        "filtros": estado.get("filtros"),
+        "sin_preferencia": estado.get("sin_preferencia"),
+        "esperando_codigo": estado.get("esperando_codigo"),
+        "esperando_presupuesto": estado.get("esperando_presupuesto"),
+        "ultimo_lote": estado.get("ultimo_lote"),
+        "requiere_confirmar_ciudad": estado.get("requiere_confirmar_ciudad"),
+        "accion_sugerida": estado.get("accion_sistema"),
+        "propiedad_interes": (
+            {"id": propiedad_interes.get("id"), "titulo": propiedad_interes.get("titulo")}
+            if propiedad_interes
+            else None
+        ),
+        "lead": {
+            "nombre": lead_info.get("nombre"),
+            "correo": lead_info.get("correo"),
+            "whatsapp": "disponible" if lead_info.get("whatsapp") else None,
+            "numero_actual_disponible": bool(estado.get("numero_canal")),
+            "faltantes": faltantes_lead,
+            "confirmacion_pendiente": estado.get("lead_confirmacion_pendiente"),
+            "confirmado": estado.get("lead_confirmado"),
+        },
+    }
+
+
+async def decidir_con_ia(mensaje: str, estado: dict) -> DecisionAgente:
+    contexto = {
+        "estado_comercial": construir_estado_para_ia(estado),
+        "mensaje_actual": mensaje,
+    }
+    mensajes = [
+        {"role": "system", "content": PROMPT_MAESTRO},
+        *estado.get("historial", [])[-12:],
+        {
+            "role": "user",
+            "content": (
+                "Analiza el mensaje actual usando el estado comercial y responde con la decisión estructurada.\n\n"
+                + json.dumps(contexto, ensure_ascii=False)
+            ),
+        },
+    ]
+    decision = await llamar_openrouter_json(DecisionAgente, mensajes, temperatura=0.35)
+    if decision:
+        if decision.actualizaciones is None:
+            decision.actualizaciones = ActualizacionesConversacion()
+        normalizar_acciones_decision(decision)
+        return decision
+    return decision_fallback(mensaje, estado)
+    
+
 async def decidir_con_ia(mensaje: str, estado: dict) -> DecisionAgente:
     contexto = {
         "estado_comercial": construir_estado_para_ia(estado),
