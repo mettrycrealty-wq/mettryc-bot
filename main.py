@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+import html
 import unicodedata
 import uuid
 from contextlib import asynccontextmanager
@@ -1489,19 +1490,25 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
 
 def recopilar_secciones_propiedad(propiedad: dict) -> List[Tuple[str, str]]:
     secciones: List[Tuple[str, str]] = []
-    descripcion = propiedad.get("descripcion_amplia") or propiedad.get("descripcion") or ""
-    if descripcion:
-        for fragmento in re.split(r"[.\n]+", descripcion):
-            fragmento_limpio = fragmento.strip()
-            if fragmento_limpio:
-                secciones.append(("descripcion", fragmento_limpio))
+
+    descripcion_raw = (
+        propiedad.get("descripcion_amplia")
+        or propiedad.get("descripcion")
+        or ""
+    )
+    descripcion_limpia = limpiar_html_a_texto(descripcion_raw)
+    if descripcion_limpia:
+        lineas = [linea.strip() for linea in descripcion_limpia.split("\n") if linea.strip()]
+        for linea in lineas:
+            secciones.append(("descripcion", linea))
 
     for campo in ("caracteristicas", "caracteristicas_exteriores", "equipamiento"):
         valores = propiedad.get(campo) or []
         for item in valores:
-            item_texto = str(item).strip()
+            item_texto = limpiar_html_a_texto(str(item))
             if item_texto:
                 secciones.append((campo, item_texto))
+
     return secciones
 
 async def obtener_html_ficha(propiedad: dict) -> Optional[str]:
@@ -1554,7 +1561,7 @@ def extraer_texto_ficha(html: str) -> Dict[str, str]:
     if not descripcion_texto:
         candidato = soup.select_one("main") or soup.body
         if candidato:
-            descripcion_texto = candidato.get_text("\n", strip=True)[:3000]
+            descripcion_texto = candidato.get_text("\n", strip=True)
 
     selectores_caracteristicas = [
         ".property-features li",
@@ -1566,6 +1573,11 @@ def extraer_texto_ficha(html: str) -> Dict[str, str]:
     caracteristicas_texto = "\n".join(
         item.get_text(strip=True) for item in soup.select(",".join(selectores_caracteristicas))
     )
+
+    return {
+        "descripcion": limpiar_html_a_texto(descripcion_texto),
+        "caracteristicas": limpiar_html_a_texto(caracteristicas_texto),
+    }
 
     return {
         "descripcion": descripcion_texto.strip(),
@@ -1626,7 +1638,8 @@ def buscar_fragmento_info_propiedad(propiedad: dict, pregunta: str) -> Optional[
     mejor_score = 0
 
     for campo, fragmento in secciones:
-        tokens_fragmento = tokens_significativos(fragmento)
+        fragmento_limpio = limpiar_html_a_texto(fragmento)
+        tokens_fragmento = tokens_significativos(fragmento_limpio)
         if not tokens_fragmento:
             continue
 
@@ -1636,12 +1649,27 @@ def buscar_fragmento_info_propiedad(propiedad: dict, pregunta: str) -> Optional[
                 score += 1
 
         if score > mejor_score:
-            mejor = (campo, fragmento.strip())
+            mejor = (campo, fragmento_limpio.strip())
             mejor_score = score
 
-    if mejor_score == 0:
+    if not mejor or mejor_score == 0:
         return None
-    return mejor
+
+    campo_mejor, fragmento_mejor = mejor
+    lineas = [linea.strip() for linea in fragmento_mejor.split("\n") if linea.strip()]
+    lineas_relevantes = [
+        linea
+        for linea in lineas
+        if any(
+            tokens_coinciden(token_pregunta, token_fragmento)
+            for token_pregunta in tokens_pregunta
+            for token_fragmento in tokens_significativos(linea)
+        )
+    ]
+    if lineas_relevantes:
+        fragmento_mejor = " ".join(lineas_relevantes)
+
+    return campo_mejor, fragmento_mejor.strip()
 
 
 async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
@@ -1654,6 +1682,7 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
         return None
 
     texto_norm = normalizar_texto(mensaje)
+
     secciones = recopilar_secciones_propiedad(propiedad)
     tokens_propiedad: Set[str] = set()
     for _, frag in secciones:
@@ -1666,10 +1695,14 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
     if not (hay_palabra_clave or (es_pregunta and hay_interseccion)):
         return None
 
-    descripcion_local = propiedad.get("descripcion_amplia") or propiedad.get("descripcion")
+    descripcion_local = limpiar_html_a_texto(
+        propiedad.get("descripcion_amplia")
+        or propiedad.get("descripcion")
+        or ""
+    )
     if descripcion_local:
         if any(palabra in texto_norm for palabra in ["descripcion", "descripción", "detalles", "informacion", "información"]):
-            return f"Esta es la descripción oficial del anuncio:\n\n{descripcion_local.strip()}"
+            return f"Esta es la descripción oficial del anuncio:\n\n{descripcion_local}"
 
     resultado = buscar_fragmento_info_propiedad(propiedad, mensaje)
     if resultado:
@@ -1680,37 +1713,50 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
             "caracteristicas_exteriores": "en las características exteriores",
             "equipamiento": "en el equipamiento",
         }.get(campo, "en la ficha")
-        fragmento_formateado = fragmento if fragmento.endswith(".") else f"{fragmento}."
-        return f"Según la ficha ({origen_legible}), {fragmento_formateado}"
 
-    # --- Fallback: descargar la ficha pública ---
-    html = await obtener_html_ficha(propiedad)
-    if html:
-        ficha_extra = extraer_texto_ficha(html)
-        if ficha_extra.get("descripcion") and not propiedad.get("descripcion_amplia"):
-            propiedad["descripcion_amplia"] = ficha_extra["descripcion"]
-        if ficha_extra.get("caracteristicas"):
-            caracteristicas_lista = [
+        fragmento_respuesta = fragmento.rstrip(".") + "."
+        if "no restaurant" in fragmento.lower():
+            fragmento_respuesta = "no se permite restaurant en este local."
+        elif "no se permite" in fragmento.lower() or "no se permiten" in fragmento.lower():
+            fragmento_respuesta = fragmento_respuesta[0].upper() + fragmento_respuesta[1:]
+
+        return f"Según la ficha ({origen_legible}), {fragmento_respuesta}"
+
+    html_ficha = await obtener_html_ficha(propiedad)
+    if html_ficha:
+        ficha_extra = extraer_texto_ficha(html_ficha)
+        descripcion_extra = ficha_extra.get("descripcion")
+        caracteristicas_extra = ficha_extra.get("caracteristicas")
+
+        if descripcion_extra and not propiedad.get("descripcion_amplia"):
+            propiedad["descripcion_amplia"] = descripcion_extra
+        if caracteristicas_extra:
+            listado = [
                 item.strip()
-                for item in ficha_extra["caracteristicas"].splitlines()
+                for item in caracteristicas_extra.split("\n")
                 if item.strip()
             ]
-            if caracteristicas_lista:
-                propiedad.setdefault("caracteristicas", list(dict.fromkeys(caracteristicas_lista)))
+            if listado:
+                propiedad.setdefault("caracteristicas", [])
+                existentes = set(propiedad["caracteristicas"])
+                for item in listado:
+                    if item not in existentes:
+                        propiedad["caracteristicas"].append(item)
+                        existentes.add(item)
 
         texto_busqueda = "\n".join(filter(None, ficha_extra.values()))
         tokens_ficha = tokens_significativos(texto_busqueda)
 
         if tokens_ficha & tokens_pregunta:
-            if ficha_extra.get("descripcion"):
+            if descripcion_extra:
                 return (
                     "Esto es lo que indica la descripción publicada en el portal:\n\n"
-                    f"{ficha_extra['descripcion']}"
+                    f"{descripcion_extra}"
                 )
-            if ficha_extra.get("caracteristicas"):
+            if caracteristicas_extra:
                 return (
                     "Las características listadas en el portal son:\n"
-                    f"{ficha_extra['caracteristicas']}"
+                    f"{caracteristicas_extra}"
                 )
 
     estado["asesor_confirmacion_pendiente"] = True
