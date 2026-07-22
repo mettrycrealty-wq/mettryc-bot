@@ -1486,6 +1486,25 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
     "restaurante",
     "restaurant",
     "restaur",
+    "condicion",        # ← nueva
+    "condiciones",      # ← nueva
+    "condición",        # ← nueva
+}
+
+PALABRAS_NEGOCIACION_OBJETIVO = {
+    "condicion",
+    "condiciones",
+    "negociacion",
+    "deposito",
+    "adelantado",
+    "adelantados",
+    "comision",
+    "canon",
+    "meses",
+    "mes",
+    "redaccion",
+    "documento",
+    "contrato",
 }
 
 def recopilar_secciones_propiedad(propiedad: dict) -> List[Tuple[str, str]]:
@@ -1686,6 +1705,24 @@ def buscar_fragmento_info_propiedad(propiedad: dict, pregunta: str) -> Optional[
 
     return campo_mejor, fragmento_mejor.strip()
 
+def buscar_fragmento_negociacion(secciones: List[Tuple[str, str]]) -> Optional[Tuple[str, str]]:
+    prioritarios: List[Tuple[str, str]] = []
+    secundarios: List[Tuple[str, str]] = []
+
+    for campo, fragmento in secciones:
+        texto_norm = normalizar_texto(fragmento)
+        if any(palabra in texto_norm for palabra in PALABRAS_NEGOCIACION_OBJETIVO):
+            if re.search(r"\d", fragmento):
+                prioritarios.append((campo, fragmento.strip()))
+            else:
+                secundarios.append((campo, fragmento.strip()))
+
+    if prioritarios:
+        return prioritarios[0]
+    if secundarios:
+        return secundarios[0]
+    return None
+    
 
 async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
     propiedad = obtener_propiedad_contexto(estado)
@@ -1710,18 +1747,19 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
     if not (hay_palabra_clave or (es_pregunta and hay_interseccion)):
         return None
 
+    tokens_negociacion = tokens_pregunta & PALABRAS_NEGOCIACION_OBJETIVO
+
     descripcion_local = limpiar_html_a_texto(
         propiedad.get("descripcion_amplia")
         or propiedad.get("descripcion")
         or ""
     )
+
     if descripcion_local:
         if any(palabra in texto_norm for palabra in ["descripcion", "descripción", "detalles", "informacion", "información"]):
             return f"Esta es la descripción oficial del anuncio:\n\n{descripcion_local}"
 
-    resultado = buscar_fragmento_info_propiedad(propiedad, mensaje)
-    if resultado:
-        campo, fragmento = resultado
+    def responder_fragmento(campo: str, fragmento: str, enfatizar_negociacion: bool = False) -> str:
         origen_legible = {
             "descripcion": "en la descripción extendida",
             "caracteristicas": "en las características internas",
@@ -1729,13 +1767,40 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
             "equipamiento": "en el equipamiento",
         }.get(campo, "en la ficha")
 
-        fragmento_respuesta = fragmento.rstrip(".") + "."
-        if "no restaurant" in fragmento.lower():
-            fragmento_respuesta = "no se permite restaurant en este local."
-        elif "no se permite" in fragmento.lower() or "no se permiten" in fragmento.lower():
-            fragmento_respuesta = fragmento_respuesta[0].upper() + fragmento_respuesta[1:]
+        fragmento_limpio = limpiar_html_a_texto(fragmento).rstrip(".") + "."
+        texto_fragmento = fragmento_limpio.lower()
 
-        return f"Según la ficha ({origen_legible}), {fragmento_respuesta}"
+        if "no restaurant" in texto_fragmento:
+            fragmento_limpio = "no se permite restaurant en este local."
+        elif "no se permite" in texto_fragmento or "no se permiten" in texto_fragmento:
+            fragmento_limpio = fragmento_limpio[0].upper() + fragmento_limpio[1:]
+
+        if enfatizar_negociacion:
+            return f"Según la ficha ({origen_legible}), las condiciones de negociación son: {fragmento_limpio}"
+        return f"Según la ficha ({origen_legible}), {fragmento_limpio}"
+
+    def intentar_responder() -> Optional[str]:
+        resultado_local = buscar_fragmento_info_propiedad(propiedad, mensaje)
+        if resultado_local:
+            campo_local, fragmento_local = resultado_local
+            enfatizar = False
+            if tokens_negociacion:
+                texto_frag_norm = normalizar_texto(fragmento_local)
+                if any(palabra in texto_frag_norm for palabra in PALABRAS_NEGOCIACION_OBJETIVO):
+                    enfatizar = True
+            return responder_fragmento(campo_local, fragmento_local, enfatizar)
+
+        if tokens_negociacion:
+            secciones_actuales = recopilar_secciones_propiedad(propiedad)
+            fragmento_neg = buscar_fragmento_negociacion(secciones_actuales)
+            if fragmento_neg:
+                campo_neg, frag_neg = fragmento_neg
+                return responder_fragmento(campo_neg, frag_neg, True)
+        return None
+
+    respuesta_fragmentos = intentar_responder()
+    if respuesta_fragmentos:
+        return respuesta_fragmentos
 
     html_ficha = await obtener_html_ficha(propiedad)
     if html_ficha:
@@ -1743,14 +1808,10 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
         descripcion_extra = ficha_extra.get("descripcion")
         caracteristicas_extra = ficha_extra.get("caracteristicas")
 
-        if descripcion_extra and not propiedad.get("descripcion_amplia"):
+        if descripcion_extra:
             propiedad["descripcion_amplia"] = descripcion_extra
         if caracteristicas_extra:
-            listado = [
-                item.strip()
-                for item in caracteristicas_extra.split("\n")
-                if item.strip()
-            ]
+            listado = [item.strip() for item in caracteristicas_extra.split("\n") if item.strip()]
             if listado:
                 propiedad.setdefault("caracteristicas", [])
                 existentes = set(propiedad["caracteristicas"])
@@ -1759,27 +1820,26 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
                         propiedad["caracteristicas"].append(item)
                         existentes.add(item)
 
-        texto_busqueda = "\n".join(filter(None, ficha_extra.values()))
-        tokens_ficha = tokens_significativos(texto_busqueda)
+        respuesta_fragmentos = intentar_responder()
+        if respuesta_fragmentos:
+            return respuesta_fragmentos
 
-        if tokens_ficha & tokens_pregunta:
-            if descripcion_extra:
-                return (
-                    "Esto es lo que indica la descripción publicada en el portal:\n\n"
-                    f"{descripcion_extra}"
-                )
-            if caracteristicas_extra:
-                return (
-                    "Las características listadas en el portal son:\n"
-                    f"{caracteristicas_extra}"
-                )
+        if descripcion_extra:
+            return (
+                "Esto es lo que indica la descripción publicada en el portal:\n\n"
+                f"{descripcion_extra}"
+            )
+        if caracteristicas_extra:
+            return (
+                "Las características listadas en el portal son:\n"
+                f"{caracteristicas_extra}"
+            )
 
     estado["asesor_confirmacion_pendiente"] = True
     return (
         "Revisé la información de la propiedad y no conseguí lo que me preguntas. "
         "¿Prefieres hablar con asesor para una mejor respuesta o quieres preguntarme algo más?"
     )
-
 # ============================================================
 # WASI
 # ============================================================
