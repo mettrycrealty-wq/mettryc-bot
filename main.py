@@ -1725,6 +1725,30 @@ PALABRAS_VISITA_NORM = {normalizar_texto(p) for p in PALABRAS_VISITA}
 PALABRAS_NEGOCIACION_NORM = {normalizar_texto(p) for p in PALABRAS_NEGOCIACION_OBJETIVO}
 NEGOCIACION_TOKENS_NORM = {normalizar_texto(p) for p in NEGOCIACION_TOKENS}
 
+FRASES_VISITA = {
+    "quiero visitar",
+    "quiero ver",
+    "cuando puedo ver",
+    "cuando lo puedo ver",
+    "puedo ir a ver",
+    "puedo visitarlo",
+    "puedo visitarla",
+    "agendar visita",
+    "agendar cita",
+    "coordinemos la visita",
+    "coordinar la visita",
+    "coordinar una visita",
+    "programar una visita",
+    "quiero visitarlo",
+    "quiero visitarla",
+    "quiero verlo",
+    "quiero verla",
+    "cuando lo puedo visitar",
+    "cuando puedo visitarlo",
+    "cuando puedo visitarla",
+}
+
+
 def preparar_tokens_busqueda(tokens: Set[str]) -> Set[str]:
     tokens_expandidos = set(tokens)
     if tokens_expandidos & PALABRAS_NEGOCIACION_NORM:
@@ -1974,7 +1998,9 @@ def buscar_fragmento_negociacion(secciones: List[Tuple[str, str]]) -> Optional[T
     if secundarios:
         return secundarios[0]
     return None
-    
+
+def contiene_frase(texto_norm: str, frases: Set[str]) -> bool:
+    return any(frase in texto_norm for frase in frases)    
 
 async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
     propiedad = obtener_propiedad_contexto(estado)
@@ -1988,8 +2014,9 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
     tokens_busqueda = preparar_tokens_busqueda(tokens_pregunta)
     texto_norm = normalizar_texto(mensaje)
 
-    # --- NUEVO: detectar intención de visita y disponibilidad ---
-    if tokens_pregunta & PALABRAS_VISITA_NORM:
+    # --- actualización: detectar intención de visita o disponibilidad con tokens y frases ---
+    peticion_visita = bool(tokens_pregunta & PALABRAS_VISITA_NORM) or contiene_frase(texto_norm, FRASES_VISITA)
+    if peticion_visita:
         estado["objetivo"] = "captura_lead"
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
@@ -1997,7 +2024,19 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
         faltantes = datos_lead_faltantes(estado)
         return mensaje_solicitud_datos_lead(faltantes, saludo=True)
 
-    if tokens_pregunta & PALABRAS_DISPONIBILIDAD_NORM:
+    peticion_disponibilidad = bool(tokens_pregunta & PALABRAS_DISPONIBILIDAD_NORM) or contiene_frase(
+        texto_norm,
+        {
+            "esta disponible",
+            "está disponible",
+            "sigue disponible",
+            "todavia disponible",
+            "todavía disponible",
+            "aun disponible",
+            "aún disponible",
+        },
+    )
+    if peticion_disponibilidad:
         operacion = propiedad.get("operacion_buscada")
         if not operacion:
             renta = convertir_float(propiedad.get("precio_alquiler"))
@@ -2013,7 +2052,7 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
             f"Sí, según nuestro inventario esta propiedad sigue disponible para {texto_operacion}. "
             "¿Quieres que coordinemos la visita?"
         )
-    # --- FIN NUEVO ---
+    # --- fin actualización ---
 
     secciones = recopilar_secciones_propiedad(propiedad)
     tokens_propiedad: Set[str] = set()
