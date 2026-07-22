@@ -1512,9 +1512,7 @@ PALABRAS_NEGOCIACION_OBJETIVO = {
     "contrato",
 }
 
-PALABRAS_NEGOCIACION_NORM = {normalizar_texto(p) for p in PALABRAS_NEGOCIACION_OBJETIVO}
-NEGOCIACION_TOKENS_NORM = {normalizar_texto(p) for p in NEGOCIACION_TOKENS}
-
+    
 PATRONES_NEGOCIACION = {
     "depositos": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?dep[oó]sit", re.IGNORECASE),
     "adelantados": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?adelant", re.IGNORECASE),
@@ -1676,6 +1674,9 @@ NEGOCIACION_TOKENS = {
     "garantia",
     "garantias",
 }
+
+PALABRAS_NEGOCIACION_NORM = {normalizar_texto(p) for p in PALABRAS_NEGOCIACION_OBJETIVO}
+NEGOCIACION_TOKENS_NORM = {normalizar_texto(p) for p in NEGOCIACION_TOKENS}
 
 def preparar_tokens_busqueda(tokens: Set[str]) -> Set[str]:
     tokens_expandidos = set(tokens)
