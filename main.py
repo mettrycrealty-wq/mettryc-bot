@@ -420,56 +420,6 @@ def extraer_correo_detallado(texto: str) -> Tuple[Optional[str], Optional[str]]:
     correo = coincidencia.group(0)
     return correo.lower(), correo
 
-def fijar_expectativa(estado: dict, tipo: Optional[str]) -> None:
-    """Única función que debe usarse para declarar qué se le pidió al usuario.
-    Sincroniza las banderas legacy para no romper el resto del código existente."""
-    estado["expectativa"] = tipo
-    estado["esperando_codigo"] = (tipo == "codigo_inmueble")
-    estado["esperando_presupuesto"] = (tipo == "presupuesto")
-
-
-def limpiar_expectativa(estado: dict, solo_si: Optional[str] = None) -> None:
-    """Apaga la expectativa. Si se pasa `solo_si`, solo apaga cuando coincide,
-    para que un extractor no apague por accidente una expectativa puesta por otro paso."""
-    if solo_si is not None and estado.get("expectativa") != solo_si:
-        return
-    estado["expectativa"] = None
-    estado["esperando_codigo"] = False
-    estado["esperando_presupuesto"] = False
-
-
-def separar_correo_y_texto(mensaje: str) -> Tuple[Optional[str], str]:
-    """Quita el correo del texto ANTES de cualquier extracción numérica.
-    Evita que dígitos de un email se interpreten como código, presupuesto o teléfono."""
-    correo, original = extraer_correo_detallado(mensaje)
-    if not original:
-        return None, mensaje
-    return correo, mensaje.replace(original, " ")
-
-
-def clasificar_numero_ambiguo(mensaje: str, expectativa: Optional[str]) -> Optional[str]:
-    """Punto ÚNICO de decisión sobre qué representa un número suelto en el mensaje.
-    Se calcula UNA SOLA VEZ por turno, a partir de una fotografía inmutable de la
-    expectativa. No debe volver a invocarse tras mutar el estado en el mismo turno."""
-    if not mensaje or not mensaje.strip():
-        return None
-
-    _correo, texto_sin_correo = separar_correo_y_texto(mensaje)
-    if not texto_sin_correo.strip():
-        return None
-
-    if expectativa == "presupuesto":
-        return "presupuesto"
-    if expectativa == "codigo_inmueble":
-        return "codigo"
-    if expectativa == "dato_lead":
-        return "telefono"
-
-    if re.search(r"c[oó]d(igo)?\b|mettryc\.com|mlv-\d|https?://|www\.", texto_sin_correo, re.IGNORECASE):
-        return "codigo"
-    if es_contexto_presupuesto(texto_sin_correo):
-        return "presupuesto"
-    return None
 
 def correo_valido(valor: Any) -> bool:
     return bool(
@@ -698,13 +648,8 @@ def detectar_presupuesto(texto: str) -> float:
     if not texto:
         return 0.0
 
-    # Alt 1: número con separador de miles explícito (1.500 / 1,500,000)
-    # Alt 2: número simple con o sin decimal (1500 / 1500.50)
-    # Multiplicadores en orden largo->corto para que "mil" no sea tragado por "m".
     patron = re.compile(
-        r"(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)"
-        r"\s*(millones|millón|mil|usd|dolares|dólares|k|m)?"
-        r"\s*(\$)?",
+        r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+)\s*(millones|millón|m|mil|k)?\s*(usd|dolares|dólares|\$)?",
         re.IGNORECASE,
     )
     mejor = 0.0
@@ -721,32 +666,22 @@ def detectar_presupuesto(texto: str) -> float:
             continue
 
         fragmento = texto_original[coincidencia.start(1):coincidencia.end(1)]
-        if re.fullmatch(r"\+?\d{7,}", fragmento.replace(" ", "")):
-            continue  # parece teléfono, no presupuesto
+        fragmento_sin_espacios = fragmento.replace(" ", "")
+        if re.fullmatch(r"\+?\d{7,}", fragmento_sin_espacios):
+            continue
 
         try:
-            if "." in fragmento and "," in fragmento:
-                numero = (
-                    fragmento.replace(".", "").replace(",", ".")
-                    if fragmento.rfind(",") > fragmento.rfind(".")
-                    else fragmento.replace(",", "")
-                )
-            elif "." in fragmento and len(fragmento.split(".")[-1]) == 3:
-                numero = fragmento.replace(".", "")
-            elif "," in fragmento and len(fragmento.split(",")[-1]) == 3:
-                numero = fragmento.replace(",", "")
-            else:
-                numero = fragmento.replace(",", ".")
+            numero = fragmento.replace(".", "").replace(",", "")
             numero_float = float(numero)
         except ValueError:
             continue
 
         factor = 1.0
         if multiplicador:
-            m = multiplicador.lower()
-            if m in {"mil", "k"}:
+            multiplicador = multiplicador.lower()
+            if multiplicador in {"mil", "k"}:
                 factor = 1_000.0
-            elif m in {"millones", "millón", "m"}:
+            elif multiplicador in {"millones", "millón", "m"}:
                 factor = 1_000_000.0
 
         monto = numero_float * factor
@@ -754,6 +689,7 @@ def detectar_presupuesto(texto: str) -> float:
             mejor = monto
 
     return mejor
+
 
 def detectar_operacion(texto: str) -> Optional[str]:
     texto_norm = normalizar_texto(texto)
@@ -1029,7 +965,6 @@ def crear_sesion(sender: str) -> dict:
         "creado_en": datetime.utcnow().isoformat(),
         "actualizado_en": datetime.utcnow().isoformat(),
         "esperando_presupuesto": False,
-        "expectativa": None,
         "requiere_confirmar_ciudad": None,
         "accion_sistema": None,
     }
@@ -2960,11 +2895,13 @@ PALABRAS_PREGUNTA_PRESUPUESTO = {
 }
 
 def marcar_pregunta_presupuesto(respuesta: str, estado: dict) -> None:
-    if not respuesta or "?" not in respuesta:
+    if not respuesta:
         return
     texto_norm = normalizar_texto(respuesta)
+    if "?" not in respuesta:
+        return
     if any(palabra in texto_norm for palabra in PALABRAS_PREGUNTA_PRESUPUESTO):
-        fijar_expectativa(estado, "presupuesto")
+        estado["esperando_presupuesto"] = True
 
 def es_contexto_presupuesto(texto: str) -> bool:
     if not texto:
@@ -3834,7 +3771,7 @@ async def mostrar_propiedades(estado: dict) -> str:
 async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
     propiedad = buscar_por_codigo(codigo)
     if not propiedad:
-        fijar_expectativa(estado, "codigo_inmueble")
+        estado["esperando_codigo"] = True
         return (
             f"No encontré un inmueble activo con el código {codigo}. Revisa si está escrito correctamente "
             "o envíame el enlace de la propiedad para buscarlo."
@@ -3940,34 +3877,26 @@ async def completar_y_asignar_lead(estado: dict) -> str:
         "te contactará por WhatsApp muy pronto."
     )
 
-def forzar_accion_evidente(
-    decision: DecisionAgente,
-    mensaje: str,
-    estado: dict,
-    expectativa_turno: Optional[str] = None,
-) -> DecisionAgente:
+def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict) -> DecisionAgente:
     acciones = normalizar_acciones_decision(decision)
+    texto_norm = normalizar_texto(mensaje)
 
-    if expectativa_turno is None:
-        expectativa_turno = estado.get("expectativa")
-
-    clasificacion = clasificar_numero_ambiguo(mensaje, expectativa_turno)
-
-    if clasificacion == "presupuesto":
+    if estado.get("esperando_presupuesto"):
         presupuesto = detectar_presupuesto(mensaje)
         if presupuesto > 0:
             if decision.actualizaciones is None:
                 decision.actualizaciones = ActualizacionesConversacion()
             decision.actualizaciones.presupuesto_max = presupuesto
-        limpiar_expectativa(estado, solo_si="presupuesto")
-        decision.acciones = deduplicar_acciones(acciones)
-        decision.accion = decision.acciones[0] if decision.acciones else None
-        return decision  # cortocircuito: en este turno NO se busca código
+            estado["esperando_presupuesto"] = False
 
-    codigo = extraer_codigo_inmueble(mensaje) if clasificacion == "codigo" else None
+    extraer_codigo_permitido = not estado.get("esperando_presupuesto") or re.search(
+        r"c[oó]d|inmueble|mettryc|mlv|https?://", mensaje, re.IGNORECASE
+    )
+    codigo = None
+    if extraer_codigo_permitido:
+        codigo = extraer_codigo_inmueble(mensaje)
     if codigo:
         acciones.insert(0, AccionAgente(tipo="buscar_por_codigo", codigo=codigo))
-        limpiar_expectativa(estado, solo_si="codigo_inmueble")
 
     if pide_mas_opciones(mensaje):
         acciones.append(AccionAgente(tipo="mostrar_mas_propiedades"))
@@ -3998,8 +3927,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado.setdefault("rol", None)
     estado.setdefault("confianza_rol", 0.0)
     estado.setdefault("asesor_confirmacion_pendiente", False)
-    estado.setdefault("expectativa", None)
-    expectativa_turno = estado.get("expectativa")   # FOTO de este turno, no se vuelve a leer tras mutar
 
     def _normalizar_operacion_detectada(valor: Optional[str]) -> Optional[str]:
         if not valor:
@@ -4202,7 +4129,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             confianza_rol=estado.get("confianza_rol", 0.0),
         )
 
-    decision = forzar_accion_evidente(decision, mensaje_sin_correo, estado, expectativa_turno)
+    decision = forzar_accion_evidente(decision, mensaje, estado)
     acciones = decision.acciones or []
     hubo_cambio = aplicar_decision(estado, decision, mensaje)
 
@@ -4218,8 +4145,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         confianza=getattr(decision, "confianza_rol", 0),
     )
 
-    _correo_temprano, mensaje_sin_correo = separar_correo_y_texto(mensaje)
-    texto_normalizado = normalizar_texto(mensaje_sin_correo)
+    texto_normalizado = normalizar_texto(mensaje)
 
     if any(frase in texto_normalizado for frase in FRASES_BLOQUEO_RESPUESTA):
         agregar_historial(estado, "user", mensaje)
@@ -4302,11 +4228,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     extraer_manual_permitido = not estado.get("esperando_presupuesto") or re.search(
         r"c[oó]d|inmueble|mettryc|mlv|https?://", mensaje, re.IGNORECASE
     )
-    codigo_manual = (
-    extraer_codigo_inmueble(mensaje_sin_correo)
-    if clasificar_numero_ambiguo(mensaje_sin_correo, expectativa_turno) == "codigo"
-    else None
-    )
+    codigo_manual = extraer_codigo_inmueble(mensaje) if extraer_manual_permitido else None
     if codigo_manual and estado.get("objetivo") != "captura_lead":
         estado["esperando_codigo"] = False
         estado.setdefault("historial_codigos", []).append(codigo_manual)
@@ -4395,7 +4317,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                         estado["propiedad_interes"] = propiedad_seleccionada           
                     respuesta = await mostrar_inmueble_especifico(estado, codigo)
                 else:
-                    fijar_expectativa(estado, "codigo_inmueble")
+                    estado["esperando_codigo"] = True
                     respuesta = "Para ayudarte necesito el código o enlace exacto de esa propiedad. ¿Puedes compartirlo?"
                 continue
 
@@ -4404,7 +4326,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                 continue
 
             if accion.tipo == "pedir_codigo_inmueble":
-                fijar_expectativa(estado, "codigo_inmueble")
+                estado["esperando_codigo"] = True
                 respuesta = decision.mensaje or (
                     "Para ubicar la ficha exacta necesito el código del anuncio o el enlace que viste. ¿Lo tienes a mano?"
                 )
