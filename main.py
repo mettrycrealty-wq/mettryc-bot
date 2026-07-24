@@ -741,6 +741,22 @@ def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
     coincidencia = MERCADOLIBRE_URL_RE.search(texto)
     return coincidencia.group(1) if coincidencia else None
 
+def formato_precio_dolar_sufijo(valor: Any) -> str:
+    numero = convertir_float(valor)
+    if numero <= 0:
+        return "N/D"
+    return f"{numero:,.0f}".replace(",", ".") + "$"
+
+
+def detectar_operacion_enlace_mercadolibre(texto: str) -> Optional[str]:
+    t = normalizar_texto(texto)
+    if "en venta" in t or "-en-venta-" in t:
+        return "venta"
+    if "en alquiler" in t or "-en-alquiler-" in t or "-en-renta-" in t:
+        return "alquiler"
+    return None
+
+
 # ============================================================
 # DETECCIONES AUTOMÁTICAS
 # ============================================================
@@ -3336,6 +3352,37 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             agregar_historial(estado, "assistant", respuesta_sin_contexto)
             guardar_sesion(sender, estado)
             return respuesta_sin_contexto
+
+        # --- Confirmación de cita desde enlace MercadoLibre ---
+    if estado.get("oferta_cita_pendiente"):
+        if es_respuesta_afirmativa(mensaje):
+            prop_id = estado.get("oferta_cita_propiedad_id")
+            propiedad = buscar_por_codigo(prop_id) if prop_id else None
+
+            if propiedad:
+                estado["propiedad_interes"] = propiedad
+                estado["ultimo_lote"] = [str(propiedad.get("id"))]
+                estado["objetivo"] = "captura_lead"
+
+            estado["oferta_cita_pendiente"] = False
+            estado["oferta_cita_propiedad_id"] = None
+
+            faltantes = datos_lead_faltantes(estado)
+            respuesta_cita = mensaje_solicitud_datos_lead(faltantes, saludo=True)
+
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_cita)
+            guardar_sesion(sender, estado)
+            return respuesta_cita
+
+        if es_respuesta_negativa(mensaje):
+            estado["oferta_cita_pendiente"] = False
+            estado["oferta_cita_propiedad_id"] = None
+            respuesta_no_cita = "Perfecto, si deseas te puedo compartir más opciones o responder dudas de esa propiedad."
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_no_cita)
+            guardar_sesion(sender, estado)
+            return respuesta_no_cita
     
     try:
         decision = await decidir_con_ia(mensaje, estado)
@@ -3425,40 +3472,66 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         return {"replies": []}
 
     # --- Manejo de consultas provenientes de Mercado Libre ---
-    if estado.get("consulta_mercadolibre", {}).get("pendiente"):
-        consulta_ml = estado["consulta_mercadolibre"]
-        consulta_ml["pendiente"] = False
-        codigo_ml = consulta_ml["codigo"]
-
-        respuesta_ml = await mostrar_inmueble_especifico(estado, codigo_ml)
-        if not respuesta_ml:
-            respuesta_ml = (
-                "No encontré esa propiedad en nuestro inventario. "
-                "¿Podrías confirmarme el enlace o el código del anuncio?"
-            )
-
-        agregar_historial(estado, "user", mensaje)
-        agregar_historial(estado, "assistant", respuesta_ml)
-        guardar_sesion(sender, estado)
-        return respuesta_ml
-
+    # --- Manejo directo de enlaces MercadoLibre ---
     codigo_mercadolibre = extraer_codigo_mercadolibre(mensaje)
     if codigo_mercadolibre:
-        estado["consulta_mercadolibre"] = {
-            "codigo": codigo_mercadolibre,
-            "pendiente": True,
-        }
-        saludo = "¡Hola! " if not estado.get("saludo_realizado") else ""
-        respuesta = (
-            f"{saludo}Gracias por escribirnos sobre la propiedad que viste en Mercado Libre. "
-            "¿Qué información te gustaría conocer de esa propiedad? "
-            "Puedo ayudarte con el precio, características o coordinar una visita."
+        propiedad_ml = buscar_por_codigo(codigo_mercadolibre)
+
+        if not propiedad_ml:
+            respuesta_ml_no_disponible = (
+                "No encontré esa propiedad activa en este momento en nuestro inventario de Wasi. "
+                "Si quieres, te ayudo a buscar opciones similares."
+            )
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_ml_no_disponible)
+            guardar_sesion(sender, estado)
+            return respuesta_ml_no_disponible
+
+        operacion_link = detectar_operacion_enlace_mercadolibre(mensaje)
+
+        precio_venta = convertir_float(propiedad_ml.get("precio_venta"))
+        precio_alquiler = convertir_float(propiedad_ml.get("precio_alquiler"))
+
+        if operacion_link == "alquiler":
+            operacion = "alquiler"
+            precio = precio_alquiler if precio_alquiler > 0 else precio_venta
+        else:
+            operacion = "venta"
+            precio = precio_venta if precio_venta > 0 else precio_alquiler
+
+        if precio <= 0:
+            respuesta_ml_sin_precio = (
+                "La propiedad está activa, pero el precio no está especificado en la ficha de Wasi. "
+                "¿Quieres que agendemos una cita?"
+            )
+            propiedad_ml["operacion_buscada"] = operacion
+            estado["propiedad_interes"] = propiedad_ml
+            estado["ultimo_lote"] = [str(propiedad_ml.get("id"))]
+            estado["oferta_cita_pendiente"] = True
+            estado["oferta_cita_propiedad_id"] = str(propiedad_ml.get("id"))
+
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_ml_sin_precio)
+            guardar_sesion(sender, estado)
+            return respuesta_ml_sin_precio
+
+        propiedad_ml["operacion_buscada"] = operacion
+        estado["propiedad_interes"] = propiedad_ml
+        estado["ultimo_lote"] = [str(propiedad_ml.get("id"))]
+        estado["esperando_codigo"] = False
+
+        estado["oferta_cita_pendiente"] = True
+        estado["oferta_cita_propiedad_id"] = str(propiedad_ml.get("id"))
+
+        respuesta_ml_ok = (
+            f"Esta propiedad esta disponible en {formato_precio_dolar_sufijo(precio)} , "
+            "¿quieres agendar una cita?"
         )
 
         agregar_historial(estado, "user", mensaje)
-        agregar_historial(estado, "assistant", respuesta)
+        agregar_historial(estado, "assistant", respuesta_ml_ok)
         guardar_sesion(sender, estado)
-        return respuesta
+        return respuesta_ml_ok
 
     # --- Mensajes que empiezan con solicitud directa de precio/info ---
     tokens_normalizados = texto_normalizado.split()
