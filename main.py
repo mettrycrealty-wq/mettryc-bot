@@ -582,6 +582,129 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
     patron = r"\b" + re.escape(termino) + r"\b"
     return re.search(patron, texto_normalizado) is not None
 
+# ============================================================
+# RESPUESTA RESTRINGIDA DE INMUEBLE (ANTI-ALUCINACIÓN)
+# ============================================================
+
+PALABRAS_VACIAS = {
+    "de", "la", "el", "los", "las", "un", "una", "y", "o", "en", "con", "sin",
+    "que", "se", "es", "al", "del", "por", "para", "me", "mi", "su", "sus",
+    "tiene", "hay", "cuantos", "cuántos", "cual", "cuál", "favor", "puedes",
+    "podrias", "podrías", "informacion", "información", "detalle", "detalles"
+}
+
+
+def _tokens_relevantes(texto: str) -> Set[str]:
+    return {
+        token
+        for token in normalizar_texto(texto).split()
+        if len(token) >= 3 and token not in PALABRAS_VACIAS
+    }
+
+
+def _segmentar_texto_fuente(texto: str) -> List[str]:
+    if not texto:
+        return []
+    partes = re.split(r"[.\n;•\-]+", str(texto))
+    return [parte.strip() for parte in partes if parte and parte.strip()]
+
+
+def responder_pregunta_restringida_propiedad(propiedad: dict, pregunta: str) -> str:
+    """
+    Responde SOLO con información contenida en:
+    - descripcion_wasi
+    - caracteristicas_internas_wasi
+    - caracteristicas_externas_wasi
+
+    Si no existe evidencia en esos campos, devuelve que no está especificado.
+    """
+    descripcion = str(propiedad.get("descripcion_wasi") or "")
+    internas = str(propiedad.get("caracteristicas_internas_wasi") or "")
+    externas = str(propiedad.get("caracteristicas_externas_wasi") or "")
+
+    fuentes = [
+        ("Descripción", descripcion),
+        ("Características internas", internas),
+        ("Características externas", externas),
+    ]
+
+    tokens_pregunta = _tokens_relevantes(pregunta)
+
+    if not tokens_pregunta:
+        return (
+            "Puedo responderte solo con la información publicada en la ficha del inmueble "
+            "(descripción, características internas y externas). "
+            "¿Qué dato específico deseas confirmar?"
+        )
+
+    candidatos: List[Tuple[int, str, str]] = []
+    for etiqueta_fuente, texto_fuente in fuentes:
+        for segmento in _segmentar_texto_fuente(texto_fuente):
+            tokens_segmento = _tokens_relevantes(segmento)
+            score = len(tokens_pregunta.intersection(tokens_segmento))
+            if score > 0:
+                candidatos.append((score, etiqueta_fuente, segmento))
+
+    if not candidatos:
+        return (
+            "No está especificado en la ficha del inmueble. "
+            "Solo puedo confirmar datos que aparezcan en la descripción, "
+            "características internas o características externas."
+        )
+
+    candidatos.sort(key=lambda x: x[0], reverse=True)
+    top = candidatos[:3]
+
+    lineas = ["Según la ficha del inmueble:"]
+    vistos = set()
+
+    for _score, fuente, texto in top:
+        clave = f"{fuente}:{texto}"
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        lineas.append(f"- ({fuente}) {texto}")
+
+    return "\n".join(lineas)
+
+def es_consulta_detalle_propiedad(mensaje: str) -> bool:
+    texto = normalizar_texto(mensaje)
+    if not texto:
+        return False
+
+    # Si es una pregunta directa
+    if "?" in str(mensaje):
+        return True
+
+    # Intención de detalle del inmueble
+    claves = [
+        "tiene",
+        "hay",
+        "incluye",
+        "cuenta con",
+        "cuantos",
+        "cuántos",
+        "metraje",
+        "area",
+        "área",
+        "habitaciones",
+        "banos",
+        "baños",
+        "garajes",
+        "estacionamiento",
+        "amoblado",
+        "piscina",
+        "terraza",
+        "patio",
+        "ascensor",
+        "vigilancia",
+        "descripcion",
+        "descripción",
+        "caracteristicas",
+        "características",
+    ]
+    return any(clave in texto for clave in claves)
+    
 MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
 PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "sigue disponible", "sigue estando disponible"}
 FRASES_BLOQUEO_RESPUESTA = {
@@ -1061,9 +1184,11 @@ async def obtener_inventario_wasi() -> List[dict]:
     if not WASI_TOKEN or not WASI_COMPANY_ID:
         logger.error("Faltan WASI_TOKEN o WASI_COMPANY_ID.")
         return []
+
     propiedades: List[dict] = []
     take = 100
     skip = 0
+
     for _ in range(100):
         params = {
             "wasi_token": WASI_TOKEN,
@@ -1072,6 +1197,7 @@ async def obtener_inventario_wasi() -> List[dict]:
             "skip": skip,
             "status": 1,
         }
+
         data = None
         for intento in range(3):
             try:
@@ -1091,26 +1217,46 @@ async def obtener_inventario_wasi() -> List[dict]:
                     type(exc).__name__,
                 )
                 await asyncio.sleep(2 ** intento)
+
         if not isinstance(data, dict):
             break
+
         cantidad_pagina = 0
         for clave, valor in data.items():
             if not (isinstance(valor, dict) and str(clave).isdigit()):
                 continue
+
             cantidad_pagina += 1
             property_id = valor.get("id_property")
             if not property_id:
                 continue
+
             usuario = valor.get("user_data") or {}
+
+            # Fuentes separadas (punto 1)
             descripcion = valor.get("description") or valor.get("observations") or ""
+            caracteristicas_internas = convertir_caracteristicas(valor.get("internal_features"))
+            caracteristicas_externas = convertir_caracteristicas(valor.get("external_features"))
+
+            # Texto combinado para búsqueda/filtros
             caracteristicas = " ".join(
                 [
                     convertir_caracteristicas(valor.get("features")),
-                    convertir_caracteristicas(valor.get("internal_features")),
-                    convertir_caracteristicas(valor.get("external_features")),
+                    caracteristicas_internas,
+                    caracteristicas_externas,
                 ]
             ).strip()
-            captador = f"{usuario.get("first_name", "")} {usuario.get("last_name", "")}".strip()
+
+            # URL ficha Wasi (si viene en payload)
+            url_ficha_wasi = (
+                valor.get("url")
+                or valor.get("link")
+                or valor.get("url_ficha")
+                or valor.get("url_property")
+                or ""
+            )
+
+            captador = f"{usuario.get('first_name', '')} {usuario.get('last_name', '')}".strip()
             localidad_wasi = str(valor.get("location_label") or "").strip()
             zona_wasi = str(valor.get("zone_label") or "").strip()
             zona_combinada = f"{localidad_wasi} {zona_wasi}".strip() or "N/D"
@@ -1121,12 +1267,18 @@ async def obtener_inventario_wasi() -> List[dict]:
                 {
                     "id": str(property_id),
                     "titulo": valor.get("title", "Propiedad Mettryc"),
-                    "descripcion": descripcion,
+                    "descripcion": descripcion,  # se mantiene por compatibilidad
                     "ciudad": valor.get("city_label", "N/D"),
                     "zona": zona_combinada,
                     "tipo_propiedad_wasi": valor.get("type_label", "N/D"),
-                    "precio_venta": parsear_precio_wasi(valor.get("sale_price"), valor.get("sale_price_label")),
-                    "precio_alquiler": parsear_precio_wasi(valor.get("rent_price"), valor.get("rent_price_label")),
+                    "precio_venta": parsear_precio_wasi(
+                        valor.get("sale_price"),
+                        valor.get("sale_price_label"),
+                    ),
+                    "precio_alquiler": parsear_precio_wasi(
+                        valor.get("rent_price"),
+                        valor.get("rent_price_label"),
+                    ),
                     "precio_venta_label": valor.get("sale_price_label", "N/D"),
                     "precio_alquiler_label": valor.get("rent_price_label", "N/D"),
                     "area": area_principal if area_principal else "N/D",
@@ -1134,18 +1286,27 @@ async def obtener_inventario_wasi() -> List[dict]:
                     "banos": valor.get("bathrooms", "N/D"),
                     "garajes": valor.get("garages", "N/D"),
                     "caracteristicas_texto": caracteristicas,
+
+                    # NUEVO: campos restringidos para respuestas sin alucinar
+                    "descripcion_wasi": descripcion,
+                    "caracteristicas_internas_wasi": caracteristicas_internas,
+                    "caracteristicas_externas_wasi": caracteristicas_externas,
+                    "url_ficha_wasi": url_ficha_wasi,
+
                     "captador_wasi": captador or "Asesor Mettryc",
                     "telefono_captador_wasi": usuario.get("phone", ""),
                     "enlace": f"https://www.mettryc.com/inmueble/{property_id}",
                 }
             )
+
         if cantidad_pagina < take:
             break
+
         skip += take
         await asyncio.sleep(0.25)
+
     logger.info("Inventario Wasi cargado propiedades=%s", len(propiedades))
     return propiedades
-
 
 def convertir_caracteristicas(valor: Any) -> str:
     if isinstance(valor, str):
@@ -3141,6 +3302,41 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
 
+    # --- Interceptor anti-alucinación para inmueble específico ---
+    # Si el usuario hace una consulta de detalle y ya hay una propiedad en contexto,
+    # respondemos SOLO con descripcion/caracteristicas internas/externas de la ficha.
+    if (
+        es_consulta_detalle_propiedad(mensaje)
+        and not estado.get("esperando_codigo")
+        and not extraer_codigo_inmueble(mensaje)
+        and not extraer_codigo_mercadolibre(mensaje)
+        and not str(mensaje).strip().startswith("/")
+    ):
+        propiedad_ctx = estado.get("propiedad_interes")
+
+        # fallback: si no hay propiedad_interes pero sí un único inmueble reciente mostrado
+        if not propiedad_ctx:
+            lote = estado.get("ultimo_lote", [])
+            if len(lote) == 1:
+                propiedad_ctx = buscar_por_codigo(lote[0])
+
+        if propiedad_ctx:
+            respuesta_restringida = responder_pregunta_restringida_propiedad(propiedad_ctx, mensaje)
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_restringida)
+            guardar_sesion(sender, estado)
+            return respuesta_restringida
+        else:
+            respuesta_sin_contexto = (
+                "Para responderte con precisión y sin suposiciones, compárteme el código "
+                "o el enlace de la ficha del inmueble en nuestro inventario."
+            )
+            estado["esperando_codigo"] = True
+            agregar_historial(estado, "user", mensaje)
+            agregar_historial(estado, "assistant", respuesta_sin_contexto)
+            guardar_sesion(sender, estado)
+            return respuesta_sin_contexto
+    
     try:
         decision = await decidir_con_ia(mensaje, estado)
     except Exception as exc:
