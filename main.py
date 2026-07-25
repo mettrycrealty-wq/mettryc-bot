@@ -45,7 +45,7 @@ MODELO_AGENTE_PRINCIPAL = os.getenv(
     "MODELO_AGENTE_PRINCIPAL",
     os.getenv(
         "MODELO_ANALISIS_PRINCIPAL",
-        "google/gemini-2.5-flash-lite",
+        "google/gemini-2.5-flash",
     ),
 )
 
