@@ -44,7 +44,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 MODELO_AGENTE_PRINCIPAL = os.getenv(
     "MODELO_AGENTE_PRINCIPAL",
-    os.getenv("MODELO_ANALISIS_PRINCIPAL", "google/gemini-2.5-flash"),
+    os.getenv("MODELO_ANALISIS_PRINCIPAL", "google/gemini-2.5-flash-lite"),
 )
 
 MODELO_AGENTE_RESPALDO = os.getenv(
@@ -611,13 +611,7 @@ def contiene_termino(texto_normalizado: str, termino: str) -> bool:
     return re.search(patron, texto_normalizado) is not None
 
 
-# ------------------------------------------------------------
-# REGEX MERCADO LIBRE (CORREGIDO)
-# ------------------------------------------------------------
-# Formato real de las URLs: ".../MLV-1015038150-titulo-del-anuncio-8582116-_JM"
-# El código de Wasi es el número INMEDIATAMENTE ANTERIOR a "-_JM"
 MERCADOLIBRE_URL_RE = re.compile(r"https?://[^\s]+?-(\d+)-_JM\b", re.IGNORECASE)
-
 PALABRAS_CONSULTA_DIRECTA = {"precio", "informacion", "información", "info", "sigue disponible", "sigue estando disponible"}
 FRASES_BLOQUEO_RESPUESTA = {
     "ofrece en",
@@ -645,16 +639,6 @@ FRASES_BLOQUEO_RESPUESTA = {
     "vuelve al mercado",
     "new listing",
 }
-
-
-def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
-    """Extrae el código Wasi desde un enlace de Mercado Libre.
-    El código es el número que aparece inmediatamente antes de '-_JM'.
-    """
-    if not texto:
-        return None
-    coincidencia = MERCADOLIBRE_URL_RE.search(texto)
-    return coincidencia.group(1) if coincidencia else None
 
 # ============================================================
 # DETECCIONES AUTOMÁTICAS
@@ -965,8 +949,6 @@ def crear_sesion(sender: str) -> dict:
         "propiedad_interes": None,
         "propiedad_seleccionada_posicion": None,
         "esperando_codigo": False,
-        "esperando_respuesta_cita": False,
-        "historial_codigos": [],
         "lead": {
             "nombre": None,
             "correo": None,
@@ -985,7 +967,6 @@ def crear_sesion(sender: str) -> dict:
         "esperando_presupuesto": False,
         "requiere_confirmar_ciudad": None,
         "accion_sistema": None,
-        "asesor_confirmacion_pendiente": False,
     }
 
 def obtener_sesion(sender: str) -> dict:
@@ -1113,12 +1094,6 @@ RESPUESTAS_AFIRMATIVAS = {
     "dale",
     "de una",
     "perfecto",
-    "va",
-    "vale",
-    "obvio",
-    "quiero",
-    "si quiero",
-    "si por favor",
 }
 
 RESPUESTAS_NEGATIVAS = {
@@ -1130,8 +1105,6 @@ RESPUESTAS_NEGATIVAS = {
     "no es correcto",
     "incorrecto",
     "para nada",
-    "no quiero",
-    "no por ahora",
 }
 
 CAMPO_ACK_LABELS = {
@@ -1190,9 +1163,7 @@ def es_respuesta_afirmativa(texto: str) -> bool:
         return False
     if texto_norm in RESPUESTAS_AFIRMATIVAS:
         return True
-    if len(texto_norm.split()) <= 4 and texto_norm.startswith("si"):
-        return True
-    return False
+    return texto_norm.startswith("si")
 
 def es_respuesta_negativa(texto: str) -> bool:
     texto_norm = normalizar_texto(texto)
@@ -1200,9 +1171,7 @@ def es_respuesta_negativa(texto: str) -> bool:
         return False
     if texto_norm in RESPUESTAS_NEGATIVAS:
         return True
-    if len(texto_norm.split()) <= 4 and texto_norm.startswith("no"):
-        return True
-    return False
+    return texto_norm.startswith("no")
 
 def formatear_whatsapp(valor: Optional[str]) -> str:
     if not valor:
@@ -1239,7 +1208,7 @@ def mensaje_solicitud_datos_lead(
     actualizados = list(dict.fromkeys(actualizados or []))
     partes = []
     if saludo:
-        partes.append("¡Perfecto! Para agendar tu cita y asignarte un asesor, envíame en un solo mensaje:")
+        partes.append("¡Excelente elección! Para asignarte un asesor, envíame en un solo mensaje:")
     elif actualizados:
         partes.append(f"¡Gracias! Registré {formatear_campos_para_respuesta(actualizados)}.")
         if faltantes:
@@ -1363,7 +1332,7 @@ def extraer_codigos_inmueble_multiple(texto: str) -> List[str]:
         r"mettryc\.com/inmueble/(\d+)",
         r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
         r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
-        r"https?://[^\s]+?-(\d+)-_JM\b",
+        r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
         r"\b[A-Z]{1,5}[-.\s]*(\d{4,})\b",
     ]
     encontrados: List[str] = []
@@ -1443,6 +1412,7 @@ STOPWORDS_INFO_PROPIEDAD = {
     "una",
     "uno",
     "del",
+    "una",
     "son",
     "sus",
     "mas",
@@ -1529,9 +1499,9 @@ PALABRAS_CLAVE_INFO_ADICIONAL = {
     "restaurante",
     "restaurant",
     "restaur",
-    "condicion",
-    "condiciones",
-    "condición",
+    "condicion",        # ← nueva
+    "condiciones",      # ← nueva
+    "condición",        # ← nueva
 }
 
 PALABRAS_NEGOCIACION_OBJETIVO = {
@@ -1555,7 +1525,7 @@ PALABRAS_NEGOCIACION_OBJETIVO = {
     "contrato",
 }
 
-
+    
 PATRONES_NEGOCIACION = {
     "depositos": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:de\s+)?dep[oó]sit", re.IGNORECASE),
     "adelantados": re.compile(r"(\d{1,2})\s*(?:mes(?:es)?)?\s*(?:por\s+)?(?:de\s+)?adelant", re.IGNORECASE),
@@ -1618,14 +1588,14 @@ async def obtener_html_ficha(propiedad: dict) -> Optional[str]:
         logger.warning("No se pudo descargar ficha %s: %s", url, exc)
         return None
 
-    html_contenido = respuesta.text
-    cache_ficha["html"] = html_contenido
+    html = respuesta.text
+    cache_ficha["html"] = html
     cache_ficha["expira"] = (datetime.utcnow() + timedelta(minutes=30)).timestamp()
-    return html_contenido
+    return html
 
 
-def extraer_texto_ficha(html_contenido: str) -> Dict[str, str]:
-    soup = BeautifulSoup(html_contenido, "html.parser")
+def extraer_texto_ficha(html: str) -> Dict[str, str]:
+    soup = BeautifulSoup(html, "html.parser")
 
     selectores_descripcion = [
         ".property-description",
@@ -1672,7 +1642,7 @@ def tokens_coinciden(a: str, b: str) -> bool:
     if len(a) >= 5 and len(b) >= 5 and (a in b or b in a):
         return True
     return False
-
+    
 
 def tokens_significativos(texto: str) -> Set[str]:
     tokens = re.findall(r"[a-záéíóúñü0-9]+", normalizar_texto(texto or ""))
@@ -1709,6 +1679,7 @@ NEGOCIACION_TOKENS = {
     "honorarios",
     "canon",
     "pagos",
+    "anticipo",
     "anticipo",
     "documento",
     "documentos",
@@ -1775,8 +1746,6 @@ FRASES_VISITA = {
     "cuando lo puedo visitar",
     "cuando puedo visitarlo",
     "cuando puedo visitarla",
-    "si quiero agendar",
-    "quiero agendar",
 }
 
 
@@ -2031,7 +2000,7 @@ def buscar_fragmento_negociacion(secciones: List[Tuple[str, str]]) -> Optional[T
     return None
 
 def contiene_frase(texto_norm: str, frases: Set[str]) -> bool:
-    return any(frase in texto_norm for frase in frases)
+    return any(frase in texto_norm for frase in frases)    
 
 async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optional[str]:
     propiedad = obtener_propiedad_contexto(estado)
@@ -2045,10 +2014,10 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
     tokens_busqueda = preparar_tokens_busqueda(tokens_pregunta)
     texto_norm = normalizar_texto(mensaje)
 
+    # --- actualización: detectar intención de visita o disponibilidad con tokens y frases ---
     peticion_visita = bool(tokens_pregunta & PALABRAS_VISITA_NORM) or contiene_frase(texto_norm, FRASES_VISITA)
     if peticion_visita:
         estado["objetivo"] = "captura_lead"
-        estado["esperando_respuesta_cita"] = False
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
         estado["asesor_confirmacion_pendiente"] = False
@@ -2083,6 +2052,7 @@ async def manejar_pregunta_info_adicional(estado: dict, mensaje: str) -> Optiona
             f"Sí, según nuestro inventario esta propiedad sigue disponible para {texto_operacion}. "
             "¿Quieres que coordinemos la visita?"
         )
+    # --- fin actualización ---
 
     secciones = recopilar_secciones_propiedad(propiedad)
     tokens_propiedad: Set[str] = set()
@@ -2475,7 +2445,6 @@ ESTILO Y PERSONALIDAD
 - Conversas con naturalidad: celebras, empatizas, aclaras dudas y no suenas robótica.
 - Usas frases cortas, variaciones naturales y evitas hablar como formulario.
 - Siempre mantienes la iniciativa comercial (propiedad → interés → datos → asignación).
-- NUNCA repites una pregunta cuyo dato ya aparece en el estado comercial que recibes.
 
 CONFIGURACION
 - No tienes permitido inventar respuestas ni alucinaciones, todas tus respuestas deben tener como base de conocimiento la informacion contenida en este prompt o en los campos de las fichas de los inmuebles como m2, habitaciones, baños, precio, caracteristicas externas e internas y descripcion.
@@ -2492,11 +2461,11 @@ INFORMACIÓN DE NUESTRA EMPRESA METTRYC REALTY
 - Reclutamiento: ingreso de $50, incluye curso y credenciales.
 - Formulario de Postulación para ser Agente Mettryc Realty: https://forms.gle/SbLtHrey69fhf3Xt8
 
-INMUEBLES ESPECIFICOS (MERCADO LIBRE Y OTROS PORTALES)
-- El backend ya intercepta automáticamente cualquier enlace de Mercado Libre (patrón "...-NUMERO-_JM") ANTES de que tú proceses el mensaje: extrae el código, verifica el inventario de Wasi y responde con el precio y la pregunta de agendar cita. Si ves en el historial que ya se envió ese mensaje, continúa la conversación con naturalidad, sin repetir la búsqueda.
-- Si alguien te escribe preguntando información de un anuncio ("info", "informacion", "precio", etc.) sin código visible, pide el código o el enlace.
-- Si te preguntan una información que no sabes, responde que no tienes ese dato pero que puedes asignar a un asesor para que atienda mejor esa consulta (pasa a capturar_lead).
-- Si preguntan por condiciones de negociación de un alquiler, básate únicamente en la descripción real del inmueble (depósitos, adelantos, comisión, redacción de contrato).
+INMUEBLES ESPECIFICOS
+- Si alguien te escribe preguntando informacion de un anuncio ("info", "informacion", "precio", etc) deberás respondes "Hola, necesito que me digas el código del inmueble que debe estar al final del título o descripción del anuncio que estas viendo."
+- En el caso que te envien un url de la pagina web mercadolibre deberás tomar como codigo en número que aparece justo antes de "-_JM" (ej. "Hola, tengo algunas preguntas sobre tu publicación en Mercado Libre: https://apartamento.mercadolibre.com.ve/MLV-1014940632-anexo-en-alquiler-urb-flor-amarillo-aa-9935990-_JM" el código sería "9935990")
+- Si te preguntan una información que no sabes la respuesta deberás decir que no tienes esa información pero que puedes asignar a uno de nuestros asesores inmobiliarios para que le atienda mejor y responda todas sus preguntas. Aquí pasas a capturar_lead y asignar un agente
+- Si te preguntan por las condiciones de negociacion de una propiedad en alquiler deberas buscar en la descripcion de ese inmueble estos datos y responder con ellos (ej. Negociación 3 depósito, 2 adelantados, 1 de comisión, Redacción de contrato)
 
 OBJETIVOS COMERCIALES
 1. Identificar si la persona es cliente final o colega inmobiliario.
@@ -2505,7 +2474,7 @@ OBJETIVOS COMERCIALES
 4. Capturar datos de contacto de clientes (nombre, correo y WhatsApp) de manera persuasiva y natural.
 5. Confirmar la información antes de asignar al agente.
 6. Orientar a colegas con las fichas y datos del captador (nunca pidas datos de su cliente).
-7. Si la persona es cliente, sé persuasiva para motivarla a dejar sus datos (capturar_lead) y asignarle un agente para atención personalizada.
+7. Su la persona tiene el rol identificado como cliente deberás ser muy persuasiva para motivar al cliente que te suministre sus datos (capturar_lead) para asignarle un agente inmobiliario para una mejor atención personalizada. 
 
 HERRAMIENTAS DEL SISTEMA
 El backend solo ejecuta acciones cuando las solicitas explícitamente en `acciones`.
@@ -2686,9 +2655,71 @@ async def llamar_openrouter_json(modelo_pydantic, mensajes: List[dict], temperat
                 )
     return None
 
+async def llamar_openrouter_json(modelo_pydantic, mensajes: List[dict], temperatura: float = 0.2):
+    if not OPENROUTER_API_KEY:
+        return None
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://www.mettryc.com",
+        "X-Title": "Mettryc Realty Paty",
+    }
+    modelos = [MODELO_AGENTE_PRINCIPAL, MODELO_AGENTE_RESPALDO]
+    for modelo in modelos:
+        formatos = [
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": modelo_pydantic.__name__,
+                    "strict": True,
+                    "schema": modelo_pydantic.model_json_schema(),
+                },
+            },
+            {"type": "json_object"},
+        ]
+        for response_format in formatos:
+            payload = {
+                "model": modelo,
+                "messages": mensajes,
+                "temperature": temperatura,
+                "max_tokens": 900,
+                "response_format": response_format,
+            }
+            try:
+                respuesta = await http_client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=OPENROUTER_TIMEOUT,
+                )
+                respuesta.raise_for_status()
+                contenido = respuesta.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                if isinstance(contenido, list):
+                    contenido = "".join(
+                        elemento.get("text", "") for elemento in contenido if isinstance(elemento, dict)
+                    )
+                contenido = limpiar_json_modelo(contenido)
+                return modelo_pydantic.model_validate_json(contenido)
+            except (ValidationError, ValueError, httpx.HTTPError) as exc:
+                logger.warning(
+                    "OpenRouter JSON modelo=%s formato=%s tipo=%s",
+                    modelo,
+                    response_format.get("type"),
+                    type(exc).__name__,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "OpenRouter modelo=%s tipo=%s detalle=%s",
+                    modelo,
+                    type(exc).__name__,
+                    str(exc)[:150],
+                )
+    return None
+
 def construir_estado_para_ia(estado: dict) -> dict:
     propiedad_interes = estado.get("propiedad_interes")
     lead_info = estado.get("lead", {})
+    faltantes_lead: List[str] = []
     try:
         faltantes_lead = datos_lead_faltantes(estado)
     except Exception:
@@ -2704,7 +2735,6 @@ def construir_estado_para_ia(estado: dict) -> dict:
         "sin_preferencia": estado.get("sin_preferencia"),
         "esperando_codigo": estado.get("esperando_codigo"),
         "esperando_presupuesto": estado.get("esperando_presupuesto"),
-        "esperando_respuesta_cita": estado.get("esperando_respuesta_cita"),
         "ultimo_lote": estado.get("ultimo_lote"),
         "requiere_confirmar_ciudad": estado.get("requiere_confirmar_ciudad"),
         "accion_sugerida": estado.get("accion_sistema"),
@@ -2746,6 +2776,30 @@ async def decidir_con_ia(mensaje: str, estado: dict) -> DecisionAgente:
         if decision.actualizaciones is None:
             decision.actualizaciones = ActualizacionesConversacion()
         normalizar_acciones_decision(decision)
+        return decision
+    return decision_fallback(mensaje, estado)
+    
+
+async def decidir_con_ia(mensaje: str, estado: dict) -> DecisionAgente:
+    contexto = {
+        "estado_comercial": construir_estado_para_ia(estado),
+        "mensaje_actual": mensaje,
+    }
+    mensajes = [
+        {"role": "system", "content": PROMPT_MAESTRO},
+        *estado.get("historial", [])[-12:],
+        {
+            "role": "user",
+            "content": (
+                "Analiza el mensaje actual usando el estado comercial y responde con la decisión estructurada.\n\n"
+                + json.dumps(contexto, ensure_ascii=False)
+            ),
+        },
+    ]
+    decision = await llamar_openrouter_json(DecisionAgente, mensajes, temperatura=0.35)
+    if decision:
+        if decision.actualizaciones is None:
+            decision.actualizaciones = ActualizacionesConversacion()
         return decision
     return decision_fallback(mensaje, estado)
 
@@ -2862,15 +2916,11 @@ def extraer_codigo_inmueble(mensaje: str) -> Optional[str]:
     texto = original
     contexto_presupuesto_global = es_contexto_presupuesto(original)
 
-    # Primero intenta con el patrón exacto de Mercado Libre (más confiable)
-    codigo_ml = extraer_codigo_mercadolibre(original)
-    if codigo_ml:
-        return codigo_ml
-
     patrones = [
         r"mettryc\.com/inmueble/(\d+)",
         r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
         r"\b(?:ALM|EJL|LR|JM|MFR|TH)-?(\d{4,})\b",
+        r"/MLV-\d+-[A-Za-z\-]+-(\d+)_JM",
         r"\b[A-Z]{1,5}[-.\s]*(\d{4,})\b",
     ]
     for patron in patrones:
@@ -3718,7 +3768,6 @@ async def mostrar_propiedades(estado: dict) -> str:
     estado["objetivo"] = "evaluar_resultados"
     return await construir_respuesta_fichas(estado, propiedades)
 
-
 async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
     propiedad = buscar_por_codigo(codigo)
     if not propiedad:
@@ -3761,7 +3810,6 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
     estado["objetivo"] = "evaluar_resultados"
 
     return await construir_respuesta_fichas(estado, [propiedad], especifica=True)
-
 
 async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
     lote = estado.get("ultimo_lote", [])
@@ -3808,7 +3856,6 @@ async def seleccionar_propiedad(estado: dict, posicion: Optional[int]) -> str:
     faltantes = datos_lead_faltantes(estado)
     return mensaje_solicitud_datos_lead(faltantes, saludo=True)
 
-
 async def completar_y_asignar_lead(estado: dict) -> str:
     estado["lead_confirmacion_pendiente"] = False
     estado["lead_confirmado"] = True
@@ -3829,7 +3876,6 @@ async def completar_y_asignar_lead(estado: dict) -> str:
         f"¡Listo, {estado['lead']['nombre']}! Registré tu solicitud y el equipo de Mettryc Realty "
         "te contactará por WhatsApp muy pronto."
     )
-
 
 def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict) -> DecisionAgente:
     acciones = normalizar_acciones_decision(decision)
@@ -3867,69 +3913,6 @@ def forzar_accion_evidente(decision: DecisionAgente, mensaje: str, estado: dict)
     return decision
 
 # ============================================================
-# FLUJO DETERMINÍSTICO: ENLACE DE MERCADO LIBRE
-# ============================================================
-
-async def manejar_enlace_mercadolibre(estado: dict, mensaje: str) -> Optional[str]:
-    """
-    Cuando llega un enlace de Mercado Libre:
-    1) Extrae el código (número inmediatamente anterior a "-_JM").
-    2) Verifica disponibilidad y precio en el inventario de Wasi.
-    3) Responde con el formato fijo solicitado.
-    4) Deja la sesión esperando la respuesta de "¿quieres agendar una cita?".
-    """
-    codigo_ml = extraer_codigo_mercadolibre(mensaje)
-    if not codigo_ml:
-        return None
-
-    estado.setdefault("historial_codigos", []).append(codigo_ml)
-    propiedad = buscar_por_codigo(codigo_ml)
-
-    if not propiedad:
-        estado["esperando_codigo"] = False
-        estado["esperando_respuesta_cita"] = False
-        return (
-            f"No logré ubicar la propiedad con el código {codigo_ml} en nuestro inventario activo. "
-            "¿Puedes confirmarme el código o enviarme otro enlace del anuncio?"
-        )
-
-    precio_venta = convertir_float(propiedad.get("precio_venta"))
-    precio_alquiler = convertir_float(propiedad.get("precio_alquiler"))
-    propiedad["precio_venta_float"] = precio_venta
-    propiedad["precio_renta_float"] = precio_alquiler
-
-    if precio_venta > 0:
-        operacion_ml = "venta"
-        precio_mostrar = precio_venta
-    elif precio_alquiler > 0:
-        operacion_ml = "alquiler"
-        precio_mostrar = precio_alquiler
-    else:
-        operacion_ml = "venta"
-        precio_mostrar = 0
-
-    area_principal = convertir_float(propiedad.get("area"))
-    if area_principal <= 0:
-        area_extra = extraer_area_principal_wasi(propiedad)
-        if area_extra:
-            propiedad["area"] = area_extra
-
-    propiedad["operacion_buscada"] = operacion_ml
-    propiedad["url_publica"] = propiedad.get("enlace")
-
-    estado["propiedad_interes"] = propiedad
-    property_id_ml = str(propiedad["id"])
-    estado["ultimo_lote"] = [property_id_ml]
-    if property_id_ml not in estado["propiedades_enviadas"]:
-        estado["propiedades_enviadas"].append(property_id_ml)
-
-    estado["esperando_codigo"] = False
-    estado["esperando_respuesta_cita"] = True
-    estado["objetivo"] = "evaluar_resultados"
-
-    return f"Esta propiedad está disponible en {formato_moneda(precio_mostrar)}, ¿quieres agendar una cita?"
-
-# ============================================================
 # MOTOR CONVERSACIONAL
 # ============================================================
 
@@ -3944,8 +3927,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado.setdefault("rol", None)
     estado.setdefault("confianza_rol", 0.0)
     estado.setdefault("asesor_confirmacion_pendiente", False)
-    estado.setdefault("esperando_respuesta_cita", False)
-    estado.setdefault("historial_codigos", [])
 
     def _normalizar_operacion_detectada(valor: Optional[str]) -> Optional[str]:
         if not valor:
@@ -4030,10 +4011,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         estado["requiere_confirmar_ciudad"] = None
         estado["accion_sistema"] = None
         estado["asesor_confirmacion_pendiente"] = False
-        estado["esperando_respuesta_cita"] = False
-        estado["historial_codigos"] = []
-        estado["propiedad_interes"] = None
-        estado["ultimo_lote"] = []
         guardar_sesion(sender, estado)
         return {"replies": [{"message": "🧹 Chat reiniciado exitosamente"}]}
 
@@ -4092,45 +4069,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             estado.pop("pausa_hasta", None)
             guardar_sesion(sender, estado)
 
-    # ------------------------------------------------------------
-    # PRIORIDAD MÁXIMA: enlace de Mercado Libre en el mensaje.
-    # Esto se procesa ANTES que cualquier otra lógica (incluida la IA)
-    # para garantizar el formato exacto de respuesta solicitado.
-    # ------------------------------------------------------------
-    respuesta_ml = await manejar_enlace_mercadolibre(estado, mensaje)
-    if respuesta_ml:
-        agregar_historial(estado, "user", mensaje)
-        agregar_historial(estado, "assistant", respuesta_ml)
-        guardar_sesion(sender, estado)
-        return respuesta_ml
-
-    # ------------------------------------------------------------
-    # Si estábamos esperando la respuesta a "¿quieres agendar una cita?"
-    # ------------------------------------------------------------
-    if estado.get("esperando_respuesta_cita"):
-        if es_respuesta_afirmativa(mensaje):
-            estado["esperando_respuesta_cita"] = False
-            estado["objetivo"] = "captura_lead"
-            estado["lead_confirmacion_pendiente"] = False
-            estado["lead_confirmado"] = False
-            faltantes = datos_lead_faltantes(estado)
-            respuesta_cita = mensaje_solicitud_datos_lead(faltantes, saludo=True)
-            agregar_historial(estado, "user", mensaje)
-            agregar_historial(estado, "assistant", respuesta_cita)
-            guardar_sesion(sender, estado)
-            return respuesta_cita
-        if es_respuesta_negativa(mensaje):
-            estado["esperando_respuesta_cita"] = False
-            respuesta_cita_no = "Perfecto, sin compromiso. Si tienes otra duda sobre esta propiedad, cuéntame."
-            agregar_historial(estado, "user", mensaje)
-            agregar_historial(estado, "assistant", respuesta_cita_no)
-            guardar_sesion(sender, estado)
-            return respuesta_cita_no
-        # No fue un sí/no claro: probablemente está preguntando algo sobre
-        # la propiedad. Apagamos el flag y dejamos que el flujo normal
-        # (incluido manejar_pregunta_info_adicional) resuelva la duda.
-        estado["esperando_respuesta_cita"] = False
-
     if estado.get("lead_confirmacion_pendiente"):
         if es_respuesta_afirmativa(mensaje):
             estado["lead_confirmacion_pendiente"] = False
@@ -4159,8 +4097,8 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             try:
                 faltantes = datos_lead_faltantes(estado)
             except Exception:
-                faltantes = ["nombre completo", "correo electrónico", "confirmación del número de WhatsApp"]
-            respuesta_asesor = mensaje_solicitud_datos_lead(faltantes, saludo=True)
+                faltantes = ["nombre", "teléfono"]
+            respuesta_asesor = mensaje_solicitud_datos_lead(faltantes)
             agregar_historial(estado, "user", mensaje)
             agregar_historial(estado, "assistant", respuesta_asesor)
             guardar_sesion(sender, estado)
@@ -4286,7 +4224,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             filtros_actuales.setdefault("caracteristicas", []).extend(nuevas)
             hubo_cambio = True
 
-    # --- Manejo directo de códigos de inmueble (no-ML, ej: "código 9935990") ---
+    # --- Manejo directo de códigos de inmueble ---
     extraer_manual_permitido = not estado.get("esperando_presupuesto") or re.search(
         r"c[oó]d|inmueble|mettryc|mlv|https?://", mensaje, re.IGNORECASE
     )
@@ -4294,9 +4232,9 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     if codigo_manual and estado.get("objetivo") != "captura_lead":
         estado["esperando_codigo"] = False
         estado.setdefault("historial_codigos", []).append(codigo_manual)
-        propiedad_manual = buscar_por_codigo(codigo_manual)
-        if propiedad_manual:
-            estado["propiedad_interes"] = propiedad_manual
+        propiedad_manual = buscar_por_codigo(codigo_manual)         
+        if propiedad_manual:                                        
+            estado["propiedad_interes"] = propiedad_manual          
         try:
             respuesta_manual = await mostrar_inmueble_especifico(estado, codigo_manual)
         except Exception:
@@ -4348,7 +4286,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     if respuesta_intermedia is not None:
         respuesta = respuesta_intermedia
-        acciones_tipos: Set[str] = set()
     else:
         respuesta = decision.mensaje or ""
         acciones_tipos = {a.tipo for a in acciones}
@@ -4369,15 +4306,15 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
                     respuesta = "Primero déjame ubicar la propiedad ideal para ti. ¿Qué detalles tienes hasta ahora?"
                 continue
 
-            if accion.tipo == "buscar_por_codigo":
-                if estado.get("objetivo") == "captura_lead":
-                    continue
+                if accion.tipo == "buscar_por_codigo":
+                    if estado.get("objetivo") == "captura_lead":
+                        continue
                 codigo = accion.codigo or extraer_codigo_inmueble(mensaje)
                 if codigo:
-                    estado.setdefault("historial_codigos", []).append(codigo)
-                    propiedad_seleccionada = buscar_por_codigo(codigo)
-                    if propiedad_seleccionada:
-                        estado["propiedad_interes"] = propiedad_seleccionada
+                    estado.setdefault("historial_codigos", []).append(codigo)          
+                    propiedad_seleccionada = buscar_por_codigo(codigo)                 
+                    if propiedad_seleccionada:                                         
+                        estado["propiedad_interes"] = propiedad_seleccionada           
                     respuesta = await mostrar_inmueble_especifico(estado, codigo)
                 else:
                     estado["esperando_codigo"] = True
@@ -4453,7 +4390,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
 
     estado["esperando_presupuesto"] = False
     marcar_pregunta_presupuesto(respuesta, estado)
-
+    
     agregar_historial(estado, "user", mensaje)
     agregar_historial(estado, "assistant", respuesta)
     guardar_sesion(sender, estado)
@@ -4482,7 +4419,7 @@ async def lifespan(app: FastAPI):
         trust_env=False,
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         headers={
-            "User-Agent": "Mettryc-Chatbot/3.1",
+            "User-Agent": "Mettryc-Chatbot/3.0",
         },
     )
     tarea = asyncio.create_task(inicializar_datos())
@@ -4501,7 +4438,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Mettryc Realty Paty",
-    version="3.1.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -4521,7 +4458,7 @@ def validar_api_key(api_key: Optional[str]) -> None:
 async def root():
     return {
         "service": "Mettryc Realty Paty",
-        "version": "3.1.0",
+        "version": "3.0.0",
         "status": "online",
     }
 
