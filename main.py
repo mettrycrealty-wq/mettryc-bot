@@ -1394,6 +1394,30 @@ ACCIONES
 - reiniciar_busqueda: quiere comenzar otra búsqueda.
 - pedir_aclaracion: no se entiende un dato relevante.
 
+MEMORIA CONVERSACIONAL
+1:: %prev_message_0_10_512%
+2:: %prev_reply_0_10_512%
+1:: %prev_message_0_9_512%
+2:: %prev_reply_0_9_512%
+1:: %prev_message_0_8_512%
+2:: %prev_reply_0_8_512%
+1:: %prev_message_0_7_512%
+2:: %prev_reply_0_7_512%
+1:: %prev_message_0_6_512%
+2:: %prev_reply_0_6_512%
+1:: %prev_message_0_5_512%
+2:: %prev_reply_0_5_512%
+1:: %prev_message_0_4_512%
+2:: %prev_reply_0_4_512%
+1:: %prev_message_0_3_512%
+2:: %prev_reply_0_3_512%
+1:: %prev_message_0_2_512%
+2:: %prev_reply_0_2_512%
+1:: %prev_message_0_1_512%
+2:: %prev_reply_0_1_512%
+1:: %message_512%
+2::
+
 Devuelve solamente el JSON solicitado.
 """
 
