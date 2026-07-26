@@ -4789,7 +4789,7 @@ async def procesar_mensaje(
         )
 
         respuesta = (
-            "¡Claro! Para ubicar la propiedad exacta, envíame el "
+            "Para ubicar la propiedad exacta, envíame el "
             "código que aparece al final del título o en la "
             "descripción del anuncio. Por ejemplo: "
             "AM-9935990 o 9935990."
