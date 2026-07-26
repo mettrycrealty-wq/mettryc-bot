@@ -3538,7 +3538,7 @@ def complementar_propiedades(
         if tipo and not coincide_tipo(original, tipo):
             continue
 
-                if not ciudad_coincide(
+        if not ciudad_coincide(
             original,
             filtros.get("ciudad"),
         ):
