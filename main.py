@@ -970,6 +970,7 @@ def crear_sesion(sender: str) -> dict:
             "whatsapp": None,
         },
         "asunto_contacto_colega": None,
+        "asunto_contacto_colega_escrito": False,
         "mensaje_contacto_colega": None,
         "lead_confirmacion_pendiente": False,
         "lead_confirmado": False,
@@ -1081,6 +1082,7 @@ def reiniciar_busqueda(estado: dict) -> dict:
         "whatsapp": None,
     }
     estado["asunto_contacto_colega"] = None
+    estado["asunto_contacto_colega_escrito"] = False
     estado["mensaje_contacto_colega"] = None
 
     return estado
@@ -4169,6 +4171,39 @@ async def notificar_colega_administradores(
         estado
     )
 
+async def notificar_colega_administradores(
+    estado: dict,
+    mensaje_original: str,
+) -> bool:
+    contacto = preparar_contacto_colega_desde_estado(
+        estado
+    )
+
+    asunto_fue_escrito = estado.get(
+        "asunto_contacto_colega_escrito",
+        False,
+    )
+
+    asunto = str(
+        estado.get("asunto_contacto_colega")
+        or ""
+    ).strip()
+
+    if not (
+        asunto_fue_escrito
+        and asunto_colega_valido(asunto)
+    ):
+        logger.warning(
+            "Notificación de colega cancelada: "
+            "el asunto no fue escrito por el colega."
+        )
+        return False
+
+    nombre_colega = (
+        contacto.get("nombre")
+        or "No identificado"
+    )
+
     nombre_colega = (
         contacto.get("nombre")
         or "No identificado"
@@ -4177,16 +4212,6 @@ async def notificar_colega_administradores(
         contacto.get("whatsapp")
     )
 
-    asunto = str(
-        estado.get("asunto_contacto_colega")
-        or ""
-    ).strip()
-
-    if not asunto_colega_valido(asunto):
-        logger.warning(
-            "Se intentó notificar un colega sin asunto válido."
-        )
-        return False
 
     mensaje_guardado = (
         estado.get("mensaje_contacto_colega")
@@ -4641,30 +4666,45 @@ async def iniciar_atencion_humana(
     mensaje: str,
 ) -> str:
     if estado.get("rol") == "colega_inmobiliario":
-        estado["asunto_contacto_colega"] = (
-            "Solicitud de atención humana de colega"
-        )
-
-        if not estado.get("mensaje_contacto_colega"):
-            estado["mensaje_contacto_colega"] = mensaje
+        # Cada nueva solicitud humana de un colega debe tener
+        # un asunto nuevo escrito expresamente por él.
+        estado["asunto_contacto_colega"] = None
+        estado["asunto_contacto_colega_escrito"] = False
+        estado["mensaje_contacto_colega"] = mensaje
 
         preparar_contacto_colega_desde_estado(estado)
+
+        # Permite capturar nombre y WhatsApp si el colega los
+        # incluyó en el mismo mensaje inicial.
         actualizar_contacto_colega_desde_mensaje(
             estado,
             mensaje,
         )
 
-        faltantes = datos_contacto_colega_faltantes(
-            estado
+        # Solo se acepta asunto en el primer mensaje si viene
+        # escrito explícitamente como "Asunto:", "Motivo:" o "Tema:".
+        asunto_extraido = extraer_asunto_colega(
+            mensaje
         )
 
-        if faltantes:
-            estado["objetivo"] = (
-                "captura_contacto_colega"
+        if asunto_extraido:
+            estado["asunto_contacto_colega"] = (
+                asunto_extraido
             )
-            estado["estado_conversacion"] = (
-                "captura_contacto_colega"
-            )
+            estado["asunto_contacto_colega_escrito"] = True
+
+        estado["objetivo"] = (
+            "captura_contacto_colega"
+        )
+        estado["estado_conversacion"] = (
+            "captura_contacto_colega"
+        )
+
+        faltantes_contacto = (
+            datos_contacto_colega_faltantes(estado)
+        )
+
+        if faltantes_contacto:
             estado["pregunta_pendiente"] = (
                 "datos_contacto_colega"
             )
@@ -4672,6 +4712,20 @@ async def iniciar_atencion_humana(
             return mensaje_solicitud_contacto_colega(
                 estado
             )
+
+        if not (
+            estado.get(
+                "asunto_contacto_colega_escrito",
+                False,
+            )
+            and asunto_colega_valido(
+                estado.get("asunto_contacto_colega")
+            )
+        ):
+            estado["pregunta_pendiente"] = (
+                "asunto_contacto_colega"
+            )
+            return mensaje_solicitud_asunto_colega()
 
         enviado = await notificar_colega_administradores(
             estado,
@@ -4687,16 +4741,17 @@ async def iniciar_atencion_humana(
 
             return (
                 "Claro, colega. Ya envié tu solicitud al equipo "
-                "administrativo con tus datos de contacto. "
-                "Te atenderán directamente por WhatsApp."
+                "administrativo con el asunto y tus datos de "
+                "contacto. Te atenderán directamente por WhatsApp."
             )
 
         return (
-            "Registré tu solicitud y tus datos de contacto, "
-            "pero no pude confirmar el envío por Telegram. "
-            "Puedes intentarlo nuevamente en unos minutos."
+            "Registré tu solicitud y tus datos, pero no pude "
+            "confirmar el envío por Telegram. Puedes intentarlo "
+            "nuevamente en unos minutos."
         )
 
+    # Flujo de clientes: conserva el round robin.
     estado["rol"] = estado.get("rol") or "cliente"
     estado["objetivo"] = "captura_lead"
     estado["estado_conversacion"] = "captura_lead"
@@ -4717,14 +4772,20 @@ async def procesar_captura_contacto_colega(
         "pregunta_pendiente"
     )
 
+    # Garantiza compatibilidad con sesiones creadas antes de
+    # agregar esta nueva bandera.
+    estado.setdefault(
+        "asunto_contacto_colega_escrito",
+        False,
+    )
+
     # --------------------------------------------------------
-    # CAPTURA DEL ASUNTO
+    # EL BOT HABÍA SOLICITADO EL ASUNTO
     # --------------------------------------------------------
 
     if pregunta_pendiente == "asunto_contacto_colega":
         asunto = str(mensaje or "").strip()
 
-        # También admite "Asunto: texto".
         asunto_extraido = extraer_asunto_colega(
             mensaje
         )
@@ -4733,18 +4794,30 @@ async def procesar_captura_contacto_colega(
             asunto = asunto_extraido
 
         if not asunto_colega_valido(asunto):
+            estado["asunto_contacto_colega"] = None
+            estado["asunto_contacto_colega_escrito"] = False
+
             return (
-                "El asunto quedó muy corto o no pude identificarlo. "
-                "Escríbelo brevemente, por ejemplo: "
-                "“Apoyo para coordinar visita en El Trigal”."
+                "No pude identificar un asunto válido. "
+                "Escribe brevemente el motivo de tu solicitud. "
+                "Por ejemplo: “Apoyo para coordinar una visita "
+                "en El Trigal”."
             )
 
         estado["asunto_contacto_colega"] = asunto
+        estado["asunto_contacto_colega_escrito"] = True
         estado["pregunta_pendiente"] = None
 
     else:
-        # Permite capturar un asunto explícito aunque también esté
-        # enviando nombre y WhatsApp.
+        # En cualquier otra etapa, primero se intentan capturar
+        # nombre y WhatsApp.
+        actualizar_contacto_colega_desde_mensaje(
+            estado,
+            mensaje,
+        )
+
+        # Solo se toma como asunto si fue identificado con una
+        # etiqueta explícita: "Asunto:", "Motivo:" o "Tema:".
         asunto_extraido = extraer_asunto_colega(
             mensaje
         )
@@ -4753,14 +4826,10 @@ async def procesar_captura_contacto_colega(
             estado["asunto_contacto_colega"] = (
                 asunto_extraido
             )
-
-        actualizar_contacto_colega_desde_mensaje(
-            estado,
-            mensaje,
-        )
+            estado["asunto_contacto_colega_escrito"] = True
 
     # --------------------------------------------------------
-    # VALIDAR DATOS DE CONTACTO
+    # VALIDAR DATOS DEL COLEGA
     # --------------------------------------------------------
 
     faltantes_contacto = (
@@ -4777,12 +4846,23 @@ async def procesar_captura_contacto_colega(
         )
 
     # --------------------------------------------------------
-    # SOLICITAR ASUNTO OBLIGATORIO
+    # EXIGIR ASUNTO ESCRITO POR EL COLEGA
     # --------------------------------------------------------
 
-    if not asunto_colega_valido(
-        estado.get("asunto_contacto_colega")
+    asunto_fue_escrito = estado.get(
+        "asunto_contacto_colega_escrito",
+        False,
+    )
+    asunto = estado.get(
+        "asunto_contacto_colega"
+    )
+
+    if not (
+        asunto_fue_escrito
+        and asunto_colega_valido(asunto)
     ):
+        estado["asunto_contacto_colega"] = None
+        estado["asunto_contacto_colega_escrito"] = False
         estado["pregunta_pendiente"] = (
             "asunto_contacto_colega"
         )
@@ -4790,7 +4870,7 @@ async def procesar_captura_contacto_colega(
         return mensaje_solicitud_asunto_colega()
 
     # --------------------------------------------------------
-    # ENVIAR SOLICITUD A LOS ADMINISTRADORES
+    # ENVIAR SOLICITUD
     # --------------------------------------------------------
 
     enviado = await notificar_colega_administradores(
