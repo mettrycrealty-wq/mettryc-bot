@@ -3412,6 +3412,7 @@ def buscar_mejores_propiedades(
     cantidad: int,
 ) -> Tuple[List[dict], str]:
     filtros = estado.get("filtros", {})
+
     enviados = {
         str(property_id)
         for property_id in estado.get(
@@ -3420,16 +3421,21 @@ def buscar_mejores_propiedades(
         )
     }
 
-    ciudad_buscada = normalizar_texto(
-        filtros.get("ciudad")
-    )
     evaluadas: List[dict] = []
     pasaron_ubicacion_tipo = 0
 
-    for original in inventory_cache.get("inventario", []):
-        property_id = str(original.get("id") or "")
+    for original in inventory_cache.get(
+        "inventario",
+        [],
+    ):
+        property_id = str(
+            original.get("id") or ""
+        )
 
-        if not property_id or property_id in enviados:
+        if not property_id:
+            continue
+
+        if property_id in enviados:
             continue
 
         if not original.get("activa", True):
@@ -3441,6 +3447,7 @@ def buscar_mejores_propiedades(
         ):
             continue
 
+        # Validación estricta de ciudad o municipio.
         if not ciudad_coincide(
             original,
             filtros.get("ciudad"),
@@ -3450,6 +3457,8 @@ def buscar_mejores_propiedades(
         zona_buscada = filtros.get("zona")
         ciudad_buscada = filtros.get("ciudad")
 
+        # Una ciudad o municipio no debe aplicarse simultáneamente
+        # como una zona interna.
         zona_equivale_a_ciudad = bool(
             zona_buscada
             and ciudad_buscada
@@ -3480,7 +3489,8 @@ def buscar_mejores_propiedades(
 
     evaluadas.sort(
         key=lambda propiedad: (
-            propiedad.get("_coincidencia") == "exacta",
+            propiedad.get("_coincidencia")
+            == "exacta",
             propiedad.get("_score", 0),
         ),
         reverse=True,
@@ -3506,10 +3516,13 @@ def complementar_propiedades(
         return seleccion
 
     filtros = estado.get("filtros", {})
+
     usados = {
         str(propiedad.get("id"))
         for propiedad in seleccion
+        if propiedad.get("id")
     }
+
     usados.update(
         str(property_id)
         for property_id in estado.get(
@@ -3518,52 +3531,78 @@ def complementar_propiedades(
         )
     )
 
-    ciudad = normalizar_texto(filtros.get("ciudad"))
-    tipo = filtros.get("tipo_propiedad")
-    operacion = filtros.get("tipo_operacion") or "venta"
+    tipo_buscado = filtros.get(
+        "tipo_propiedad"
+    )
+    operacion = (
+        filtros.get("tipo_operacion")
+        or "venta"
+    )
     presupuesto = convertir_float(
         filtros.get("presupuesto_max")
     )
 
-    for original in inventory_cache.get("inventario", []):
-        property_id = str(original.get("id") or "")
+    for original in inventory_cache.get(
+        "inventario",
+        [],
+    ):
+        property_id = str(
+            original.get("id") or ""
+        )
+
+        if not property_id:
+            continue
+
+        if property_id in usados:
+            continue
+
+        if not original.get("activa", True):
+            continue
 
         if (
-            not property_id
-            or property_id in usados
-            or not original.get("activa", True)
+            tipo_buscado
+            and not coincide_tipo(
+                original,
+                tipo_buscado,
+            )
         ):
             continue
 
-        if tipo and not coincide_tipo(original, tipo):
-            continue
-
+        # La propiedad complementaria también debe pertenecer
+        # a la ciudad o municipio solicitado.
         if not ciudad_coincide(
             original,
             filtros.get("ciudad"),
         ):
             continue
 
-        precio = obtener_precio(original, operacion)
+        precio = obtener_precio(
+            original,
+            operacion,
+        )
 
         if precio <= 0:
             continue
 
-        if (
-            presupuesto > 0
-            and precio
-            > presupuesto * (
+        if presupuesto > 0:
+            margen_relajado = presupuesto * (
                 1 + MAX_EXCESO_PRESUPUESTO * 2
             )
-        ):
-            continue
+
+            if precio > margen_relajado:
+                continue
 
         propiedad = deepcopy(original)
-        propiedad["precio_venta_float"] = convertir_float(
-            propiedad.get("precio_venta")
+
+        propiedad["precio_venta_float"] = (
+            convertir_float(
+                propiedad.get("precio_venta")
+            )
         )
-        propiedad["precio_renta_float"] = convertir_float(
-            propiedad.get("precio_alquiler")
+        propiedad["precio_renta_float"] = (
+            convertir_float(
+                propiedad.get("precio_alquiler")
+            )
         )
         propiedad["operacion_buscada"] = operacion
         propiedad["_score"] = 1.0
@@ -3579,6 +3618,7 @@ def complementar_propiedades(
             break
 
     return seleccion
+
 # ============================================================
 # FICHAS Y CONSULTAS SOBRE PROPIEDADES
 # ============================================================
