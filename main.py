@@ -965,6 +965,12 @@ def crear_sesion(sender: str) -> dict:
             "whatsapp_confirmado": False,
         },
         "motivo_contacto": None,
+        "contacto_colega": {
+            "nombre": None,
+            "whatsapp": None,
+        },
+        "asunto_contacto_colega": None,
+        "mensaje_contacto_colega": None,
         "lead_confirmacion_pendiente": False,
         "lead_confirmado": False,
         "lead_id": None,
@@ -1069,6 +1075,14 @@ def reiniciar_busqueda(estado: dict) -> dict:
     estado["objetivo"] = "conversar"
     estado["estado_conversacion"] = "inicio"
     estado["pregunta_pendiente"] = None
+
+    estado["contacto_colega"] = {
+        "nombre": None,
+        "whatsapp": None,
+    }
+    estado["asunto_contacto_colega"] = None
+    estado["mensaje_contacto_colega"] = None
+
     return estado
 
 
@@ -1859,9 +1873,18 @@ REGLAS ESPECIALES PARA COLEGAS
 - Nunca solicites datos personales del cliente del colega.
 - Nunca conviertas a un colega en cliente en mensajes posteriores.
 
+CONTACTO DE COLEGAS
+
+- Si un colega proporciona su nombre, extráelo en
+  actualizaciones.nombre.
+- Si proporciona su WhatsApp, extráelo en
+  actualizaciones.whatsapp.
+- Estos datos pertenecen al colega, no al cliente del colega.
+- Si un colega solicita atención humana, el programa usará esos
+  datos para notificar únicamente a los administradores.
+
 Presupuesto, habitaciones, baños, garajes y características son
 preferencias opcionales tanto para clientes como colegas.
-
 
 ANUNCIOS
 
@@ -3924,10 +3947,253 @@ async def notificar_lead_cliente(estado: dict) -> bool:
     return any(resultados)
 
 
+def preparar_contacto_colega_desde_estado(
+    estado: dict,
+) -> dict:
+    contacto = estado.setdefault(
+        "contacto_colega",
+        {
+            "nombre": None,
+            "whatsapp": None,
+        },
+    )
+
+    lead = estado.get("lead", {})
+
+    # Si la IA ya había extraído el nombre durante la conversación,
+    # se reutiliza como nombre del colega.
+    if (
+        not contacto.get("nombre")
+        and nombre_valido(lead.get("nombre"))
+    ):
+        contacto["nombre"] = normalizar_nombre(
+            lead["nombre"]
+        )
+
+    # Se intenta utilizar primero el número del canal.
+    numero_canal = normalizar_telefono(
+        estado.get("numero_canal")
+    )
+
+    if numero_canal and not contacto.get("whatsapp"):
+        contacto["whatsapp"] = numero_canal
+
+    # Si durante la conversación ya se había extraído un WhatsApp,
+    # también puede reutilizarse.
+    whatsapp_lead = normalizar_telefono(
+        lead.get("whatsapp")
+    )
+
+    if (
+        whatsapp_lead
+        and not contacto.get("whatsapp")
+    ):
+        contacto["whatsapp"] = whatsapp_lead
+
+    return contacto
+
+
+def actualizar_contacto_colega_desde_mensaje(
+    estado: dict,
+    mensaje: str,
+) -> List[str]:
+    contacto = preparar_contacto_colega_desde_estado(
+        estado
+    )
+    actualizados: List[str] = []
+
+    coincidencia_telefono = re.search(
+        r"(\+?\d[\d\s\-()]{7,}\d)",
+        mensaje or "",
+    )
+
+    telefono_original = None
+
+    if coincidencia_telefono:
+        telefono_original = coincidencia_telefono.group(1)
+        telefono = normalizar_telefono(telefono_original)
+
+        if telefono:
+            if contacto.get("whatsapp") != telefono:
+                actualizados.append("WhatsApp")
+
+            contacto["whatsapp"] = telefono
+
+    texto_para_nombre = str(mensaje or "")
+
+    if telefono_original:
+        texto_para_nombre = texto_para_nombre.replace(
+            telefono_original,
+            " ",
+        )
+
+    correo = extraer_correo(texto_para_nombre)
+
+    if correo:
+        texto_para_nombre = texto_para_nombre.replace(
+            correo,
+            " ",
+        )
+
+    coincidencia_nombre = re.search(
+        r"(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+"
+        r"([A-Za-zÀ-ÖØ-öø-ÿ'’\- ]{3,})",
+        texto_para_nombre,
+        flags=re.IGNORECASE,
+    )
+
+    nombre_candidato = None
+
+    if coincidencia_nombre:
+        nombre_candidato = coincidencia_nombre.group(1).strip()
+
+        # Elimina expresiones que podrían venir después del nombre.
+        nombre_candidato = re.split(
+            r"\b(?:y|mi\s+numero|mi\s+telefono|mi\s+whatsapp)\b",
+            nombre_candidato,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+
+    if not nombre_candidato:
+        texto_filtrado = re.sub(
+            r"[^A-Za-zÀ-ÖØ-öø-ÿ'’\- ]",
+            " ",
+            texto_para_nombre,
+        )
+        texto_filtrado = re.sub(
+            r"\s+",
+            " ",
+            texto_filtrado,
+        ).strip()
+
+        palabras_bloqueadas = {
+            "quiero",
+            "hablar",
+            "humano",
+            "asesor",
+            "agente",
+            "atencion",
+            "atención",
+            "necesito",
+            "ayuda",
+            "colega",
+            "cliente",
+            "contacto",
+            "whatsapp",
+            "telefono",
+            "teléfono",
+        }
+
+        palabras = texto_filtrado.split()
+
+        if (
+            2 <= len(palabras) <= 6
+            and not any(
+                normalizar_texto(palabra)
+                in {
+                    normalizar_texto(valor)
+                    for valor in palabras_bloqueadas
+                }
+                for palabra in palabras
+            )
+        ):
+            nombre_candidato = texto_filtrado
+
+    if (
+        nombre_candidato
+        and nombre_valido(nombre_candidato)
+    ):
+        nombre_normalizado = normalizar_nombre(
+            nombre_candidato
+        )
+
+        if contacto.get("nombre") != nombre_normalizado:
+            contacto["nombre"] = nombre_normalizado
+            actualizados.append("nombre")
+
+    return list(dict.fromkeys(actualizados))
+
+
+def datos_contacto_colega_faltantes(
+    estado: dict,
+) -> List[str]:
+    contacto = preparar_contacto_colega_desde_estado(
+        estado
+    )
+    faltantes: List[str] = []
+
+    if not nombre_valido(contacto.get("nombre")):
+        faltantes.append("nombre completo")
+
+    if not normalizar_telefono(
+        contacto.get("whatsapp")
+    ):
+        faltantes.append(
+            "número de WhatsApp con código de país"
+        )
+
+    return faltantes
+
+
+def mensaje_solicitud_contacto_colega(
+    estado: dict,
+) -> str:
+    faltantes = datos_contacto_colega_faltantes(
+        estado
+    )
+
+    if not faltantes:
+        return ""
+
+    if len(faltantes) == 1:
+        campos = faltantes[0]
+    else:
+        campos = (
+            ", ".join(faltantes[:-1])
+            + " y "
+            + faltantes[-1]
+        )
+
+    return (
+        "Claro, colega. Para enviar tu solicitud al equipo "
+        f"administrativo necesito tu {campos}. "
+        "Puedes enviarlo en un solo mensaje."
+    )
+
 async def notificar_colega_administradores(
     estado: dict,
     mensaje_original: str,
 ) -> bool:
+    contacto = preparar_contacto_colega_desde_estado(
+        estado
+    )
+
+    nombre_colega = (
+        contacto.get("nombre")
+        or "No identificado"
+    )
+    whatsapp = normalizar_telefono(
+        contacto.get("whatsapp")
+    )
+
+    asunto = str(
+        estado.get("asunto_contacto_colega")
+        or ""
+    ).strip()
+
+    if not asunto_colega_valido(asunto):
+        logger.warning(
+            "Se intentó notificar un colega sin asunto válido."
+        )
+        return False
+
+    mensaje_guardado = (
+        estado.get("mensaje_contacto_colega")
+        or mensaje_original
+        or "Solicita atención del equipo administrativo"
+    )
+
     propiedad = estado.get("propiedad_interes")
     propiedad_texto = "No especificada"
 
@@ -3938,20 +4204,49 @@ async def notificar_colega_administradores(
             f"{propiedad.get('enlace')}"
         )
 
-    mensaje = (
+    whatsapp_formateado = (
+        f"+{whatsapp}"
+        if whatsapp
+        else "N/D"
+    )
+
+    enlace_whatsapp = (
+        f"https://wa.me/{whatsapp}"
+        if whatsapp
+        else "N/D"
+    )
+
+    mensaje_telegram = (
         "🤝 SOLICITUD DE COLEGA INMOBILIARIO\n\n"
-        f"Contacto del canal: "
-        f"{estado.get('numero_canal') or 'N/D'}\n"
-        f"Mensaje: {mensaje_original}\n\n"
-        "📋 NECESIDAD\n"
+        f"📌 ASUNTO\n"
+        f"{asunto}\n\n"
+        f"👤 DATOS DEL COLEGA\n"
+        f"Nombre: {nombre_colega}\n"
+        f"WhatsApp: {whatsapp_formateado}\n"
+        f"Contacto directo: {enlace_whatsapp}\n\n"
+        f"💬 MENSAJE\n"
+        f"{mensaje_guardado}\n\n"
+        f"📋 NECESIDAD\n"
         f"{resumen_filtros(estado)}\n\n"
-        "⭐ PROPIEDAD RELACIONADA\n"
+        f"⭐ PROPIEDAD RELACIONADA\n"
         f"{propiedad_texto}"
     )
 
+    destinos = set(TELEGRAM_ADMIN_IDS)
+
+    if not destinos:
+        logger.warning(
+            "No hay TELEGRAM_ADMIN_IDS configurados para "
+            "notificar la solicitud del colega."
+        )
+        return False
+
     resultados = [
-        await enviar_telegram(destino, mensaje)
-        for destino in set(TELEGRAM_ADMIN_IDS)
+        await enviar_telegram(
+            destino,
+            mensaje_telegram,
+        )
+        for destino in destinos
     ]
 
     return any(resultados)
@@ -4282,39 +4577,246 @@ async def iniciar_visita(
         saludo=True,
     )
 
+def asunto_colega_valido(valor: Any) -> bool:
+    asunto = str(valor or "").strip()
+
+    if len(asunto) < 4 or len(asunto) > 160:
+        return False
+
+    asunto_norm = normalizar_texto(asunto)
+
+    respuestas_invalidas = {
+        "si",
+        "no",
+        "ok",
+        "gracias",
+        "hola",
+        "listo",
+        "perfecto",
+        "ninguno",
+        "no se",
+    }
+
+    return asunto_norm not in respuestas_invalidas
+
+
+def extraer_asunto_colega(
+    mensaje: str,
+) -> Optional[str]:
+    texto = str(mensaje or "").strip()
+
+    coincidencia = re.search(
+        r"(?:asunto|motivo|tema)\s*[:\-]\s*(.+)",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if not coincidencia:
+        return None
+
+    asunto = coincidencia.group(1).strip()
+
+    # Si después escribió teléfono u otros datos, se eliminan
+    # del asunto.
+    asunto = re.split(
+        r"\b(?:whatsapp|telefono|teléfono|numero|número)\s*[:\-]",
+        asunto,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+
+    return asunto if asunto_colega_valido(asunto) else None
+
+
+def mensaje_solicitud_asunto_colega() -> str:
+    return (
+        "Perfecto, colega. Ahora escribe brevemente el asunto "
+        "de tu solicitud para enviarlo al equipo administrativo. "
+        "Por ejemplo: “Apoyo para coordinar visita en El Trigal” "
+        "o “Consulta sobre comisión compartida”."
+    )
 
 async def iniciar_atencion_humana(
     estado: dict,
     mensaje: str,
 ) -> str:
     if estado.get("rol") == "colega_inmobiliario":
+        estado["asunto_contacto_colega"] = (
+            "Solicitud de atención humana de colega"
+        )
+
+        if not estado.get("mensaje_contacto_colega"):
+            estado["mensaje_contacto_colega"] = mensaje
+
+        preparar_contacto_colega_desde_estado(estado)
+        actualizar_contacto_colega_desde_mensaje(
+            estado,
+            mensaje,
+        )
+
+        faltantes = datos_contacto_colega_faltantes(
+            estado
+        )
+
+        if faltantes:
+            estado["objetivo"] = (
+                "captura_contacto_colega"
+            )
+            estado["estado_conversacion"] = (
+                "captura_contacto_colega"
+            )
+            estado["pregunta_pendiente"] = (
+                "datos_contacto_colega"
+            )
+
+            return mensaje_solicitud_contacto_colega(
+                estado
+            )
+
         enviado = await notificar_colega_administradores(
             estado,
             mensaje,
         )
 
         if enviado:
+            estado["objetivo"] = "colega_notificado"
+            estado["estado_conversacion"] = (
+                "colega_notificado"
+            )
+            estado["pregunta_pendiente"] = None
+
             return (
-                "Claro, colega. Ya notifiqué al equipo "
-                "administrativo para que puedan atenderte."
+                "Claro, colega. Ya envié tu solicitud al equipo "
+                "administrativo con tus datos de contacto. "
+                "Te atenderán directamente por WhatsApp."
             )
 
         return (
-            "Claro, colega. Registré tu solicitud, pero no pude "
-            "confirmar la notificación por Telegram. Puedes "
-            "intentarlo nuevamente en unos minutos."
+            "Registré tu solicitud y tus datos de contacto, "
+            "pero no pude confirmar el envío por Telegram. "
+            "Puedes intentarlo nuevamente en unos minutos."
         )
 
     estado["rol"] = estado.get("rol") or "cliente"
     estado["objetivo"] = "captura_lead"
     estado["estado_conversacion"] = "captura_lead"
-    estado["motivo_contacto"] = "Solicita atención humana"
+    estado["motivo_contacto"] = (
+        "Solicita atención humana"
+    )
 
     return mensaje_solicitud_datos_lead(
         estado,
         saludo=True,
     )
 
+async def procesar_captura_contacto_colega(
+    estado: dict,
+    mensaje: str,
+) -> str:
+    pregunta_pendiente = estado.get(
+        "pregunta_pendiente"
+    )
+
+    # --------------------------------------------------------
+    # CAPTURA DEL ASUNTO
+    # --------------------------------------------------------
+
+    if pregunta_pendiente == "asunto_contacto_colega":
+        asunto = str(mensaje or "").strip()
+
+        # También admite "Asunto: texto".
+        asunto_extraido = extraer_asunto_colega(
+            mensaje
+        )
+
+        if asunto_extraido:
+            asunto = asunto_extraido
+
+        if not asunto_colega_valido(asunto):
+            return (
+                "El asunto quedó muy corto o no pude identificarlo. "
+                "Escríbelo brevemente, por ejemplo: "
+                "“Apoyo para coordinar visita en El Trigal”."
+            )
+
+        estado["asunto_contacto_colega"] = asunto
+        estado["pregunta_pendiente"] = None
+
+    else:
+        # Permite capturar un asunto explícito aunque también esté
+        # enviando nombre y WhatsApp.
+        asunto_extraido = extraer_asunto_colega(
+            mensaje
+        )
+
+        if asunto_extraido:
+            estado["asunto_contacto_colega"] = (
+                asunto_extraido
+            )
+
+        actualizar_contacto_colega_desde_mensaje(
+            estado,
+            mensaje,
+        )
+
+    # --------------------------------------------------------
+    # VALIDAR DATOS DE CONTACTO
+    # --------------------------------------------------------
+
+    faltantes_contacto = (
+        datos_contacto_colega_faltantes(estado)
+    )
+
+    if faltantes_contacto:
+        estado["pregunta_pendiente"] = (
+            "datos_contacto_colega"
+        )
+
+        return mensaje_solicitud_contacto_colega(
+            estado
+        )
+
+    # --------------------------------------------------------
+    # SOLICITAR ASUNTO OBLIGATORIO
+    # --------------------------------------------------------
+
+    if not asunto_colega_valido(
+        estado.get("asunto_contacto_colega")
+    ):
+        estado["pregunta_pendiente"] = (
+            "asunto_contacto_colega"
+        )
+
+        return mensaje_solicitud_asunto_colega()
+
+    # --------------------------------------------------------
+    # ENVIAR SOLICITUD A LOS ADMINISTRADORES
+    # --------------------------------------------------------
+
+    enviado = await notificar_colega_administradores(
+        estado,
+        estado.get("mensaje_contacto_colega")
+        or mensaje,
+    )
+
+    if enviado:
+        estado["objetivo"] = "colega_notificado"
+        estado["estado_conversacion"] = (
+            "colega_notificado"
+        )
+        estado["pregunta_pendiente"] = None
+
+        return (
+            "¡Perfecto, colega! Ya envié tu solicitud al equipo "
+            "administrativo con el asunto, tu nombre y el enlace "
+            "directo de WhatsApp. Te atenderán directamente."
+        )
+
+    return (
+        "Registré tus datos y el asunto, pero no pude confirmar "
+        "el envío por Telegram. Puedes intentarlo nuevamente "
+        "en unos minutos."
+    )
 
 async def procesar_captura_lead(
     estado: dict,
@@ -4468,6 +4970,22 @@ async def procesar_mensaje(
         # indique directamente el dato que desea corregir.
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
+
+    # --------------------------------------------------------
+    # CAPTURA DE DATOS DEL COLEGA
+    # --------------------------------------------------------
+
+    if (
+        estado.get("objetivo")
+        == "captura_contacto_colega"
+    ):
+        respuesta = (
+            await procesar_captura_contacto_colega(
+                estado,
+                texto,
+            )
+        )
+        return await finalizar(respuesta)
 
     # --------------------------------------------------------
     # CAPTURA DE LEAD PRIORITARIA
