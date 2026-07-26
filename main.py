@@ -1464,45 +1464,112 @@ def obtener_ciudades_para_zona(zona: Optional[str]) -> Set[str]:
     return ciudades
 
 
-def detectar_zona_ciudad(texto: str) -> Dict[str, Any]:
+def detectar_zona_ciudad(
+    texto: str,
+) -> Dict[str, Any]:
     normalizado = normalizar_texto(texto)
     resultado: Dict[str, Any] = {}
 
-    for ciudad_norm, ciudad in catalogo_geografico["frases_ciudades"]:
-        if contiene_termino(normalizado, ciudad_norm):
-            resultado["ciudad"] = ciudad
-            break
+    if not normalizado:
+        return resultado
 
-    for zona_norm, zona in catalogo_geografico["frases_zonas"]:
-        if contiene_termino(normalizado, zona_norm):
+    # Primero se detectan municipios y ciudades conocidos.
+    # Esto evita interpretar Naguanagua y San Diego como zonas
+    # pertenecientes a Valencia.
+    ciudad_explicita = detectar_ciudad_canonica(
+        normalizado
+    )
+
+    if ciudad_explicita:
+        resultado["ciudad"] = ciudad_explicita
+
+    # Si no se encontró una ciudad canónica, se consulta el
+    # catálogo dinámico construido desde Wasi.
+    if not ciudad_explicita:
+        for ciudad_norm, ciudad in (
+            catalogo_geografico["frases_ciudades"]
+        ):
+            if contiene_termino(
+                normalizado,
+                ciudad_norm,
+            ):
+                resultado["ciudad"] = ciudad
+                break
+
+    zona_detectada = None
+
+    for zona_norm, zona in (
+        catalogo_geografico["frases_zonas"]
+    ):
+        if contiene_termino(
+            normalizado,
+            zona_norm,
+        ):
+            zona_detectada = zona
             resultado["zona"] = zona
-            ciudades = sorted(obtener_ciudades_para_zona(zona))
-
-            if len(ciudades) == 1:
-                resultado.setdefault("ciudad", ciudades[0])
-
-            elif len(ciudades) > 1:
-                ciudad_detectada = normalizar_texto(
-                    resultado.get("ciudad")
-                )
-                ciudades_norm = {
-                    normalizar_texto(ciudad)
-                    for ciudad in ciudades
-                }
-
-                if ciudad_detectada not in ciudades_norm:
-                    resultado.pop("ciudad", None)
-                    resultado["ambiguedad"] = True
-                    resultado["ciudades_posibles"] = ciudades
             break
 
-    if "zona" not in resultado:
-        for zona_alias, ciudades in FALLBACK_ZONAS_AMBIGUAS.items():
-            if contiene_termino(normalizado, zona_alias):
-                resultado["zona"] = normalizar_nombre(zona_alias)
+    # Si el término detectado como zona es exactamente igual a
+    # la ciudad o municipio, se conserva como ciudad y no como
+    # zona específica.
+    if (
+        ciudad_explicita
+        and resultado.get("zona")
+        and normalizar_texto(resultado["zona"])
+        == normalizar_texto(ciudad_explicita)
+    ):
+        resultado.pop("zona", None)
+        zona_detectada = None
+
+    # Si existe una ciudad explícita, nunca debe ser reemplazada
+    # por las ciudades asociadas a una zona del catálogo.
+    if ciudad_explicita:
+        resultado["ciudad"] = ciudad_explicita
+        resultado.pop("ambiguedad", None)
+        resultado.pop("ciudades_posibles", None)
+        return resultado
+
+    if zona_detectada:
+        ciudades = sorted(
+            obtener_ciudades_para_zona(
+                zona_detectada
+            )
+        )
+
+        if len(ciudades) == 1:
+            resultado.setdefault(
+                "ciudad",
+                ciudades[0],
+            )
+
+        elif len(ciudades) > 1:
+            ciudad_detectada_norm = normalizar_texto(
+                resultado.get("ciudad")
+            )
+            ciudades_norm = {
+                normalizar_texto(ciudad)
+                for ciudad in ciudades
+            }
+
+            if ciudad_detectada_norm not in ciudades_norm:
+                resultado.pop("ciudad", None)
+                resultado["ambiguedad"] = True
                 resultado["ciudades_posibles"] = ciudades
 
-                ciudad_detectada = normalizar_texto(
+    if "zona" not in resultado:
+        for zona_alias, ciudades in (
+            FALLBACK_ZONAS_AMBIGUAS.items()
+        ):
+            if contiene_termino(
+                normalizado,
+                zona_alias,
+            ):
+                resultado["zona"] = normalizar_nombre(
+                    zona_alias
+                )
+                resultado["ciudades_posibles"] = ciudades
+
+                ciudad_detectada_norm = normalizar_texto(
                     resultado.get("ciudad")
                 )
                 ciudades_norm = {
@@ -1510,9 +1577,10 @@ def detectar_zona_ciudad(texto: str) -> Dict[str, Any]:
                     for ciudad in ciudades
                 }
 
-                if ciudad_detectada not in ciudades_norm:
+                if ciudad_detectada_norm not in ciudades_norm:
                     resultado.pop("ciudad", None)
                     resultado["ambiguedad"] = True
+
                 break
 
     return resultado
@@ -2417,6 +2485,24 @@ def aplicar_decision(
         estado["confianza_rol"] = decision.confianza_rol
 
     actualizaciones = decision.actualizaciones.model_dump()
+
+    ciudad_explicita = detectar_ciudad_canonica(
+        mensaje
+    )
+
+    if ciudad_explicita:
+        actualizaciones["ciudad"] = ciudad_explicita
+
+        zona_ia = actualizaciones.get("zona")
+
+        if (
+            zona_ia
+            and normalizar_texto(zona_ia)
+            == normalizar_texto(ciudad_explicita)
+        ):
+            actualizaciones["zona"] = None
+
+
     filtros = estado.setdefault("filtros", {})
 
     campos_busqueda = [
@@ -2646,6 +2732,27 @@ def aplicar_extracciones_tecnicas(
 
     geografia = detectar_zona_ciudad(mensaje)
 
+    # Si el usuario escribió explícitamente un municipio como
+    # Naguanagua o San Diego, ese valor debe prevalecer sobre
+    # cualquier ciudad inferida previamente por la IA.
+    ciudad_explicita = detectar_ciudad_canonica(
+        mensaje
+    )
+
+    if ciudad_explicita:
+        geografia["ciudad"] = ciudad_explicita
+
+        if (
+            geografia.get("zona")
+            and normalizar_texto(
+                geografia["zona"]
+            )
+            == normalizar_texto(
+                ciudad_explicita
+            )
+        ):
+            geografia.pop("zona", None)
+
     ciudad_actual = filtros.get("ciudad")
     ciudad_actual_norm = normalizar_texto(ciudad_actual)
 
@@ -2656,12 +2763,32 @@ def aplicar_extracciones_tecnicas(
             filtros["zona"] = zona_detectada
             hubo_cambio = True
 
-    if geografia.get("ciudad"):
+        if geografia.get("ciudad"):
         ciudad_detectada = geografia["ciudad"]
 
         if filtros.get("ciudad") != ciudad_detectada:
             filtros["ciudad"] = ciudad_detectada
             hubo_cambio = True
+
+        # Si la IA había guardado el municipio como una zona
+        # idéntica, se elimina para que Paty pregunte por una
+        # zona interna del municipio.
+        if (
+            filtros.get("zona")
+            and normalizar_texto(
+                filtros["zona"]
+            )
+            == normalizar_texto(
+                ciudad_detectada
+            )
+        ):
+            filtros["zona"] = None
+            hubo_cambio = True
+
+        estado.pop(
+            "requiere_confirmar_ciudad",
+            None,
+        )
 
         estado.pop("requiere_confirmar_ciudad", None)
 
@@ -2691,6 +2818,8 @@ def aplicar_extracciones_tecnicas(
             filtros["ciudad"] = None
 
     return hubo_cambio
+
+
 
 def aplicar_sin_preferencia_desde_texto(
     estado: dict,
@@ -2751,34 +2880,6 @@ def aplicar_sin_preferencia_desde_texto(
 # BUSCADOR DE PROPIEDADES
 # ============================================================
 
-SECTORES_INCOMPATIBLES_POR_CIUDAD = {
-    "valencia": {
-        "san diego",
-        "naguanagua",
-        "tocuyito",
-        "libertador",
-        "guacara",
-        "los guayos",
-        "puerto cabello",
-        "bejuquero",
-        "yagua",
-    },
-    "san diego": {
-        "valencia",
-        "naguanagua",
-        "tocuyito",
-        "guacara",
-        "los guayos",
-    },
-    "naguanagua": {
-        "san diego",
-        "tocuyito",
-        "guacara",
-        "los guayos",
-    },
-}
-
-
 def ciudad_coincide(
     propiedad: dict,
     ciudad_buscada: Optional[str],
@@ -2831,6 +2932,198 @@ def ciudad_coincide(
         return True
 
     return False
+
+CIUDADES_CANONICAS = {
+    "puerto cabello": "Puerto Cabello",
+    "los guayos": "Los Guayos",
+    "san diego": "San Diego",
+    "naguanagua": "Naguanagua",
+    "tocuyito": "Tocuyito",
+    "barquisimeto": "Barquisimeto",
+    "cabudare": "Cabudare",
+    "guacara": "Guacara",
+    "valencia": "Valencia",
+}
+
+
+SECTORES_POR_CIUDAD = {
+    "Naguanagua": {
+        "manongo",
+        "mañongo",
+        "la granja",
+        "las quintas de naguanagua",
+        "la campina",
+        "la campiña",
+        "tazajal",
+        "el rincon",
+        "el rincón",
+        "carialinda",
+        "el saman",
+        "el samán",
+        "manantial",
+        "tarapio",
+        "barbula",
+        "bárbula",
+    },
+    "San Diego": {
+        "los jarales",
+        "la esmeralda",
+        "el remanso",
+        "valle de oro",
+        "parque comercio",
+        "pueblo de san diego",
+        "casco san diego",
+        "campo solo",
+        "el morro",
+        "la cumaca",
+        "yuma",
+    },
+    "Valencia": {
+        "el trigal",
+        "trigal norte",
+        "el parral",
+        "prebo",
+        "la vina",
+        "la viña",
+        "el vinedo",
+        "el viñedo",
+        "los colorados",
+        "agua blanca",
+        "los mangos",
+        "guataparo",
+        "el bosque",
+        "la trigaleña",
+        "las chimeneas",
+        "la alegria",
+        "la alegría",
+        "los caobos",
+        "la isabelica",
+        "flor amarillo",
+    },
+    "Tocuyito": {
+        "tocuyito",
+        "libertador",
+        "el libertador",
+        "la pocaterra",
+    },
+    "Guacara": {
+        "guacara",
+        "yagua",
+        "ciudad alianza",
+    },
+    "Los Guayos": {
+        "los guayos",
+        "paraparal",
+    },
+    "Puerto Cabello": {
+        "puerto cabello",
+        "patanemo",
+        "borburata",
+    },
+    "Barquisimeto": {
+        "barquisimeto",
+        "este de barquisimeto",
+        "oeste de barquisimeto",
+    },
+    "Cabudare": {
+        "cabudare",
+        "la piedad",
+        "agua viva",
+    },
+}
+
+
+def detectar_ciudad_canonica(
+    texto: Any,
+) -> Optional[str]:
+    normalizado = normalizar_texto(texto)
+
+    if not normalizado:
+        return None
+
+    for alias, ciudad in sorted(
+        CIUDADES_CANONICAS.items(),
+        key=lambda elemento: len(elemento[0]),
+        reverse=True,
+    ):
+        if contiene_termino(normalizado, alias):
+            return ciudad
+
+    for ciudad, sectores in SECTORES_POR_CIUDAD.items():
+        for sector in sorted(
+            sectores,
+            key=len,
+            reverse=True,
+        ):
+            if contiene_termino(
+                normalizado,
+                normalizar_texto(sector),
+            ):
+                return ciudad
+
+    return None
+
+
+def inferir_ciudad_propiedad(
+    propiedad: dict,
+) -> Optional[str]:
+    detalle_raw = propiedad.get("detalle_raw") or {}
+
+    texto_ubicacion_especifica = " ".join(
+        [
+            str(propiedad.get("zona") or ""),
+            str(propiedad.get("titulo") or ""),
+            str(propiedad.get("direccion_publica") or ""),
+            str(detalle_raw.get("municipality_label") or ""),
+            str(detalle_raw.get("location_label") or ""),
+            str(detalle_raw.get("zone_label") or ""),
+        ]
+    )
+
+    ciudad_inferida = detectar_ciudad_canonica(
+        texto_ubicacion_especifica
+    )
+
+    if ciudad_inferida:
+        return ciudad_inferida
+
+    ciudad_wasi = detectar_ciudad_canonica(
+        propiedad.get("ciudad")
+    )
+
+    if ciudad_wasi:
+        return ciudad_wasi
+
+    ciudad_original = str(
+        propiedad.get("ciudad") or ""
+    ).strip()
+
+    return ciudad_original or None
+
+
+def ciudad_coincide(
+    propiedad: dict,
+    ciudad_buscada: Optional[str],
+) -> bool:
+    if not ciudad_buscada:
+        return True
+
+    ciudad_objetivo = (
+        detectar_ciudad_canonica(ciudad_buscada)
+        or str(ciudad_buscada).strip()
+    )
+
+    ciudad_propiedad = inferir_ciudad_propiedad(
+        propiedad
+    )
+
+    if not ciudad_propiedad:
+        return False
+
+    return (
+        normalizar_texto(ciudad_objetivo)
+        == normalizar_texto(ciudad_propiedad)
+    )
 
 def obtener_precio(
     propiedad: dict,
@@ -3131,10 +3424,24 @@ def buscar_mejores_propiedades(
         ):
             continue
 
-        if filtros.get("zona") and not zona_coincide(
-            filtros["zona"],
-            original.get("zona"),
-            original.get("ciudad"),
+        zona_buscada = filtros.get("zona")
+        ciudad_buscada = filtros.get("ciudad")
+
+        zona_equivale_a_ciudad = bool(
+            zona_buscada
+            and ciudad_buscada
+            and normalizar_texto(zona_buscada)
+            == normalizar_texto(ciudad_buscada)
+        )
+
+        if (
+            zona_buscada
+            and not zona_equivale_a_ciudad
+            and not zona_coincide(
+                zona_buscada,
+                original.get("zona"),
+                original.get("ciudad"),
+            )
         ):
             continue
 
@@ -3208,10 +3515,9 @@ def complementar_propiedades(
         if tipo and not coincide_tipo(original, tipo):
             continue
 
-        if (
-            ciudad
-            and ciudad
-            not in normalizar_texto(original.get("ciudad"))
+                if not ciudad_coincide(
+            original,
+            filtros.get("ciudad"),
         ):
             continue
 
