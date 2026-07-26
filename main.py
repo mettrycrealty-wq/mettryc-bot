@@ -2710,31 +2710,55 @@ def aplicar_extracciones_tecnicas(
         filtros["garajes_min"] = garajes
         hubo_cambio = True
 
-    caracteristicas = detectar_caracteristicas(mensaje)
+    caracteristicas = detectar_caracteristicas(
+        mensaje
+    )
 
-    if caracteristicas and not es_reclamo_resultados:
+    if (
+        caracteristicas
+        and not es_reclamo_resultados
+    ):
         existentes = {
             normalizar_texto(valor): valor
-            for valor in filtros.get("caracteristicas", [])
+            for valor in filtros.get(
+                "caracteristicas",
+                [],
+            )
         }
 
         for caracteristica in caracteristicas:
-            existentes.setdefault(
-                normalizar_texto(caracteristica),
-                caracteristica,
+            clave = normalizar_texto(
+                caracteristica
             )
 
-        lista_nueva = list(existentes.values())
+            if clave:
+                existentes.setdefault(
+                    clave,
+                    caracteristica,
+                )
 
-        if lista_nueva != filtros.get("caracteristicas", []):
-            filtros["caracteristicas"] = lista_nueva
+        lista_nueva = list(
+            existentes.values()
+        )
+
+        if lista_nueva != filtros.get(
+            "caracteristicas",
+            [],
+        ):
+            filtros["caracteristicas"] = (
+                lista_nueva
+            )
             hubo_cambio = True
 
-        geografia = detectar_zona_ciudad(mensaje)
+    # IMPORTANTE:
+    # Esta línea está fuera del if de características.
+    # Debe ejecutarse para todos los mensajes.
+    geografia = detectar_zona_ciudad(
+        mensaje
+    )
 
-    # Si el usuario escribió explícitamente una ciudad o municipio
-    # conocido, este valor tiene prioridad sobre la interpretación
-    # realizada por la IA.
+    # Si el usuario escribió explícitamente una ciudad o municipio,
+    # ese valor tiene prioridad sobre la interpretación de la IA.
     ciudad_explicita = detectar_ciudad_canonica(
         mensaje
     )
@@ -2742,8 +2766,8 @@ def aplicar_extracciones_tecnicas(
     if ciudad_explicita:
         geografia["ciudad"] = ciudad_explicita
 
-        # Naguanagua, San Diego y otros municipios no deben quedar
-        # simultáneamente guardados como ciudad y zona.
+        # Evita guardar Naguanagua, San Diego u otro municipio
+        # simultáneamente como ciudad y como zona.
         if (
             geografia.get("zona")
             and normalizar_texto(
@@ -2755,16 +2779,22 @@ def aplicar_extracciones_tecnicas(
         ):
             geografia.pop("zona", None)
 
-        geografia.pop("ambiguedad", None)
-        geografia.pop("ciudades_posibles", None)
+        geografia.pop(
+            "ambiguedad",
+            None,
+        )
+        geografia.pop(
+            "ciudades_posibles",
+            None,
+        )
 
     ciudad_actual = filtros.get("ciudad")
     ciudad_actual_norm = normalizar_texto(
         ciudad_actual
     )
 
-    # Actualizar la zona solamente cuando no se trata de una queja
-    # sobre resultados anteriores.
+    # Solo actualiza la zona si el mensaje no es una queja sobre
+    # propiedades enviadas anteriormente.
     if (
         geografia.get("zona")
         and not es_reclamo_resultados
@@ -2775,7 +2805,7 @@ def aplicar_extracciones_tecnicas(
             filtros["zona"] = zona_detectada
             hubo_cambio = True
 
-    # Actualizar la ciudad detectada.
+    # Actualización de ciudad o municipio.
     if geografia.get("ciudad"):
         ciudad_detectada = geografia["ciudad"]
 
@@ -2783,8 +2813,8 @@ def aplicar_extracciones_tecnicas(
             filtros["ciudad"] = ciudad_detectada
             hubo_cambio = True
 
-        # Si la ciudad también estaba guardada como zona, se elimina
-        # de zona para que el bot pueda preguntar por un sector interno.
+        # Si el municipio estaba repetido en el campo zona,
+        # se elimina para poder preguntar por una zona interna.
         if (
             filtros.get("zona")
             and normalizar_texto(
@@ -2802,7 +2832,7 @@ def aplicar_extracciones_tecnicas(
             None,
         )
 
-    # Manejar zonas que existen en varias ciudades.
+    # Manejo de una zona presente en varias ciudades.
     elif geografia.get("ambiguedad"):
         opciones = geografia.get(
             "ciudades_posibles",
@@ -2814,8 +2844,8 @@ def aplicar_extracciones_tecnicas(
             for opcion in opciones
         }
 
-        # Si ya existe una ciudad confirmada compatible con la zona,
-        # se conserva y no se vuelve a preguntar.
+        # Si ya se había confirmado una ciudad compatible, se
+        # conserva y no se vuelve a preguntar.
         if (
             ciudad_actual_norm
             and ciudad_actual_norm in opciones_norm
@@ -2837,8 +2867,6 @@ def aplicar_extracciones_tecnicas(
             if filtros.get("ciudad") is not None:
                 filtros["ciudad"] = None
                 hubo_cambio = True
-
-    return hubo_cambio
 
     return hubo_cambio
 
