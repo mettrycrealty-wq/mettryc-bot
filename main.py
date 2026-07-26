@@ -2404,6 +2404,79 @@ def interpretar_respuesta_rol(
     texto: str,
     estado: dict,
 ) -> Optional[str]:
+    normalizado = normalizar_texto(texto)
+    pregunta_pendiente = estado.get(
+        "pregunta_pendiente"
+    )
+
+    # --------------------------------------------------------
+    # RESPUESTA A LA PREGUNTA:
+    # "¿Buscas la propiedad para ti o para un cliente?"
+    # --------------------------------------------------------
+
+    if pregunta_pendiente == "confirmar_rol":
+        respuestas_para_cliente_tercero = {
+            "cliente",
+            "un cliente",
+            "una cliente",
+            "para cliente",
+            "para un cliente",
+            "para una cliente",
+            "para mi cliente",
+            "para nuestro cliente",
+            "es para un cliente",
+            "es para una cliente",
+            "es para mi cliente",
+            "mi cliente",
+        }
+
+        respuestas_para_si_mismo = {
+            "para mi",
+            "para mí",
+            "yo",
+            "para yo",
+            "personal",
+            "uso personal",
+            "para uso personal",
+            "es para mi",
+            "es para mí",
+            "para nosotros",
+            "para mi familia",
+            "para mi esposa",
+            "para mi esposo",
+            "para mi pareja",
+            "para mi mama",
+            "para mi mamá",
+            "para mi madre",
+            "para mi padre",
+        }
+
+        respuestas_cliente_normalizadas = {
+            normalizar_texto(respuesta)
+            for respuesta in respuestas_para_cliente_tercero
+        }
+
+        respuestas_personales_normalizadas = {
+            normalizar_texto(respuesta)
+            for respuesta in respuestas_para_si_mismo
+        }
+
+        if normalizado in respuestas_cliente_normalizadas:
+            estado["rol"] = "colega_inmobiliario"
+            estado["confianza_rol"] = 1.0
+            estado["pregunta_pendiente"] = None
+            return "colega_inmobiliario"
+
+        if normalizado in respuestas_personales_normalizadas:
+            estado["rol"] = "cliente"
+            estado["confianza_rol"] = 1.0
+            estado["pregunta_pendiente"] = None
+            return "cliente"
+
+    # --------------------------------------------------------
+    # DETECCIÓN EXPLÍCITA EN CUALQUIER MOMENTO
+    # --------------------------------------------------------
+
     rol = detectar_rol_explicito(texto)
 
     if rol:
@@ -2412,13 +2485,18 @@ def interpretar_respuesta_rol(
         estado["pregunta_pendiente"] = None
         return rol
 
-    normalizado = normalizar_texto(texto)
+    # --------------------------------------------------------
+    # RESPUESTAS PERSONALES BREVES
+    # --------------------------------------------------------
 
     if normalizado in {
         "yo",
         "personal",
         "uso personal",
         "es mia",
+        "es mía",
+        "es mio",
+        "es mío",
         "es para nosotros",
     }:
         estado["rol"] = "cliente"
@@ -2882,14 +2960,29 @@ def aplicar_sin_preferencia_desde_texto(
         "sin_preferencia",
         [],
     )
+    pregunta_pendiente = estado.get(
+        "pregunta_pendiente"
+    )
     hubo_cambio = False
+
+    respuestas_abiertas = {
+        "cualquiera",
+        "cualquier",
+        "no importa",
+        "me da igual",
+        "sin preferencia",
+        "abierto",
+        "abierta",
+    }
 
     frases_zona_abierta = [
         "cualquier zona",
+        "cualquiera zona",
         "no importa la zona",
         "me da igual la zona",
         "toda valencia",
-        "en cualquier parte de valencia",
+        "todo naguanagua",
+        "todo san diego",
         "zona abierta",
         "sin preferencia de zona",
     ]
@@ -2905,24 +2998,48 @@ def aplicar_sin_preferencia_desde_texto(
         "todavia no tiene presupuesto",
     ]
 
-    if any(
-        frase in normalizado
-        for frase in frases_zona_abierta
+    respuesta_abierta_breve = (
+        normalizado in respuestas_abiertas
+    )
+
+    if (
+        any(
+            frase in normalizado
+            for frase in frases_zona_abierta
+        )
+        or (
+            pregunta_pendiente == "zona"
+            and respuesta_abierta_breve
+        )
     ):
         if "zona" not in sin_preferencia:
             sin_preferencia.append("zona")
 
-        filtros["zona"] = None
+        if filtros.get("zona") is not None:
+            filtros["zona"] = None
+
+        estado["pregunta_pendiente"] = None
         hubo_cambio = True
 
-    if any(
-        frase in normalizado
-        for frase in frases_presupuesto_abierto
+    if (
+        any(
+            frase in normalizado
+            for frase in frases_presupuesto_abierto
+        )
+        or (
+            pregunta_pendiente == "presupuesto_max"
+            and respuesta_abierta_breve
+        )
     ):
         if "presupuesto_max" not in sin_preferencia:
-            sin_preferencia.append("presupuesto_max")
+            sin_preferencia.append(
+                "presupuesto_max"
+            )
 
-        filtros["presupuesto_max"] = None
+        if filtros.get("presupuesto_max") is not None:
+            filtros["presupuesto_max"] = None
+
+        estado["pregunta_pendiente"] = None
         hubo_cambio = True
 
     return hubo_cambio
@@ -5423,6 +5540,10 @@ async def procesar_mensaje(
         estado["pregunta_pendiente"] = None
         estado["confianza_rol"] = 1.0
 
+    # Si se acaba de responder la pregunta del rol, se conserva
+    # durante todo el análisis posterior.
+    rol_confirmado_en_este_mensaje = rol_detectado
+
     # --------------------------------------------------------
     # CONFIRMACIÓN FINAL DEL LEAD
     # --------------------------------------------------------
@@ -5651,6 +5772,12 @@ async def procesar_mensaje(
         decision,
         texto,
     )
+
+    # La IA no puede reemplazar el rol que fue confirmado
+    # directamente por el usuario en este mismo mensaje.
+    if rol_confirmado_en_este_mensaje:
+        estado["rol"] = rol_confirmado_en_este_mensaje
+        estado["confianza_rol"] = 1.0
 
     cambio_tecnico = aplicar_extracciones_tecnicas(
         estado,
