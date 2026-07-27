@@ -187,6 +187,18 @@ class RespuestaPropiedadIA(BaseModel):
     respuesta: str
     informacion_no_especificada: List[str] = Field(default_factory=list)
 
+class InterpretacionRespuestaCortaIA(BaseModel):
+    significado: Literal[
+        "afirmativa",
+        "negativa",
+        "aceptacion",
+        "ambigua",
+    ] = "ambigua"
+
+    responde_a_la_pregunta: bool = True
+    requiere_aclaracion: bool = False
+    mantener_pregunta_pendiente: bool = False
+    respuesta: str
 
 # ============================================================
 # ESTADO EN MEMORIA
@@ -1982,6 +1994,22 @@ Extrae nombre, correo y WhatsApp de cualquier mensaje.
 Si quiere usar el número del chat, establece usar_numero_actual.
 No vuelvas a pedir información existente.
 
+RESPUESTAS CORTAS Y CONTEXTO
+
+- Interpreta siempre respuestas como sí, no, ok, está bien, fino,
+  perfecto, listo, dale o claro usando la última pregunta que hizo
+  Paty.
+- Una respuesta corta nunca debe analizarse de forma aislada.
+- Si la pregunta anterior ofrecía dos alternativas y el usuario
+  responde solamente sí, ok o perfecto, no selecciones una por él.
+  Pregunta cuál de las alternativas prefiere usando palabras
+  diferentes.
+- No repitas literalmente la misma pregunta.
+- Si la respuesta permite ejecutar una acción inequívoca, continúa
+  el flujo sin volver a pedir confirmación.
+- Si no permite identificar una opción concreta, reformula la
+  pregunta de forma breve y natural.
+
 ACCIONES DISPONIBLES
 
 - responder
@@ -2159,6 +2187,12 @@ def construir_estado_para_ia(estado: dict) -> dict:
         "ultimo_lote": ultimo_lote,
         "propiedad_interes": resumen_propiedad_para_ia(
             estado.get("propiedad_interes")
+        ),
+        "detalle_pregunta_pendiente": estado.get(
+            "detalle_pregunta_pendiente"
+        ),
+        "ultimo_mensaje_asistente": (
+            ultima_respuesta_asistente(estado)
         ),
         "lead": {
             "nombre": estado.get("lead", {}).get("nombre"),
@@ -4946,35 +4980,54 @@ async def mostrar_propiedades(estado: dict) -> str:
 
     if not propiedades:
         estado["ultimo_lote"] = []
+        estado["propiedad_activa_id"] = None
+        estado["pregunta_pendiente"] = "sin_resultados"
+        estado["detalle_pregunta_pendiente"] = {
+            "tipo": "eleccion",
+            "opciones": [
+                "ampliar_zona",
+                "ajustar_busqueda",
+            ],
+            "descripcion": (
+                "El usuario debe elegir si desea ampliar la zona "
+                "o ajustar alguna condición de la búsqueda."
+            ),
+        }
 
-        tipo = filtros.get("tipo_propiedad") or "propiedades"
+        tipo = (
+            filtros.get("tipo_propiedad")
+            or "propiedades"
+        )
         zona = filtros.get("zona")
         ciudad = filtros.get("ciudad")
-        presupuesto = filtros.get("presupuesto_max")
+        presupuesto = filtros.get(
+            "presupuesto_max"
+        )
 
         if zona:
-            descripcion_ubicacion = (
+            ubicacion = (
                 f"{zona}, {ciudad}"
                 if ciudad
                 else zona
             )
         else:
-            descripcion_ubicacion = (
-                ciudad or "esa ubicación"
+            ubicacion = (
+                ciudad
+                or "la ubicación indicada"
             )
 
         if motivo == "precio_o_caracteristicas":
             return (
-                f"No encontré {tipo} en {descripcion_ubicacion} "
+                f"No encontré {tipo} activas en {ubicacion} "
                 f"con el presupuesto de "
                 f"{formato_moneda(presupuesto) if presupuesto else 'ese rango'} "
-                "y las características solicitadas. "
-                "¿Quieres ajustar alguna condición?"
+                "y las características actuales. "
+                "¿Quieres ampliar la zona o ajustar la búsqueda?"
             )
 
         return (
-            f"No encontré {tipo} activas en "
-            f"{descripcion_ubicacion} con los criterios actuales. "
+            f"No encontré {tipo} activas en {ubicacion} "
+            "con los criterios actuales. "
             "¿Quieres ampliar la zona o ajustar la búsqueda?"
         )
 
@@ -5471,6 +5524,417 @@ async def responder_consulta_mettryc(
         "¿Qué información necesitas?"
     )
 
+RESPUESTAS_CORTAS_AFIRMATIVAS = {
+    "si",
+    "sii",
+    "sip",
+    "claro",
+    "claro que si",
+    "por supuesto",
+    "dale",
+    "de una",
+    "correcto",
+    "afirmativo",
+    "si quiero",
+    "bueno",
+}
+
+RESPUESTAS_CORTAS_NEGATIVAS = {
+    "no",
+    "nop",
+    "negativo",
+    "no gracias",
+    "para nada",
+    "mejor no",
+    "ahorita no",
+}
+
+RESPUESTAS_CORTAS_ACEPTACION = {
+    "ok",
+    "okay",
+    "esta bien",
+    "está bien",
+    "bien",
+    "fino",
+    "perfecto",
+    "excelente",
+    "listo",
+    "vale",
+    "entiendo",
+    "entendido",
+}
+
+
+def ultima_respuesta_asistente(
+    estado: dict,
+) -> Optional[str]:
+    for mensaje in reversed(
+        estado.get("historial", [])
+    ):
+        if mensaje.get("role") == "assistant":
+            contenido = str(
+                mensaje.get("content") or ""
+            ).strip()
+
+            if contenido:
+                return contenido
+
+    return None
+
+
+def es_respuesta_corta_contextual(
+    texto: str,
+) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    if not normalizado:
+        return False
+
+    respuestas_conocidas = {
+        normalizar_texto(respuesta)
+        for respuesta in (
+            RESPUESTAS_CORTAS_AFIRMATIVAS
+            | RESPUESTAS_CORTAS_NEGATIVAS
+            | RESPUESTAS_CORTAS_ACEPTACION
+        )
+    }
+
+    if normalizado in respuestas_conocidas:
+        return True
+
+    frases_adicionales = [
+        "te dije que si",
+        "ya te dije que si",
+        "si por favor",
+        "si esta bien",
+        "si perfecto",
+        "no esta bien",
+        "no quiero",
+    ]
+
+    return any(
+        frase in normalizado
+        for frase in frases_adicionales
+    )
+
+
+def clasificar_respuesta_corta(
+    texto: str,
+) -> str:
+    normalizado = normalizar_texto(texto)
+
+    afirmativas = {
+        normalizar_texto(valor)
+        for valor in RESPUESTAS_CORTAS_AFIRMATIVAS
+    }
+    negativas = {
+        normalizar_texto(valor)
+        for valor in RESPUESTAS_CORTAS_NEGATIVAS
+    }
+    aceptaciones = {
+        normalizar_texto(valor)
+        for valor in RESPUESTAS_CORTAS_ACEPTACION
+    }
+
+    if (
+        normalizado in afirmativas
+        or "te dije que si" in normalizado
+        or "ya te dije que si" in normalizado
+    ):
+        return "afirmativa"
+
+    if normalizado in negativas:
+        return "negativa"
+
+    if normalizado in aceptaciones:
+        return "aceptacion"
+
+    return "ambigua"
+
+
+def respuesta_corta_fallback(
+    estado: dict,
+    mensaje_usuario: str,
+    ultimo_mensaje_bot: str,
+) -> str:
+    significado = clasificar_respuesta_corta(
+        mensaje_usuario
+    )
+    ultimo_norm = normalizar_texto(
+        ultimo_mensaje_bot
+    )
+    pregunta_pendiente = estado.get(
+        "pregunta_pendiente"
+    )
+
+    if pregunta_pendiente == "sin_resultados":
+        if significado in {
+            "afirmativa",
+            "aceptacion",
+        }:
+            return (
+                "¡Perfecto! ¿Prefieres que ampliemos la zona "
+                "o que ajustemos alguna condición de la búsqueda, "
+                "como el presupuesto o las características?"
+            )
+
+        if significado == "negativa":
+            estado["pregunta_pendiente"] = None
+            estado.pop(
+                "detalle_pregunta_pendiente",
+                None,
+            )
+
+            return (
+                "Entendido. Si luego quieres intentar otra búsqueda "
+                "o consultar algo más, con gusto te ayudo."
+            )
+
+    if pregunta_pendiente == "ajustar_busqueda":
+        return (
+            "Claro. ¿Qué deseas ajustar: la ubicación, el "
+            "presupuesto, el tipo de propiedad o alguna "
+            "característica?"
+        )
+
+    if (
+        "ampliar la zona" in ultimo_norm
+        and "ajustar" in ultimo_norm
+    ):
+        if significado in {
+            "afirmativa",
+            "aceptacion",
+        }:
+            return (
+                "¡Excelente! Para continuar, dime cuál prefieres: "
+                "¿ampliamos la zona o ajustamos la búsqueda?"
+            )
+
+        if significado == "negativa":
+            return (
+                "Entendido. ¿Hay algo más en lo que pueda ayudarte?"
+            )
+
+    if "o" in ultimo_norm and "?" in ultimo_mensaje_bot:
+        if significado in {
+            "afirmativa",
+            "aceptacion",
+        }:
+            return (
+                "Perfecto. Para continuar necesito que me indiques "
+                "cuál de las opciones prefieres."
+            )
+
+    if significado == "negativa":
+        return (
+            "Entendido. ¿Hay algo más en lo que pueda ayudarte?"
+        )
+
+    return (
+        "Perfecto. Para asegurarme de entenderte bien, "
+        "¿puedes indicarme brevemente cómo deseas continuar?"
+    )
+
+async def interpretar_respuesta_corta_con_ia(
+    estado: dict,
+    mensaje_usuario: str,
+) -> Optional[str]:
+    if not es_respuesta_corta_contextual(
+        mensaje_usuario
+    ):
+        return None
+
+    ultimo_mensaje_bot = ultima_respuesta_asistente(
+        estado
+    )
+
+    if not ultimo_mensaje_bot:
+        return None
+
+    pregunta_pendiente = estado.get(
+        "pregunta_pendiente"
+    )
+    detalle_pendiente = estado.get(
+        "detalle_pregunta_pendiente"
+    )
+
+    contexto = {
+        "ultimo_mensaje_del_chatbot": ultimo_mensaje_bot,
+        "respuesta_corta_del_usuario": mensaje_usuario,
+        "pregunta_pendiente": pregunta_pendiente,
+        "detalle_pregunta_pendiente": detalle_pendiente,
+        "estado_comercial": construir_estado_para_ia(
+            estado
+        ),
+    }
+
+    mensajes = [
+        {
+            "role": "system",
+            "content": (
+                "Eres el intérprete contextual de Paty, la asesora "
+                "virtual de Mettryc Realty. Debes comprender una "
+                "respuesta corta del usuario usando principalmente "
+                "la última pregunta que hizo el chatbot.\n\n"
+                "REGLAS:\n"
+                "1. Un 'sí', 'ok', 'está bien', 'fino', 'perfecto' "
+                "o equivalente confirma disposición a continuar, "
+                "pero no necesariamente selecciona entre dos "
+                "alternativas.\n"
+                "2. Si el chatbot ofreció dos opciones y la persona "
+                "solo respondió 'sí', pregunta cuál de las dos "
+                "prefiere.\n"
+                "3. Reformula la pregunta de manera diferente. "
+                "Nunca repitas literalmente el último mensaje.\n"
+                "4. Si la respuesta es negativa, reconoce la "
+                "decisión y ofrece ayuda con otra cosa.\n"
+                "5. No inventes filtros ni elijas una alternativa "
+                "por la persona.\n"
+                "6. La respuesta debe ser natural, cálida y breve.\n"
+                "7. Devuelve exclusivamente el JSON solicitado."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                contexto,
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    resultado = await llamar_openrouter_json(
+        InterpretacionRespuestaCortaIA,
+        mensajes,
+        temperatura=0.1,
+        max_tokens=400,
+    )
+
+    if isinstance(
+        resultado,
+        InterpretacionRespuestaCortaIA,
+    ):
+        respuesta = resultado.respuesta.strip()
+
+        # Evita que la IA repita exactamente la misma pregunta.
+        if (
+            respuesta
+            and normalizar_texto(respuesta)
+            != normalizar_texto(
+                ultimo_mensaje_bot
+            )
+        ):
+            if not resultado.mantener_pregunta_pendiente:
+                estado["pregunta_pendiente"] = None
+                estado.pop(
+                    "detalle_pregunta_pendiente",
+                    None,
+                )
+
+            return respuesta
+
+    return respuesta_corta_fallback(
+        estado,
+        mensaje_usuario,
+        ultimo_mensaje_bot,
+    )
+
+async def procesar_eleccion_sin_resultados(
+    estado: dict,
+    mensaje: str,
+) -> Optional[str]:
+    if estado.get("pregunta_pendiente") not in {
+        "sin_resultados",
+        "sin_resultados_eleccion",
+    }:
+        return None
+
+    normalizado = normalizar_texto(mensaje)
+
+    frases_ampliar = [
+        "ampliar",
+        "ampliar zona",
+        "la zona",
+        "zona",
+        "buscar en otra zona",
+        "otra zona",
+        "toda la ciudad",
+        "sin zona",
+    ]
+
+    frases_ajustar = [
+        "ajustar",
+        "ajustar busqueda",
+        "ajustar la busqueda",
+        "cambiar criterios",
+        "cambiar condiciones",
+        "presupuesto",
+        "caracteristicas",
+    ]
+
+    eligio_ampliar = any(
+        normalizado == frase
+        or frase in normalizado
+        for frase in frases_ampliar
+    )
+
+    eligio_ajustar = any(
+        normalizado == frase
+        or frase in normalizado
+        for frase in frases_ajustar
+    )
+
+    if eligio_ampliar and not eligio_ajustar:
+        filtros = estado.get("filtros", {})
+
+        filtros["zona"] = None
+
+        sin_preferencia = estado.setdefault(
+            "sin_preferencia",
+            [],
+        )
+
+        if "zona" not in sin_preferencia:
+            sin_preferencia.append("zona")
+
+        estado["propiedades_enviadas"] = []
+        estado["ultimo_lote"] = []
+        estado["pregunta_pendiente"] = None
+        estado.pop(
+            "detalle_pregunta_pendiente",
+            None,
+        )
+
+        if criterios_suficientes(estado):
+            return await mostrar_propiedades(
+                estado
+            )
+
+        return obtener_pregunta_faltante(
+            estado
+        )
+
+    if eligio_ajustar:
+        estado["pregunta_pendiente"] = (
+            "ajustar_busqueda"
+        )
+        estado["detalle_pregunta_pendiente"] = {
+            "tipo": "seleccion_de_campo",
+            "opciones": [
+                "ubicacion",
+                "presupuesto",
+                "tipo_propiedad",
+                "caracteristicas",
+            ],
+        }
+
+        return (
+            "Claro. ¿Qué prefieres ajustar: la ubicación, "
+            "el presupuesto, el tipo de propiedad o alguna "
+            "característica?"
+        )
+
+    return None
 
 async def procesar_mensaje(
     sender: str,
@@ -5683,6 +6147,46 @@ async def procesar_mensaje(
             codigo=None,
         )
         return await finalizar(respuesta)
+
+    # --------------------------------------------------------
+    # ELECCIONES PENDIENTES DESPUÉS DE NO ENCONTRAR RESULTADOS
+    # --------------------------------------------------------
+
+    respuesta_eleccion = (
+        await procesar_eleccion_sin_resultados(
+            estado,
+            texto,
+        )
+    )
+
+    if respuesta_eleccion:
+        return await finalizar(
+            respuesta_eleccion
+        )
+
+    # --------------------------------------------------------
+    # TRADUCTOR CONTEXTUAL DE RESPUESTAS CORTAS
+    # --------------------------------------------------------
+
+    if es_respuesta_corta_contextual(texto):
+        respuesta_contextual = (
+            await interpretar_respuesta_corta_con_ia(
+                estado,
+                texto,
+            )
+        )
+
+        if respuesta_contextual:
+            # Si todavía falta escoger entre ampliar o ajustar,
+            # se mantiene el contexto para el próximo mensaje.
+            if estado.get("pregunta_pendiente") == "sin_resultados":
+                estado["pregunta_pendiente"] = (
+                    "sin_resultados_eleccion"
+                )
+
+            return await finalizar(
+                respuesta_contextual
+            )
 
     # --------------------------------------------------------
     # PREGUNTAS SOBRE UNA PROPIEDAD ACTIVA
