@@ -4190,33 +4190,54 @@ def es_respuesta_afirmativa(texto: str) -> bool:
     if not normalizado:
         return False
 
-    if normalizado in RESPUESTAS_AFIRMATIVAS:
+    respuestas = {
+        "si",
+        "sii",
+        "siii",
+        "sip",
+        "claro",
+        "claro que si",
+        "por supuesto",
+        "por supuesto que si",
+        "correcto",
+        "es correcto",
+        "si es correcto",
+        "todo correcto",
+        "los datos estan correctos",
+        "los datos son correctos",
+        "afirmativo",
+        "ok",
+        "okay",
+        "listo",
+        "dale",
+        "perfecto",
+        "esta bien",
+        "de acuerdo",
+        "confirmo",
+    }
+
+    if normalizado in respuestas:
         return True
 
-    frases_afirmativas = [
+    frases = [
         "te dije que si",
         "ya te dije que si",
-        "claro que si",
-        "por supuesto que si",
+        "si por favor",
         "si quiero",
         "si deseo",
-        "si por favor",
-        "si agendala",
-        "si agendalo",
-        "si quiero visitarla",
-        "si quiero visitarlo",
-        "correcto",
-        "eso es correcto",
+        "si confirmo",
+        "si correcto",
+        "si esta correcto",
+        "si es correcto",
     ]
 
-    if any(frase in normalizado for frase in frases_afirmativas):
+    if any(
+        frase in normalizado
+        for frase in frases
+    ):
         return True
 
-    if normalizado.startswith("si "):
-        return True
-
-    return False
-
+    return normalizado.startswith("si ")
 
 def es_respuesta_negativa(texto: str) -> bool:
     normalizado = normalizar_texto(texto)
@@ -6957,6 +6978,9 @@ async def webhook(
     mensaje = str(payload.get("message", "")).strip()
     message_id = str(
         payload.get("message_id")
+        or payload.get("messageId")
+        or payload.get("message-id")
+        or payload.get("wamid")
         or payload.get("id")
         or ""
     ).strip()
@@ -6970,16 +6994,23 @@ async def webhook(
     if not mensaje:
         return {"replies": []}
 
-    if not message_id:
-        message_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"{sender}:{mensaje}",
+    if message_id:
+        if mensaje_es_duplicado(
+            sender,
+            message_id,
+        ):
+            logger.info(
+                "Mensaje duplicado ignorado sender=%s id=%s",
+                sender[-4:],
+                message_id[-12:],
             )
+            return {"replies": []}
+    else:
+        logger.debug(
+            "Mensaje sin message_id; se procesa sin deduplicación "
+            "sender=%s",
+            sender[-4:],
         )
-
-    if mensaje_es_duplicado(sender, message_id):
-        return {"replies": []}
 
     if sender not in locks_usuarios:
         locks_usuarios[sender] = asyncio.Lock()
