@@ -6852,7 +6852,7 @@ async def procesar_mensaje(
     # ESPERANDO CÓDIGO DE UN ANUNCIO
     # --------------------------------------------------------
 
-        if estado.get("esperando_codigo"):
+    if estado.get("esperando_codigo"):
         codigo = (
             extraer_codigo_mercadolibre(texto)
             or extraer_codigo_inmueble(
@@ -6880,9 +6880,19 @@ async def procesar_mensaje(
                     property_id = str(
                         propiedad.get("id")
                     )
-                    estado["propiedad_interes"] = propiedad
-                    estado["propiedad_activa_id"] = property_id
-                    estado["ultimo_lote"] = [property_id]
+
+                    estado["propiedad_interes"] = (
+                        propiedad
+                    )
+                    estado["propiedad_activa_id"] = (
+                        property_id
+                    )
+                    estado[
+                        "ultima_propiedad_consultada_id"
+                    ] = property_id
+                    estado["ultimo_lote"] = [
+                        property_id
+                    ]
 
                     respuesta = (
                         await atender_solicitud_captador(
@@ -6890,26 +6900,32 @@ async def procesar_mensaje(
                             codigo=property_id,
                         )
                     )
+
                 else:
                     estado["esperando_codigo"] = True
                     estado["pregunta_pendiente"] = (
                         "codigo_para_captador"
                     )
+
                     respuesta = (
-                        "No encontré una propiedad activa con ese "
-                        "código. Revisa el número o envíame el enlace."
+                        "No encontré una propiedad activa con "
+                        "ese código. Revisa el número o envíame "
+                        "el enlace del anuncio."
                     )
 
             else:
-                respuesta = await mostrar_inmueble_especifico(
-                    estado,
-                    codigo,
+                respuesta = (
+                    await mostrar_inmueble_especifico(
+                        estado,
+                        codigo,
+                    )
                 )
+
         else:
             respuesta = (
                 "No logré identificar el código. Suele aparecer "
-                "al final del título o en la descripción del anuncio. "
-                "Por ejemplo: AM-9935990 o 9935990."
+                "al final del título o en la descripción del "
+                "anuncio. Por ejemplo: AM-9935990 o 9935990."
             )
 
         return await finalizar(respuesta)
