@@ -7150,12 +7150,6 @@ async def procesar_mensaje(
                 "Indícame el número de la opción o su código."
             )
 
-    elif accion == "solicitar_captador":
-        respuesta = await atender_solicitud_captador(
-            estado,
-            posicion=posicion,
-            codigo=codigo,
-        )
 
     elif accion == "consultar_propiedad":
         propiedad = resolver_propiedad_contexto(
@@ -7186,6 +7180,15 @@ async def procesar_mensaje(
                 propiedad,
                 pregunta,
             )
+
+
+    elif accion == "solicitar_captador":
+        respuesta = await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=codigo,
+        )
+
 
     elif accion == "consultar_mettryc":
         respuesta = await responder_consulta_mettryc(
