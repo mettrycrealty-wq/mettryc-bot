@@ -945,7 +945,9 @@ def es_consulta_directa_anuncio(texto: str) -> bool:
 def crear_sesion(sender: str) -> dict:
     return {
         "rol": None,
+        "rol_confirmado": False,
         "confianza_rol": 0.0,
+        "accion_pendiente_rol": None,
         "objetivo": "conversar",
         "estado_conversacion": "inicio",
 
@@ -1955,6 +1957,24 @@ REGLAS ESPECIALES PARA COLEGAS
 - Nunca solicites datos personales del cliente del colega.
 - Nunca conviertas a un colega en cliente en mensajes posteriores.
 
+ROL OBLIGATORIO ANTES DEL CONTACTO
+
+- Antes de capturar datos personales, asignar un agente, iniciar
+  round robin, entregar datos de un captador o coordinar una visita,
+  el rol debe estar confirmado explícitamente.
+- La pregunta obligatoria es:
+  "¿Buscas la propiedad para ti o para un cliente?"
+- Si responde para sí mismo, el rol es cliente.
+- Si responde para un cliente, el rol es colega_inmobiliario.
+- Mostrar una ficha de Mercado Libre o de un anuncio no requiere
+  conocer todavía el rol.
+- Si después de ver la ficha desea agendar una visita, primero
+  confirma el rol.
+- Cliente que desea visitar: captura de lead y round robin.
+- Colega que desea visitar: entrega nombre y WhatsApp del captador.
+- Nunca asumas que una persona es cliente solo porque no ha dicho
+  que es colega.
+
 CONTACTO DE COLEGAS
 
 - Si un colega proporciona su nombre, extráelo en
@@ -2497,12 +2517,14 @@ def interpretar_respuesta_rol(
 
         if normalizado in respuestas_cliente_normalizadas:
             estado["rol"] = "colega_inmobiliario"
+            estado["rol_confirmado"] = True
             estado["confianza_rol"] = 1.0
             estado["pregunta_pendiente"] = None
             return "colega_inmobiliario"
 
         if normalizado in respuestas_personales_normalizadas:
             estado["rol"] = "cliente"
+            estado["rol_confirmado"] = True
             estado["confianza_rol"] = 1.0
             estado["pregunta_pendiente"] = None
             return "cliente"
@@ -2515,6 +2537,7 @@ def interpretar_respuesta_rol(
 
     if rol:
         estado["rol"] = rol
+        estado["rol_confirmado"] = True
         estado["confianza_rol"] = 1.0
         estado["pregunta_pendiente"] = None
         return rol
@@ -2527,6 +2550,10 @@ def interpretar_respuesta_rol(
         "yo",
         "personal",
         "uso personal",
+        "para mi",
+        "para mí",
+        "es para mi",
+        "es para mí",
         "es mia",
         "es mía",
         "es mio",
@@ -2534,11 +2561,49 @@ def interpretar_respuesta_rol(
         "es para nosotros",
     }:
         estado["rol"] = "cliente"
+        estado["rol_confirmado"] = True
         estado["confianza_rol"] = 1.0
         estado["pregunta_pendiente"] = None
         return "cliente"
 
     return None
+
+def rol_esta_confirmado(estado: dict) -> bool:
+    return bool(
+        estado.get("rol")
+        in {
+            "cliente",
+            "colega_inmobiliario",
+        }
+        and estado.get("rol_confirmado", False)
+    )
+
+
+def mensaje_confirmacion_rol() -> str:
+    return (
+        "Antes de continuar, ¿buscas la propiedad para ti "
+        "o para un cliente?"
+    )
+
+
+def solicitar_rol_para_accion(
+    estado: dict,
+    accion: str,
+    *,
+    propiedad_id: Optional[str] = None,
+    posicion: Optional[int] = None,
+    mensaje_original: Optional[str] = None,
+) -> str:
+    estado["accion_pendiente_rol"] = {
+        "tipo": accion,
+        "propiedad_id": propiedad_id,
+        "posicion": posicion,
+        "mensaje_original": mensaje_original,
+    }
+    estado["pregunta_pendiente"] = "confirmar_rol"
+    estado["estado_conversacion"] = "esperando_rol"
+
+    return mensaje_confirmacion_rol()
 
 def normalizar_campo_sin_preferencia(
     campo: str,
@@ -2586,6 +2651,7 @@ def aplicar_decision(
 
     if rol_explicito:
         estado["rol"] = rol_explicito
+        estado["rol_confirmado"] = True
         estado["confianza_rol"] = 1.0
 
     elif (
@@ -3082,58 +3148,6 @@ def aplicar_sin_preferencia_desde_texto(
 # BUSCADOR DE PROPIEDADES
 # ============================================================
 
-def ciudad_coincide(
-    propiedad: dict,
-    ciudad_buscada: Optional[str],
-) -> bool:
-    if not ciudad_buscada:
-        return True
-
-    ciudad_objetivo = normalizar_texto(ciudad_buscada)
-    ciudad_propiedad = normalizar_texto(
-        propiedad.get("ciudad")
-    )
-    zona_propiedad = normalizar_texto(
-        propiedad.get("zona")
-    )
-    titulo_propiedad = normalizar_texto(
-        propiedad.get("titulo")
-    )
-
-    texto_ubicacion = (
-        f"{ciudad_propiedad} "
-        f"{zona_propiedad} "
-        f"{titulo_propiedad}"
-    )
-
-    incompatibles = SECTORES_INCOMPATIBLES_POR_CIUDAD.get(
-        ciudad_objetivo,
-        set(),
-    )
-
-    for incompatible in incompatibles:
-        if contiene_termino(
-            texto_ubicacion,
-            incompatible,
-        ):
-            return False
-
-    if ciudad_objetivo == ciudad_propiedad:
-        return True
-
-    if contiene_termino(
-        ciudad_propiedad,
-        ciudad_objetivo,
-    ):
-        return True
-
-    if contiene_termino(
-        zona_propiedad,
-        ciudad_objetivo,
-    ):
-        return True
-
-    return False
 
 CIUDADES_CANONICAS = {
     "puerto cabello": "Puerto Cabello",
@@ -3416,11 +3430,14 @@ def zona_coincide(
 
 
 def criterios_suficientes(estado: dict) -> bool:
+    if not rol_esta_confirmado(estado):
+        return False
+
     filtros = estado.get("filtros", {})
     sin_preferencia = set(
         estado.get("sin_preferencia", [])
     )
-    rol = estado.get("rol") or "cliente"
+    rol = estado.get("rol")
 
     criterios_base = bool(
         filtros.get("tipo_operacion")
@@ -4719,14 +4736,6 @@ async def notificar_colega_administradores(
         estado
     )
 
-async def notificar_colega_administradores(
-    estado: dict,
-    mensaje_original: str,
-) -> bool:
-    contacto = preparar_contacto_colega_desde_estado(
-        estado
-    )
-
     asunto_fue_escrito = estado.get(
         "asunto_contacto_colega_escrito",
         False,
@@ -4746,11 +4755,6 @@ async def notificar_colega_administradores(
             "el asunto no fue escrito por el colega."
         )
         return False
-
-    nombre_colega = (
-        contacto.get("nombre")
-        or "No identificado"
-    )
 
     nombre_colega = (
         contacto.get("nombre")
@@ -4875,9 +4879,9 @@ def obtener_pregunta_faltante(estado: dict) -> str:
     )
     rol = estado.get("rol")
 
-    if not rol:
+    if not rol_esta_confirmado(estado):
         estado["pregunta_pendiente"] = "confirmar_rol"
-        return "¿Buscas la propiedad para ti o para un cliente?"
+        return mensaje_confirmacion_rol()
 
     if not filtros.get("tipo_operacion"):
         estado["pregunta_pendiente"] = "tipo_operacion"
@@ -5136,30 +5140,56 @@ async def iniciar_visita(
             "visitar o envíame su código."
         )
 
+    property_id = str(propiedad.get("id") or "")
+
     estado["propiedad_interes"] = propiedad
-    estado["propiedad_activa_id"] = propiedad.get("id")
+    estado["propiedad_activa_id"] = property_id
+    estado["ultima_propiedad_consultada_id"] = property_id
+
+    # El rol es obligatorio antes de capturar el lead o entregar
+    # los datos del captador.
+    if not rol_esta_confirmado(estado):
+        return solicitar_rol_para_accion(
+            estado,
+            "agendar_visita",
+            propiedad_id=property_id,
+            posicion=posicion,
+        )
 
     if estado.get("rol") == "colega_inmobiliario":
         await sincronizar_google_sheet()
 
         cruce = cruzar_captador_con_sheet(
-            propiedad.get("captador_wasi", "")
+            propiedad.get(
+                "captador_wasi",
+                "",
+            )
+        )
+
+        estado["accion_pendiente_rol"] = None
+        estado["pregunta_pendiente"] = None
+        estado["estado_conversacion"] = (
+            "visita_colega"
         )
 
         if cruce.get("telefono"):
             return (
-                f"Perfecto, colega. El captador es "
-                f"{cruce.get('nombre')}. Puedes contactarlo aquí: "
+                "Perfecto, colega. El captador de esta propiedad es "
+                f"{cruce.get('nombre')}. Puedes coordinar la visita "
+                "directamente por WhatsApp aquí: "
                 f"https://wa.me/{cruce['telefono']}"
             )
 
         return (
-            "Identifiqué la propiedad, pero no pude localizar el "
-            "teléfono del captador. Si quieres, puedo notificar "
-            "al equipo administrativo."
+            "Identifiqué la propiedad, pero el teléfono del captador "
+            "no aparece actualmente en el directorio. Si quieres, "
+            "puedo notificar al equipo administrativo para que "
+            "te ayude a coordinar la visita."
         )
 
-    estado["rol"] = estado.get("rol") or "cliente"
+    # El rol fue confirmado como cliente.
+    estado["accion_pendiente_rol"] = None
+    estado["pregunta_pendiente"] = None
     estado["objetivo"] = "captura_lead"
     estado["estado_conversacion"] = "captura_lead"
     estado["motivo_contacto"] = "Agendar visita"
@@ -5232,6 +5262,12 @@ async def iniciar_atencion_humana(
     estado: dict,
     mensaje: str,
 ) -> str:
+    if not rol_esta_confirmado(estado):
+        return solicitar_rol_para_accion(
+            estado,
+            "hablar_con_humano",
+            mensaje_original=mensaje,
+        )
     if estado.get("rol") == "colega_inmobiliario":
         # Cada nueva solicitud humana de un colega debe tener
         # un asunto nuevo escrito expresamente por él.
@@ -5319,7 +5355,6 @@ async def iniciar_atencion_humana(
         )
 
     # Flujo de clientes: conserva el round robin.
-    estado["rol"] = estado.get("rol") or "cliente"
     estado["objetivo"] = "captura_lead"
     estado["estado_conversacion"] = "captura_lead"
     estado["motivo_contacto"] = (
@@ -5936,6 +5971,40 @@ async def procesar_eleccion_sin_resultados(
 
     return None
 
+async def continuar_accion_pendiente_rol(
+    estado: dict,
+) -> Optional[str]:
+    if not rol_esta_confirmado(estado):
+        return None
+
+    pendiente = estado.get(
+        "accion_pendiente_rol"
+    )
+
+    if not isinstance(pendiente, dict):
+        return None
+
+    estado["accion_pendiente_rol"] = None
+    estado["pregunta_pendiente"] = None
+
+    tipo = pendiente.get("tipo")
+
+    if tipo == "agendar_visita":
+        return await iniciar_visita(
+            estado,
+            posicion=pendiente.get("posicion"),
+            codigo=pendiente.get("propiedad_id"),
+        )
+
+    if tipo == "hablar_con_humano":
+        return await iniciar_atencion_humana(
+            estado,
+            pendiente.get("mensaje_original")
+            or "Solicita atención humana",
+        )
+
+    return None
+
 async def procesar_mensaje(
     sender: str,
     mensaje: str,
@@ -6002,10 +6071,20 @@ async def procesar_mensaje(
 
     if rol_detectado:
         estado["pregunta_pendiente"] = None
+        estado["rol_confirmado"] = True
         estado["confianza_rol"] = 1.0
 
-    # Si se acaba de responder la pregunta del rol, se conserva
-    # durante todo el análisis posterior.
+        respuesta_pendiente = (
+            await continuar_accion_pendiente_rol(
+                estado
+            )
+        )
+
+        if respuesta_pendiente:
+            return await finalizar(
+                respuesta_pendiente
+            )
+
     rol_confirmado_en_este_mensaje = rol_detectado
 
     # --------------------------------------------------------
@@ -6056,6 +6135,46 @@ async def procesar_mensaje(
     # dentro de un correo nunca se interpretan como propiedad.
 
     if estado.get("objetivo") == "captura_lead":
+        if not rol_esta_confirmado(estado):
+            propiedad = resolver_propiedad_contexto(
+                estado
+            )
+
+            estado["objetivo"] = "evaluar_resultados"
+
+            return await finalizar(
+                solicitar_rol_para_accion(
+                    estado,
+                    "agendar_visita",
+                    propiedad_id=(
+                        str(propiedad.get("id"))
+                        if propiedad
+                        else None
+                    ),
+                )
+            )
+
+        if estado.get("rol") == "colega_inmobiliario":
+            propiedad = resolver_propiedad_contexto(
+                estado
+            )
+
+            if propiedad:
+                respuesta = await iniciar_visita(
+                    estado,
+                    posicion=None,
+                    codigo=str(propiedad.get("id")),
+                )
+                return await finalizar(respuesta)
+
+            estado["objetivo"] = "conversar"
+
+            return await finalizar(
+                "Como colega, no necesito los datos personales "
+                "de tu cliente. Indícame la propiedad que deseas "
+                "consultar y te compartiré los datos del captador."
+            )
+
         respuesta = await procesar_captura_lead(
             estado,
             texto,
@@ -6118,13 +6237,31 @@ async def procesar_mensaje(
     pregunta_pendiente = estado.get("pregunta_pendiente")
 
     if (
-        pregunta_pendiente
-        in {
-            "visita_o_pregunta_propiedad",
-            "confirmar_visita",
-        }
+        pregunta_pendiente == "confirmar_visita"
         and es_respuesta_afirmativa(texto)
     ):
+        estado["pregunta_pendiente"] = None
+
+        respuesta = await iniciar_visita(
+            estado,
+            posicion=None,
+            codigo=None,
+        )
+        return await finalizar(respuesta)
+
+    if (
+        pregunta_pendiente
+        == "visita_o_pregunta_propiedad"
+        and es_respuesta_afirmativa(texto)
+    ):
+        estado["pregunta_pendiente"] = (
+            "visita_o_pregunta_propiedad"
+        )
+
+        return await finalizar(
+            "Perfecto. ¿Quieres agendar una visita o prefieres "
+            "hacer una pregunta sobre la propiedad?"
+        )
         estado["pregunta_pendiente"] = None
 
         respuesta = await iniciar_visita(
@@ -6603,203 +6740,6 @@ async def procesar_mensaje(
 
     return await finalizar(respuesta)
 
-
-
-    # --------------------------------------------------------
-    # EJECUCIÓN DE ACCIONES
-    # --------------------------------------------------------
-
-    if accion == "reiniciar_busqueda":
-        estado = reiniciar_busqueda(estado)
-
-        respuesta = (
-            "Perfecto, iniciemos una nueva búsqueda. "
-            "¿Qué tipo de propiedad necesitas?"
-        )
-
-    elif accion == "hablar_con_humano":
-        respuesta = await iniciar_atencion_humana(
-            estado,
-            texto,
-        )
-
-    elif accion == "agendar_visita":
-        estado["pregunta_pendiente"] = None
-
-        respuesta = await iniciar_visita(
-            estado,
-            posicion,
-            codigo,
-        )
-
-    elif accion == "buscar_por_codigo":
-        if codigo:
-            respuesta = await mostrar_inmueble_especifico(
-                estado,
-                codigo,
-            )
-        else:
-            estado["esperando_codigo"] = True
-            estado["estado_conversacion"] = (
-                "esperando_codigo"
-            )
-
-            respuesta = (
-                "Envíame el código que aparece al final del título "
-                "o en la descripción del anuncio."
-            )
-
-    elif accion == "pedir_codigo_inmueble":
-        estado["esperando_codigo"] = True
-        estado["estado_conversacion"] = (
-            "esperando_codigo"
-        )
-
-        respuesta = (
-            "¡Claro! Para ubicar la propiedad exacta, envíame el "
-            "código que aparece al final del título o en la "
-            "descripción del anuncio. Por ejemplo: "
-            "AM-9935990 o 9935990."
-        )
-
-    elif accion == "mostrar_mas_propiedades":
-        if estado.get("propiedades_enviadas"):
-            respuesta = await mostrar_propiedades(estado)
-        else:
-            respuesta = (
-                "Primero cuéntame qué tipo de propiedad buscas, "
-                "si es para comprar o alquilar y la ubicación."
-            )
-
-    elif accion == "seleccionar_propiedad":
-        propiedad = resolver_propiedad_contexto(
-            estado,
-            posicion=posicion,
-            codigo=codigo,
-        )
-
-        if propiedad:
-            estado["propiedad_interes"] = propiedad
-            estado["propiedad_activa_id"] = propiedad.get(
-                "id"
-            )
-            estado["pregunta_pendiente"] = (
-                "visita_o_pregunta_propiedad"
-            )
-
-            if estado.get("rol") == "colega_inmobiliario":
-                respuesta = await iniciar_visita(
-                    estado,
-                    posicion,
-                    codigo,
-                )
-            else:
-                respuesta = (
-                    "Perfecto, ya identifiqué esa propiedad. "
-                    "¿Quieres agendar una visita o preguntarme "
-                    "algo específico sobre ella?"
-                )
-        else:
-            respuesta = (
-                "No pude identificar la propiedad. "
-                "Indícame el número de la opción o su código."
-            )
-
-    elif accion == "consultar_propiedad":
-        propiedad = resolver_propiedad_contexto(
-            estado,
-            posicion=posicion,
-            codigo=codigo,
-        )
-
-        if not propiedad:
-            if len(estado.get("ultimo_lote", [])) > 1:
-                respuesta = (
-                    "¿Sobre cuál propiedad quieres consultar: "
-                    "la primera, segunda, tercera, cuarta o quinta?"
-                )
-            else:
-                respuesta = (
-                    "Envíame el código de la propiedad para "
-                    "consultar sus detalles."
-                )
-        else:
-            pregunta = (
-                decision.solicitudes.pregunta_sobre_propiedad
-                or texto
-            )
-
-            respuesta = await responder_pregunta_propiedad(
-                estado,
-                propiedad,
-                pregunta,
-            )
-
-    elif accion == "consultar_mettryc":
-        respuesta = await responder_consulta_mettryc(
-            texto,
-            estado,
-            decision,
-        )
-
-    elif accion == "buscar_propiedades":
-        pregunta_faltante = obtener_pregunta_faltante(
-            estado
-        )
-
-        if pregunta_faltante:
-            respuesta = pregunta_faltante
-        elif criterios_suficientes(estado):
-            respuesta = await mostrar_propiedades(estado)
-        else:
-            respuesta = (
-                "Necesito confirmar algunos detalles antes de "
-                "buscar las propiedades."
-            )
-
-    elif accion == "pedir_aclaracion":
-        respuesta = decision.mensaje or (
-            "Quiero ayudarte correctamente. "
-            "¿Puedes darme un poco más de detalle?"
-        )
-
-    else:
-        pregunta_faltante = obtener_pregunta_faltante(
-            estado
-        )
-
-        tiene_filtros = any(
-            valor not in (None, "", [])
-            for valor in estado.get("filtros", {}).values()
-        )
-
-        if criterios_suficientes(estado) and (
-            cambio_ia
-            or cambio_tecnico
-            or decision.intencion_principal
-            in {
-                "buscar_propiedades",
-                "busqueda_inmueble",
-                "buscar_inmueble",
-            }
-        ):
-            respuesta = await mostrar_propiedades(estado)
-
-        elif pregunta_faltante and tiene_filtros:
-            respuesta = pregunta_faltante
-
-        else:
-            respuesta = decision.mensaje or (
-                "¡Hola! Soy Paty, asesora virtual de "
-                "Mettryc Realty. ¿Cómo puedo ayudarte?"
-            )
-
-    if not respuesta:
-        respuesta = (
-            "¿Puedes contarme un poco más sobre lo que necesitas?"
-        )
-
-    return await finalizar(respuesta)
 
 # ============================================================
 # INICIALIZACIÓN
