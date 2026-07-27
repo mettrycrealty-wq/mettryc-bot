@@ -141,6 +141,7 @@ class AccionAgente(BaseModel):
         "mostrar_mas_propiedades",
         "buscar_por_codigo",
         "consultar_propiedad",
+        "solicitar_captador",
         "seleccionar_propiedad",
         "agendar_visita",
         "hablar_con_humano",
@@ -152,7 +153,6 @@ class AccionAgente(BaseModel):
 
     codigo: Optional[str] = None
     posicion: Optional[int] = None
-
 
 class DecisionAgente(BaseModel):
     mensaje: str = ""
@@ -686,6 +686,103 @@ def pide_mas_opciones(texto: str) -> bool:
         "ninguna me gusto", "siguientes opciones",
     ]
     return any(frase in normalizado for frase in frases)
+
+def solicita_datos_captador(texto: str) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    frases = [
+        "captador",
+        "contacto del captador",
+        "telefono del captador",
+        "whatsapp del captador",
+        "numero del captador",
+        "quien capto",
+        "quien es el captador",
+        "dame el contacto",
+        "pasame el contacto",
+        "contacto del asesor de la propiedad",
+        "asesor captador",
+        "quien lleva esa propiedad",
+        "quien lleva la propiedad",
+        "con quien coordino",
+        "con quien puedo coordinar",
+    ]
+
+    return any(
+        frase in normalizado
+        for frase in frases
+    )
+
+
+def es_solicitud_informacion_ambigua(
+    texto: str,
+) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    mensajes_ambiguos = {
+        "informacion",
+        "info",
+        "quiero informacion",
+        "necesito informacion",
+        "solicito informacion",
+        "deseo informacion",
+        "me das informacion",
+        "puedes darme informacion",
+    }
+
+    return normalizado in mensajes_ambiguos
+
+
+def es_consulta_inventario_directa(
+    texto: str,
+) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    frases = [
+        "precio",
+        "cual es el precio",
+        "cuanto cuesta",
+        "cuanto vale",
+        "disponible",
+        "esta disponible",
+        "sigue disponible",
+        "disponibilidad",
+        "canon",
+        "precio de venta",
+        "precio de alquiler",
+        "informacion de la propiedad",
+        "informacion del inmueble",
+        "informacion de la casa",
+        "informacion del apartamento",
+        "informacion del local",
+        "informacion del anuncio",
+        "informacion de la publicacion",
+    ]
+
+    return any(
+        normalizado == frase
+        or normalizado.startswith(frase)
+        for frase in frases
+    )
+
+
+def tiene_propiedad_en_contexto(
+    estado: dict,
+) -> bool:
+    return bool(
+        estado.get("propiedad_interes")
+        or estado.get("propiedad_activa_id")
+        or len(estado.get("ultimo_lote", [])) == 1
+    )
+
+
+def mensaje_solicitud_codigo_inmueble() -> str:
+    return (
+        "Para ubicar la propiedad exacta, envíame el código que "
+        "aparece al final del título o en la descripción del "
+        "anuncio. Por ejemplo: AM-9935990 o 9935990."
+    )
+
 def detectar_operacion(texto: str) -> Optional[str]:
     normalizado = normalizar_texto(texto)
 
@@ -2014,6 +2111,28 @@ Extrae nombre, correo y WhatsApp de cualquier mensaje.
 Si quiere usar el número del chat, establece usar_numero_actual.
 No vuelvas a pedir información existente.
 
+SOLICITUD DEL CAPTADOR
+
+- Si el usuario pregunta quién es el captador, pide su contacto,
+  teléfono o WhatsApp, usa solicitar_captador.
+- Nunca respondas una solicitud del captador como una pregunta
+  genérica sobre la propiedad.
+- Antes de revelar datos del captador, el rol debe estar confirmado.
+- Si es colega, el sistema consultará Wasi y Google Sheets.
+- Si es cliente, no reveles el captador; ofrece atención de un
+  agente de Mettryc Realty.
+- Si el cliente acepta, inicia captura de lead.
+
+MENSAJES DE INFORMACIÓN
+
+- Si el usuario escribe solamente “Información” o una frase ambigua
+  equivalente, pregunta si desea información sobre una propiedad,
+  sobre Mettryc Realty o sobre cómo trabajar con nosotros.
+- Si pregunta precio, disponibilidad, canon o información de un
+  anuncio sin código ni propiedad activa, usa pedir_codigo_inmueble.
+- Si ya existe una propiedad activa, responde usando esa propiedad
+  sin volver a solicitar el código.
+
 RESPUESTAS CORTAS Y CONTEXTO
 
 - Interpreta siempre respuestas como sí, no, ok, está bien, fino,
@@ -2399,6 +2518,21 @@ def respuesta_agradecimiento() -> str:
         "propiedad, solo dime."
     )
 
+    # --------------------------------------------------------
+    # SOLICITUD CONTROLADA DE DATOS DEL CAPTADOR
+    # --------------------------------------------------------
+
+    if solicita_datos_captador(texto):
+        posicion_captador = detectar_posicion(
+            texto
+        )
+
+        respuesta = await atender_solicitud_captador(
+            estado,
+            posicion=posicion_captador,
+            codigo=None,
+        )
+        return await finalizar(respuesta)
 
 def es_pregunta_sobre_propiedad_activa(
     texto: str,
@@ -4072,6 +4206,137 @@ def construir_texto_documental_propiedad(
         ]
     ).strip()
 
+async def atender_solicitud_captador(
+    estado: dict,
+    posicion: Optional[int] = None,
+    codigo: Optional[str] = None,
+) -> str:
+    propiedad = resolver_propiedad_contexto(
+        estado,
+        posicion=posicion,
+        codigo=codigo,
+    )
+
+    if not propiedad:
+        estado["esperando_codigo"] = True
+        estado["pregunta_pendiente"] = (
+            "codigo_para_captador"
+        )
+
+        return (
+            "Para identificar al captador necesito ubicar primero "
+            "la propiedad. Envíame el código que aparece al final "
+            "del título o en la descripción del anuncio."
+        )
+
+    property_id = str(propiedad.get("id") or "")
+
+    estado["propiedad_interes"] = propiedad
+    estado["propiedad_activa_id"] = property_id
+    estado["ultima_propiedad_consultada_id"] = property_id
+
+    # El rol debe estar explícitamente confirmado antes de decidir
+    # si se puede revelar el captador.
+    if not rol_esta_confirmado(estado):
+        return solicitar_rol_para_accion(
+            estado,
+            "solicitar_captador",
+            propiedad_id=property_id,
+            posicion=posicion,
+        )
+
+    # --------------------------------------------------------
+    # CLIENTE: NO REVELAR DATOS DEL CAPTADOR
+    # --------------------------------------------------------
+
+    if estado.get("rol") == "cliente":
+        estado["pregunta_pendiente"] = (
+            "ofrecer_agente_cliente"
+        )
+        estado["detalle_pregunta_pendiente"] = {
+            "tipo": "ofrecer_atencion_agente",
+            "propiedad_id": property_id,
+        }
+
+        return (
+            "Por privacidad y organización del servicio no "
+            "compartimos directamente los datos del captador con "
+            "clientes. Sin embargo, puedo asignarte uno de nuestros "
+            "agentes para ayudarte con esta propiedad. "
+            "¿Quieres que te pongamos en contacto con un agente?"
+        )
+
+    # --------------------------------------------------------
+    # COLEGA: CONSULTAR WASI Y GOOGLE SHEETS
+    # --------------------------------------------------------
+
+    detalle = await consultar_detalle_propiedad_wasi(
+        property_id
+    )
+
+    if not detalle:
+        detalle = propiedad
+
+    estado["propiedad_interes"] = detalle
+    estado["propiedad_activa_id"] = property_id
+
+    await sincronizar_google_sheet()
+
+    captador_wasi = str(
+        detalle.get("captador_wasi")
+        or propiedad.get("captador_wasi")
+        or ""
+    ).strip()
+
+    telefono_wasi = normalizar_telefono(
+        detalle.get("telefono_captador_wasi")
+        or propiedad.get("telefono_captador_wasi")
+    )
+
+    cruce = cruzar_captador_con_sheet(
+        captador_wasi
+    )
+
+    nombre_captador = (
+        cruce.get("nombre")
+        or captador_wasi
+        or "Captador no identificado"
+    )
+
+    # Google Sheets tiene prioridad. Si no está allí, se utiliza
+    # el teléfono del usuario/captador registrado en Wasi.
+    telefono_captador = (
+        normalizar_telefono(cruce.get("telefono"))
+        or telefono_wasi
+    )
+
+    estado["pregunta_pendiente"] = None
+    estado.pop(
+        "detalle_pregunta_pendiente",
+        None,
+    )
+
+    if telefono_captador:
+        return (
+            "Claro, colega. El captador de esta propiedad es "
+            f"{nombre_captador}.\n"
+            f"📲 WhatsApp: "
+            f"https://wa.me/{telefono_captador}"
+        )
+
+    if captador_wasi:
+        return (
+            "El captador registrado en Wasi es "
+            f"{nombre_captador}, pero no pude localizar su "
+            "WhatsApp en el directorio de Google Sheets. "
+            "Si quieres, puedo notificar al equipo administrativo."
+        )
+
+    return (
+        "No pude identificar al captador de esta propiedad en "
+        "Wasi ni en el directorio de Google Sheets. "
+        "Si quieres, puedo notificar al equipo administrativo."
+    )
 
 async def responder_pregunta_propiedad(
     estado: dict,
@@ -5988,12 +6253,21 @@ async def continuar_accion_pendiente_rol(
     estado["pregunta_pendiente"] = None
 
     tipo = pendiente.get("tipo")
+    property_id = pendiente.get("propiedad_id")
+    posicion = pendiente.get("posicion")
 
     if tipo == "agendar_visita":
         return await iniciar_visita(
             estado,
-            posicion=pendiente.get("posicion"),
-            codigo=pendiente.get("propiedad_id"),
+            posicion=posicion,
+            codigo=property_id,
+        )
+
+    if tipo == "solicitar_captador":
+        return await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=property_id,
         )
 
     if tipo == "hablar_con_humano":
@@ -6111,6 +6385,52 @@ async def procesar_mensaje(
         # indique directamente el dato que desea corregir.
         estado["lead_confirmacion_pendiente"] = False
         estado["lead_confirmado"] = False
+
+    # --------------------------------------------------------
+    # CLIENTE ACEPTA ATENCIÓN DE UN AGENTE
+    # --------------------------------------------------------
+
+    if (
+        estado.get("pregunta_pendiente")
+        == "ofrecer_agente_cliente"
+    ):
+        if es_respuesta_afirmativa(texto):
+            estado["pregunta_pendiente"] = None
+            estado.pop(
+                "detalle_pregunta_pendiente",
+                None,
+            )
+            estado["objetivo"] = "captura_lead"
+            estado["estado_conversacion"] = (
+                "captura_lead"
+            )
+            estado["motivo_contacto"] = (
+                "Solicita información de una propiedad"
+            )
+
+            respuesta = mensaje_solicitud_datos_lead(
+                estado,
+                saludo=True,
+            )
+            return await finalizar(respuesta)
+
+        if es_respuesta_negativa(texto):
+            estado["pregunta_pendiente"] = None
+            estado.pop(
+                "detalle_pregunta_pendiente",
+                None,
+            )
+
+            return await finalizar(
+                "Entendido. Si quieres hacer otra pregunta sobre "
+                "la propiedad o consultar otras opciones, con "
+                "gusto te ayudo."
+            )
+
+        return await finalizar(
+            "Para confirmar, ¿quieres que te asignemos un agente "
+            "para ayudarte con esta propiedad?"
+        )
 
     # --------------------------------------------------------
     # CAPTURA DE DATOS DEL COLEGA
@@ -6348,6 +6668,172 @@ async def procesar_mensaje(
             return await finalizar(respuesta)
 
     # --------------------------------------------------------
+    # RESPUESTA AL TIPO DE INFORMACIÓN
+    # --------------------------------------------------------
+
+    if (
+        estado.get("pregunta_pendiente")
+        == "tipo_informacion"
+    ):
+        normalizado_info = normalizar_texto(texto)
+
+        palabras_propiedad = [
+            "propiedad",
+            "inmueble",
+            "casa",
+            "apartamento",
+            "local",
+            "oficina",
+            "anuncio",
+            "publicacion",
+            "precio",
+            "disponible",
+            "alquiler",
+            "venta",
+        ]
+
+        palabras_empresa = [
+            "mettryc",
+            "inmobiliaria",
+            "empresa",
+            "oficina",
+            "oficinas",
+            "honorarios",
+            "servicios",
+            "ubicacion",
+            "direccion",
+        ]
+
+        palabras_trabajo = [
+            "trabajo",
+            "trabajar",
+            "empleo",
+            "ingresar",
+            "reclutamiento",
+            "asesor",
+            "curso",
+            "credenciales",
+        ]
+
+        if any(
+            palabra in normalizado_info
+            for palabra in palabras_propiedad
+        ):
+            estado["pregunta_pendiente"] = None
+            estado.pop(
+                "detalle_pregunta_pendiente",
+                None,
+            )
+
+            codigo = (
+                extraer_codigo_mercadolibre(texto)
+                or extraer_codigo_inmueble(
+                    texto,
+                    permitir_solo_digitos=False,
+                )
+            )
+
+            if codigo:
+                respuesta = await mostrar_inmueble_especifico(
+                    estado,
+                    codigo,
+                )
+            else:
+                estado["esperando_codigo"] = True
+                respuesta = mensaje_solicitud_codigo_inmueble()
+
+            return await finalizar(respuesta)
+
+        if any(
+            palabra in normalizado_info
+            for palabra in (
+                palabras_empresa
+                + palabras_trabajo
+            )
+        ):
+            estado["pregunta_pendiente"] = None
+            estado.pop(
+                "detalle_pregunta_pendiente",
+                None,
+            )
+
+            # Se continúa hasta la IA para que responda usando
+            # la base de conocimiento.
+        else:
+            return await finalizar(
+                "Para orientarte mejor, dime si la información "
+                "es sobre una propiedad, sobre Mettryc Realty "
+                "o sobre cómo trabajar con nosotros."
+            )
+
+    # --------------------------------------------------------
+    # SOLICITUD AMBIGUA DE INFORMACIÓN
+    # --------------------------------------------------------
+
+    if (
+        es_solicitud_informacion_ambigua(texto)
+        and not tiene_propiedad_en_contexto(estado)
+    ):
+        estado["pregunta_pendiente"] = (
+            "tipo_informacion"
+        )
+        estado["detalle_pregunta_pendiente"] = {
+            "opciones": [
+                "propiedad",
+                "empresa",
+                "trabajo",
+            ]
+        }
+
+        return await finalizar(
+            "¡Claro! ¿Qué información deseas conocer? "
+            "¿Es sobre una propiedad, sobre Mettryc Realty "
+            "o sobre cómo trabajar con nosotros?"
+        )
+
+    # --------------------------------------------------------
+    # CONSULTA DIRECTA DE INVENTARIO
+    # --------------------------------------------------------
+
+    if es_consulta_inventario_directa(texto):
+        codigo_directo = (
+            extraer_codigo_mercadolibre(texto)
+            or extraer_codigo_inmueble(
+                texto,
+                permitir_solo_digitos=False,
+            )
+        )
+
+        if codigo_directo:
+            respuesta = await mostrar_inmueble_especifico(
+                estado,
+                codigo_directo,
+            )
+            return await finalizar(respuesta)
+
+        if tiene_propiedad_en_contexto(estado):
+            propiedad = resolver_propiedad_contexto(
+                estado
+            )
+
+            if propiedad:
+                respuesta = await responder_pregunta_propiedad(
+                    estado,
+                    propiedad,
+                    texto,
+                )
+                return await finalizar(respuesta)
+
+        estado["esperando_codigo"] = True
+        estado["pregunta_pendiente"] = (
+            "codigo_consulta_inventario"
+        )
+
+        return await finalizar(
+            mensaje_solicitud_codigo_inmueble()
+        )
+
+    # --------------------------------------------------------
     # MERCADO LIBRE
     # --------------------------------------------------------
 
@@ -6366,7 +6852,7 @@ async def procesar_mensaje(
     # ESPERANDO CÓDIGO DE UN ANUNCIO
     # --------------------------------------------------------
 
-    if estado.get("esperando_codigo"):
+        if estado.get("esperando_codigo"):
         codigo = (
             extraer_codigo_mercadolibre(texto)
             or extraer_codigo_inmueble(
@@ -6376,10 +6862,49 @@ async def procesar_mensaje(
         )
 
         if codigo:
-            respuesta = await mostrar_inmueble_especifico(
-                estado,
-                codigo,
-            )
+            estado["esperando_codigo"] = False
+
+            if (
+                estado.get("pregunta_pendiente")
+                == "codigo_para_captador"
+            ):
+                estado["pregunta_pendiente"] = None
+
+                propiedad = (
+                    await consultar_detalle_propiedad_wasi(
+                        codigo
+                    )
+                )
+
+                if propiedad:
+                    property_id = str(
+                        propiedad.get("id")
+                    )
+                    estado["propiedad_interes"] = propiedad
+                    estado["propiedad_activa_id"] = property_id
+                    estado["ultimo_lote"] = [property_id]
+
+                    respuesta = (
+                        await atender_solicitud_captador(
+                            estado,
+                            codigo=property_id,
+                        )
+                    )
+                else:
+                    estado["esperando_codigo"] = True
+                    estado["pregunta_pendiente"] = (
+                        "codigo_para_captador"
+                    )
+                    respuesta = (
+                        "No encontré una propiedad activa con ese "
+                        "código. Revisa el número o envíame el enlace."
+                    )
+
+            else:
+                respuesta = await mostrar_inmueble_especifico(
+                    estado,
+                    codigo,
+                )
         else:
             respuesta = (
                 "No logré identificar el código. Suele aparecer "
@@ -6608,6 +7133,13 @@ async def procesar_mensaje(
                 "No pude identificar la propiedad. "
                 "Indícame el número de la opción o su código."
             )
+
+    elif accion == "solicitar_captador":
+        respuesta = await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=codigo,
+        )
 
     elif accion == "consultar_propiedad":
         propiedad = resolver_propiedad_contexto(
