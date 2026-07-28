@@ -141,6 +141,7 @@ class AccionAgente(BaseModel):
         "mostrar_mas_propiedades",
         "buscar_por_codigo",
         "consultar_propiedad",
+        "solicitar_captador",
         "seleccionar_propiedad",
         "agendar_visita",
         "hablar_con_humano",
@@ -686,6 +687,35 @@ def pide_mas_opciones(texto: str) -> bool:
         "ninguna me gusto", "siguientes opciones",
     ]
     return any(frase in normalizado for frase in frases)
+
+def solicita_datos_captador(texto: str) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    frases = [
+        "captador",
+        "quien es el captador",
+        "quien capto la propiedad",
+        "quien capto ese inmueble",
+        "contacto del captador",
+        "dame el contacto del captador",
+        "pasame el contacto del captador",
+        "telefono del captador",
+        "numero del captador",
+        "whatsapp del captador",
+        "contacto del asesor",
+        "quien lleva la propiedad",
+        "quien lleva ese inmueble",
+        "con quien coordino",
+        "con quien puedo coordinar",
+        "dame el contacto",
+        "pasame el contacto",
+    ]
+
+    return any(
+        frase in normalizado
+        for frase in frases
+    )
+
 def detectar_operacion(texto: str) -> Optional[str]:
     normalizado = normalizar_texto(texto)
 
@@ -1988,6 +2018,20 @@ CONTACTO DE COLEGAS
 Presupuesto, habitaciones, baños, garajes y características son
 preferencias opcionales tanto para clientes como colegas.
 
+DATOS DEL CAPTADOR
+
+- Si preguntan quién es el captador, su teléfono, contacto o
+  WhatsApp, usa solicitar_captador.
+- La solicitud del captador nunca se responde como una pregunta
+  genérica sobre las características del inmueble.
+- Si el rol no está confirmado, el sistema preguntará:
+  "¿Eres agente inmobiliario?"
+- Si responde afirmativamente, el rol será colega_inmobiliario y
+  el sistema entregará nombre y WhatsApp del captador.
+- Si responde negativamente, el rol será cliente. No reveles los
+  datos del captador; el sistema iniciará captura de lead para
+  asignarle un agente de Mettryc Realty.
+
 ANUNCIOS
 
 - Si recibe un código o enlace de Mettryc, usa buscar_por_codigo.
@@ -2044,6 +2088,7 @@ ACCIONES DISPONIBLES
 - consultar_mettryc
 - reiniciar_busqueda
 - pedir_aclaracion
+- solicitar_captador
 
 Devuelve exclusivamente el JSON solicitado.
 """
@@ -2278,6 +2323,22 @@ def decision_fallback(
     )
     posicion = detectar_posicion(mensaje)
     rol = detectar_rol_explicito(mensaje)
+
+    if solicita_datos_captador(mensaje):
+        return DecisionAgente(
+            rol=rol,
+            confianza_rol=1.0 if rol else 0.0,
+            intencion_principal="solicitar_captador",
+            referencia_propiedad=ReferenciaPropiedad(
+                codigo=codigo,
+                posicion=posicion,
+            ),
+            accion=AccionAgente(
+                tipo="solicitar_captador",
+                codigo=codigo,
+                posicion=posicion,
+            ),
+        )
 
     if solicita_humano(mensaje):
         return DecisionAgente(
@@ -2578,6 +2639,113 @@ def rol_esta_confirmado(estado: dict) -> bool:
         and estado.get("rol_confirmado", False)
     )
 
+def respuesta_afirmativa_agente(
+    texto: str,
+) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    rol_explicito = detectar_rol_explicito(
+        texto
+    )
+
+    if rol_explicito == "colega_inmobiliario":
+        return True
+
+    frases = {
+        "si",
+        "sí",
+        "soy agente",
+        "si soy agente",
+        "soy agente inmobiliario",
+        "si soy agente inmobiliario",
+        "soy asesor",
+        "soy asesora",
+        "soy asesor inmobiliario",
+        "soy asesora inmobiliaria",
+        "soy corredor",
+        "soy corredora",
+        "soy broker",
+        "soy realtor",
+        "soy colega",
+        "correcto",
+        "afirmativo",
+        "claro",
+        "por supuesto",
+    }
+
+    return normalizado in {
+        normalizar_texto(frase)
+        for frase in frases
+    }
+
+
+def respuesta_negativa_agente(
+    texto: str,
+) -> bool:
+    normalizado = normalizar_texto(texto)
+
+    rol_explicito = detectar_rol_explicito(
+        texto
+    )
+
+    if rol_explicito == "cliente":
+        return True
+
+    frases = {
+        "no",
+        "no soy agente",
+        "no soy agente inmobiliario",
+        "no soy asesor",
+        "no soy asesora",
+        "no soy corredor",
+        "no soy broker",
+        "no soy realtor",
+        "soy cliente",
+        "es para mi",
+        "es para mí",
+        "para mi",
+        "para mí",
+        "no trabajo en una inmobiliaria",
+    }
+
+    return normalizado in {
+        normalizar_texto(frase)
+        for frase in frases
+    }
+
+
+def preguntar_si_es_agente_para_captador(
+    estado: dict,
+    propiedad: dict,
+    posicion: Optional[int] = None,
+) -> str:
+    property_id = str(
+        propiedad.get("id") or ""
+    )
+
+    estado["propiedad_interes"] = propiedad
+    estado["propiedad_activa_id"] = property_id
+    estado["ultima_propiedad_consultada_id"] = (
+        property_id
+    )
+
+    estado["accion_pendiente_rol"] = {
+        "tipo": "solicitar_captador",
+        "propiedad_id": property_id,
+        "posicion": posicion,
+        "mensaje_original": None,
+    }
+
+    estado["pregunta_pendiente"] = (
+        "confirmar_agente_para_captador"
+    )
+    estado["estado_conversacion"] = (
+        "esperando_confirmacion_agente"
+    )
+
+    return (
+        "¿eres agente inmobiliario?"
+    )
 
 def mensaje_confirmacion_rol() -> str:
     return (
@@ -3992,6 +4160,148 @@ def resolver_propiedad_contexto(
 
     return None
 
+async def atender_solicitud_captador(
+    estado: dict,
+    posicion: Optional[int] = None,
+    codigo: Optional[str] = None,
+) -> str:
+    propiedad = resolver_propiedad_contexto(
+        estado,
+        posicion=posicion,
+        codigo=codigo,
+    )
+
+    if not propiedad:
+        estado["esperando_codigo"] = True
+        estado["pregunta_pendiente"] = (
+            "codigo_para_captador"
+        )
+
+        return (
+            "Para identificar al captador necesito ubicar primero "
+            "la propiedad. Envíame el código que aparece al final "
+            "del título o en la descripción del anuncio."
+        )
+
+    property_id = str(
+        propiedad.get("id") or ""
+    )
+
+    estado["propiedad_interes"] = propiedad
+    estado["propiedad_activa_id"] = property_id
+    estado["ultima_propiedad_consultada_id"] = (
+        property_id
+    )
+
+    # --------------------------------------------------------
+    # ROL TODAVÍA DESCONOCIDO
+    # --------------------------------------------------------
+
+    if not rol_esta_confirmado(estado):
+        return preguntar_si_es_agente_para_captador(
+            estado,
+            propiedad,
+            posicion=posicion,
+        )
+
+    # --------------------------------------------------------
+    # NO ES AGENTE: CAPTURA DE LEAD
+    # --------------------------------------------------------
+
+    if estado.get("rol") == "cliente":
+        estado["accion_pendiente_rol"] = None
+        estado["pregunta_pendiente"] = None
+        estado["objetivo"] = "captura_lead"
+        estado["estado_conversacion"] = (
+            "captura_lead"
+        )
+        estado["motivo_contacto"] = (
+            "Solicita atención sobre una propiedad"
+        )
+
+        solicitud_datos = mensaje_solicitud_datos_lead(
+            estado,
+            saludo=False,
+        )
+
+        return (
+            "Con gusto te voy a poner en contacto con uno de nuestros agentes "
+            + solicitud_datos
+        )
+
+    # --------------------------------------------------------
+    # ES AGENTE: CONSULTAR WASI Y GOOGLE SHEETS
+    # --------------------------------------------------------
+
+    detalle = await consultar_detalle_propiedad_wasi(
+        property_id
+    )
+
+    if not detalle:
+        detalle = propiedad
+
+    estado["propiedad_interes"] = detalle
+    estado["propiedad_activa_id"] = property_id
+
+    captador_wasi = str(
+        detalle.get("captador_wasi")
+        or propiedad.get("captador_wasi")
+        or ""
+    ).strip()
+
+    telefono_wasi = normalizar_telefono(
+        detalle.get("telefono_captador_wasi")
+        or propiedad.get("telefono_captador_wasi")
+    )
+
+    await sincronizar_google_sheet()
+
+    cruce = cruzar_captador_con_sheet(
+        captador_wasi
+    )
+
+    nombre_captador = (
+        cruce.get("nombre")
+        or captador_wasi
+        or "Captador no identificado"
+    )
+
+    # Se da prioridad al teléfono validado de Google Sheets.
+    # Si no aparece, se utiliza el teléfono registrado en Wasi.
+    telefono_captador = (
+        normalizar_telefono(
+            cruce.get("telefono")
+        )
+        or telefono_wasi
+    )
+
+    estado["accion_pendiente_rol"] = None
+    estado["pregunta_pendiente"] = None
+    estado["estado_conversacion"] = (
+        "captador_entregado"
+    )
+
+    if telefono_captador:
+        return (
+            "Claro, colega. El captador de esta propiedad es "
+            f"{nombre_captador}.\n"
+            f"📲 WhatsApp: "
+            f"https://wa.me/{telefono_captador}"
+        )
+
+    if captador_wasi:
+        return (
+            "El captador registrado en Wasi es "
+            f"{nombre_captador}, pero no pude localizar su "
+            "WhatsApp en el directorio de Google Sheets. "
+            "Si quieres, puedo notificar al equipo administrativo."
+        )
+
+    return (
+        "No pude identificar al captador de esta propiedad en "
+        "Wasi ni en el directorio de Google Sheets. "
+        "Si quieres, puedo notificar al equipo administrativo."
+    )
 
 def detalle_propiedad_para_ia(propiedad: dict) -> dict:
     return {
@@ -6009,12 +6319,23 @@ async def continuar_accion_pendiente_rol(
     estado["pregunta_pendiente"] = None
 
     tipo = pendiente.get("tipo")
+    property_id = pendiente.get(
+        "propiedad_id"
+    )
+    posicion = pendiente.get("posicion")
 
     if tipo == "agendar_visita":
         return await iniciar_visita(
             estado,
-            posicion=pendiente.get("posicion"),
-            codigo=pendiente.get("propiedad_id"),
+            posicion=posicion,
+            codigo=property_id,
+        )
+
+    if tipo == "solicitar_captador":
+        return await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=property_id,
         )
 
     if tipo == "hablar_con_humano":
@@ -6025,6 +6346,63 @@ async def continuar_accion_pendiente_rol(
         )
 
     return None
+
+async def procesar_confirmacion_agente_captador(
+    estado: dict,
+    mensaje: str,
+) -> Optional[str]:
+    if (
+        estado.get("pregunta_pendiente")
+        != "confirmar_agente_para_captador"
+    ):
+        return None
+
+    pendiente = estado.get(
+        "accion_pendiente_rol"
+    )
+
+    if not isinstance(pendiente, dict):
+        estado["pregunta_pendiente"] = None
+
+        return (
+            "No pude conservar la propiedad que estabas "
+            "consultando. Envíame nuevamente su código o enlace."
+        )
+
+    property_id = pendiente.get(
+        "propiedad_id"
+    )
+    posicion = pendiente.get("posicion")
+
+    if respuesta_afirmativa_agente(mensaje):
+        estado["rol"] = "colega_inmobiliario"
+        estado["rol_confirmado"] = True
+        estado["confianza_rol"] = 1.0
+        estado["pregunta_pendiente"] = None
+
+        return await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=property_id,
+        )
+
+    if respuesta_negativa_agente(mensaje):
+        estado["rol"] = "cliente"
+        estado["rol_confirmado"] = True
+        estado["confianza_rol"] = 1.0
+        estado["pregunta_pendiente"] = None
+
+        return await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=property_id,
+        )
+
+    # No se borra la acción pendiente ni la propiedad.
+    return (
+        "Disculpa, necesito confirmar este dato para continuar. "
+        "¿Eres agente inmobiliario? Puedes responder sí o no."
+    )
 
 async def procesar_mensaje(
     sender: str,
@@ -6080,6 +6458,24 @@ async def procesar_mensaje(
         return await finalizar(
             respuesta_agradecimiento()
         )
+
+    # --------------------------------------------------------
+    # RESPUESTA A: "¿ERES AGENTE INMOBILIARIO?"
+    # --------------------------------------------------------
+
+    if (
+        estado.get("pregunta_pendiente")
+        == "confirmar_agente_para_captador"
+    ):
+        respuesta = (
+            await procesar_confirmacion_agente_captador(
+                estado,
+                texto,
+            )
+        )
+
+        if respuesta:
+            return await finalizar(respuesta)
 
     # --------------------------------------------------------
     # RESPUESTAS DETERMINISTAS A LA PREGUNTA DE ROL
@@ -6345,6 +6741,23 @@ async def procesar_mensaje(
             return await finalizar(
                 respuesta_contextual
             )
+
+    # --------------------------------------------------------
+    # SOLICITUD CONTROLADA DEL CAPTADOR
+    # --------------------------------------------------------
+
+    if solicita_datos_captador(texto):
+        posicion_captador = detectar_posicion(
+            texto
+        )
+
+        respuesta = await atender_solicitud_captador(
+            estado,
+            posicion=posicion_captador,
+            codigo=None,
+        )
+
+        return await finalizar(respuesta)
 
     # --------------------------------------------------------
     # PREGUNTAS SOBRE UNA PROPIEDAD ACTIVA
@@ -6629,6 +7042,13 @@ async def procesar_mensaje(
                 "No pude identificar la propiedad. "
                 "Indícame el número de la opción o su código."
             )
+
+    elif accion == "solicitar_captador":
+        respuesta = await atender_solicitud_captador(
+            estado,
+            posicion=posicion,
+            codigo=codigo,
+        )
 
     elif accion == "consultar_propiedad":
         propiedad = resolver_propiedad_contexto(
