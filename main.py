@@ -1436,8 +1436,8 @@ def reconstruir_catalogo_geografico() -> None:
         if ciudad_norm:
             ciudades_norm.setdefault(ciudad_norm, ciudad)
 
-        for zona in re.split(r"[\/|·–,]", zona_completa):
-            zona = zona.strip()
+        for zona_item in re.split(r"[\/|·–,]", zona_completa): # Renombrada 'zona' a 'zona_item' para evitar colisión
+            zona = zona_item.strip() # Usa la variable 'zona' aquí
             zona_norm = normalizar_texto(zona)
 
             if len(zona_norm) < 3:
