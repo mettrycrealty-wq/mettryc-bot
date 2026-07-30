@@ -61,12 +61,6 @@ MAX_INTENTOS_SIN_RESULTADOS = int(
     os.getenv("MAX_INTENTOS_SIN_RESULTADOS", "3")
 )
 
-# FIX: límite de reintentos antes de dejar de insistir con la
-# pregunta de rol (evita el loop "¿para ti o para un cliente?").
-MAX_INTENTOS_CONFIRMAR_ROL = int(
-    os.getenv("MAX_INTENTOS_CONFIRMAR_ROL", "2")
-)
-
 SENDER_ES_WHATSAPP = (
     os.getenv("SENDER_ES_WHATSAPP", "true").lower() == "true"
 )
@@ -684,37 +678,6 @@ def solicita_reclutamiento(texto: str) -> bool:
     normalizado = normalizar_texto(texto)
     return any(frase in normalizado for frase in FRASES_RECLUTAMIENTO)
 
-FRASES_NO_BUSCA_PROPIEDAD = [
-    "no busco propiedad", "no estoy buscando propiedad",
-    "no busco una propiedad", "no estoy buscando una propiedad",
-    "no es sobre una propiedad", "no tiene que ver con propiedades",
-    "no es para buscar propiedad", "otro tema", "otro asunto",
-    "no tiene nada que ver con propiedades", "no es sobre propiedades",
-]
-
-
-def declara_que_no_busca_propiedad(texto: str) -> bool:
-    normalizado = normalizar_texto(texto)
-    return any(frase in normalizado for frase in FRASES_NO_BUSCA_PROPIEDAD)
-
-
-FRASES_INTENCION_VENTA_PROPIA = [
-    "quiero vender mi propiedad", "quiero vender mi casa",
-    "quiero vender mi apartamento", "quiero poner en venta",
-    "quiero publicar mi propiedad", "quiero publicar mi casa",
-    "quiero publicar mi apartamento", "deseo publicar mi propiedad",
-    "quiero captar mi propiedad", "quiero que capten mi propiedad",
-    "quiero alquilar mi propiedad", "quiero poner en alquiler",
-    "quiero arrendar mi propiedad", "tengo una propiedad para vender",
-    "tengo una propiedad para alquilar", "quiero listar mi propiedad",
-    "quiero registrar mi propiedad", "quiero que vendan mi propiedad",
-]
-
-
-def solicita_publicar_propiedad(texto: str) -> bool:
-    normalizado = normalizar_texto(texto)
-    return any(frase in normalizado for frase in FRASES_INTENCION_VENTA_PROPIA)
-
 def extraer_codigo_mercadolibre(texto: str) -> Optional[str]:
     coincidencia = MERCADOLIBRE_URL_RE.search(texto or "")
     return coincidencia.group(1) if coincidencia else None
@@ -1146,9 +1109,6 @@ def crear_sesion(sender: str) -> dict:
         "agente_asignado": None,
         "notificacion_enviada": False,
 
-        "intentos_confirmar_rol": 0,
-        "tipo_solicitante_admin": None,
-
         "numero_canal": (
             normalizar_telefono(sender) if SENDER_ES_WHATSAPP else None
         ),
@@ -1168,8 +1128,6 @@ def obtener_sesion(sender: str) -> dict:
     estado.setdefault("ultima_firma_busqueda", None)
     estado.setdefault("sugerencia_ajuste", None)
     estado.setdefault("detalle_pregunta_pendiente", None)
-    estado.setdefault("intentos_confirmar_rol", 0)
-    estado.setdefault("tipo_solicitante_admin", None)
     return estado
 
 
@@ -2659,7 +2617,7 @@ def interpretar_respuesta_rol(texto: str, estado: dict) -> Optional[str]:
 
 def rol_esta_confirmado(estado: dict) -> bool:
     return bool(
-        estado.get("rol") in {"cliente", "colega_inmobiliario", "otro"}
+        estado.get("rol") in {"cliente", "colega_inmobiliario"}
         and estado.get("rol_confirmado", False)
     )
 
@@ -2744,110 +2702,6 @@ def solicitar_rol_para_accion(
 
     return mensaje_confirmacion_rol()
 
-def mensaje_confirmacion_rol_generico() -> str:
-    return (
-        "Para dirigir bien tu solicitud, cuéntame: ¿eres cliente de "
-        "Mettryc Realty, eres colega o agente inmobiliario, o tu "
-        "consulta es sobre otro tema?"
-    )
-
-
-def solicitar_rol_generico_para_accion(
-    estado: dict, accion: str, *, mensaje_original: Optional[str] = None,
-) -> str:
-    estado["accion_pendiente_rol"] = {
-        "tipo": accion,
-        "propiedad_id": None,
-        "posicion": None,
-        "mensaje_original": mensaje_original,
-    }
-    estado["pregunta_pendiente"] = "confirmar_rol_generico"
-    estado["estado_conversacion"] = "esperando_rol_generico"
-    return mensaje_confirmacion_rol_generico()
-
-
-def interpretar_respuesta_rol_generico(texto: str, estado: dict) -> Optional[str]:
-    if estado.get("pregunta_pendiente") != "confirmar_rol_generico":
-        return None
-
-    rol_explicito = detectar_rol_explicito(texto)
-    normalizado = normalizar_para_comparar(texto)
-
-    respuestas_cliente = {"cliente", "soy cliente", "soy cliente de mettryc", "un cliente"}
-    respuestas_colega = {
-        "colega", "agente", "asesor", "soy agente", "soy asesor",
-        "colega inmobiliario", "agente inmobiliario", "soy colega",
-    }
-    respuestas_otro = {
-        "otro", "ninguno", "ninguna", "no soy ninguno", "ni uno ni el otro",
-        "no aplica", "otro tema", "otro asunto", "ni cliente ni colega",
-    }
-
-    if rol_explicito:
-        rol = rol_explicito
-    elif normalizado in {normalizar_para_comparar(r) for r in respuestas_cliente}:
-        rol = "cliente"
-    elif normalizado in {normalizar_para_comparar(r) for r in respuestas_colega}:
-        rol = "colega_inmobiliario"
-    elif (
-        normalizado in {normalizar_para_comparar(r) for r in respuestas_otro}
-        or "no soy" in normalizado
-    ):
-        rol = "otro"
-    else:
-        return None
-
-    estado["rol"] = rol
-    estado["rol_confirmado"] = True
-    estado["confianza_rol"] = 1.0
-    estado["pregunta_pendiente"] = None
-    estado["intentos_confirmar_rol"] = 0
-    return rol
-
-
-async def manejar_respuesta_no_resuelta_de_rol(estado: dict, texto: str) -> Optional[str]:
-    """FIX del loop: se ejecuta cuando había una pregunta de rol
-    pendiente (confirmar_rol o confirmar_rol_generico) y el mensaje
-    del usuario NO permitió resolverla."""
-    estado["intentos_confirmar_rol"] = estado.get("intentos_confirmar_rol", 0) + 1
-    pendiente = estado.get("accion_pendiente_rol") or {}
-    accion_original = pendiente.get("tipo")
-
-    if estado.get("pregunta_pendiente") == "confirmar_rol" and (
-        declara_que_no_busca_propiedad(texto)
-        or not tiene_intencion_busqueda(estado, None, texto)
-    ):
-        estado["pregunta_pendiente"] = "confirmar_rol_generico"
-        estado["estado_conversacion"] = "esperando_rol_generico"
-        return mensaje_confirmacion_rol_generico()
-
-    if estado["intentos_confirmar_rol"] >= MAX_INTENTOS_CONFIRMAR_ROL:
-        estado["rol"] = "otro"
-        estado["rol_confirmado"] = True
-        estado["confianza_rol"] = 0.0
-        estado["pregunta_pendiente"] = None
-        estado["intentos_confirmar_rol"] = 0
-        estado["accion_pendiente_rol"] = None
-
-        mensaje_original = pendiente.get("mensaje_original") or texto
-
-        if accion_original in {
-            "hablar_con_humano", "buscar_propiedades",
-            "agendar_visita", "solicitar_captador",
-        }:
-            return await iniciar_atencion_humana(estado, mensaje_original)
-
-        return (
-            "Entendido. Cuéntame brevemente el asunto de tu "
-            "solicitud y lo enviaré al equipo administrativo."
-        )
-
-    return (
-        "Disculpa, necesito confirmar este dato para dirigir bien "
-        "tu solicitud: ¿tu mensaje es como cliente interesado en "
-        "una propiedad, como colega o agente inmobiliario, o se "
-        "trata de otro asunto?"
-    )
 
 def normalizar_campo_sin_preferencia(campo: str) -> Optional[str]:
     texto = normalizar_texto(campo).replace(" ", "_")
@@ -4477,18 +4331,10 @@ async def notificar_colega_administradores(estado: dict, mensaje_original: str) 
     whatsapp_formateado = f"+{whatsapp}" if whatsapp else "N/D"
     enlace_whatsapp = f"https://wa.me/{whatsapp}" if whatsapp else "N/D"
 
-    tipo_solicitante = estado.get("tipo_solicitante_admin", "colega")
-    titulos = {
-        "colega": "🤝 SOLICITUD DE COLEGA INMOBILIARIO",
-        "cliente": "📩 SOLICITUD DE CLIENTE (OTRO MOTIVO)",
-        "otro": "❓ SOLICITUD DE CONTACTO (ROL NO IDENTIFICADO)",
-    }
-    encabezado = titulos.get(tipo_solicitante, titulos["colega"])
-
     mensaje_telegram = (
-        f"{encabezado}\n\n"
+        "🤝 SOLICITUD DE COLEGA INMOBILIARIO\n\n"
         f"📌 ASUNTO\n{asunto}\n\n"
-        f"👤 DATOS DE CONTACTO\nNombre: {nombre_colega}\n"
+        f"👤 DATOS DEL COLEGA\nNombre: {nombre_colega}\n"
         f"WhatsApp: {whatsapp_formateado}\nContacto directo: {enlace_whatsapp}\n\n"
         f"💬 MENSAJE\n{mensaje_guardado}\n\n"
         f"📋 NECESIDAD\n{resumen_filtros(estado)}\n\n"
@@ -4802,105 +4648,63 @@ async def iniciar_visita(
 
 
 async def iniciar_atencion_humana(estado: dict, mensaje: str) -> str:
-    intencion_busqueda = tiene_intencion_busqueda(estado, None, mensaje)
-    no_busca_declarado = declara_que_no_busca_propiedad(mensaje)
-
     if not rol_esta_confirmado(estado):
-        if intencion_busqueda and not no_busca_declarado:
-            return solicitar_rol_para_accion(
-                estado, "hablar_con_humano", mensaje_original=mensaje,
-            )
-        # La intención no es buscar propiedad: no forzamos la
-        # pregunta "para ti o para un cliente", usamos una genérica.
-        return solicitar_rol_generico_para_accion(
+        return solicitar_rol_para_accion(
             estado, "hablar_con_humano", mensaje_original=mensaje,
         )
 
-    rol = estado.get("rol")
+    if estado.get("rol") == "colega_inmobiliario":
+        estado["asunto_contacto_colega"] = None
+        estado["asunto_contacto_colega_escrito"] = False
+        estado["mensaje_contacto_colega"] = mensaje
 
-    # Cliente que quiere vender/publicar su propiedad -> round robin.
-    if rol == "cliente" and solicita_publicar_propiedad(mensaje):
-        estado["objetivo"] = "captura_lead"
-        estado["estado_conversacion"] = "captura_lead"
-        estado["motivo_contacto"] = construir_motivo_contacto(
-            mensaje, "Desea publicar/vender su propiedad",
+        preparar_contacto_colega_desde_estado(estado)
+        actualizar_contacto_colega_desde_mensaje(estado, mensaje)
+
+        asunto_extraido = extraer_asunto_colega(mensaje)
+        if asunto_extraido:
+            estado["asunto_contacto_colega"] = asunto_extraido
+            estado["asunto_contacto_colega_escrito"] = True
+
+        estado["objetivo"] = "captura_contacto_colega"
+        estado["estado_conversacion"] = "captura_contacto_colega"
+
+        faltantes_contacto = datos_contacto_colega_faltantes(estado)
+
+        if faltantes_contacto:
+            estado["pregunta_pendiente"] = "datos_contacto_colega"
+            return mensaje_solicitud_contacto_colega(estado)
+
+        if not (
+            estado.get("asunto_contacto_colega_escrito", False)
+            and asunto_colega_valido(estado.get("asunto_contacto_colega"))
+        ):
+            estado["pregunta_pendiente"] = "asunto_contacto_colega"
+            return mensaje_solicitud_asunto_colega()
+
+        enviado = await notificar_colega_administradores(estado, mensaje)
+
+        if enviado:
+            estado["objetivo"] = "colega_notificado"
+            estado["estado_conversacion"] = "colega_notificado"
+            estado["pregunta_pendiente"] = None
+            return (
+                "Claro, colega. Ya envié tu solicitud al equipo "
+                "administrativo con el asunto y tus datos de "
+                "contacto. Te atenderán directamente por WhatsApp."
+            )
+
+        return (
+            "Registré tu solicitud y tus datos, pero no pude "
+            "confirmar el envío por Telegram. Puedes intentarlo "
+            "nuevamente en unos minutos."
         )
-        return mensaje_solicitud_datos_lead(estado, saludo=True)
 
-    # Cliente cuya intención NO es buscar (ni publicar la suya) ->
-    # administradores, pidiendo asunto.
-    if rol == "cliente" and not intencion_busqueda:
-        return await iniciar_contacto_administradores(
-            estado, mensaje, tipo_solicitante="cliente",
-        )
-
-    # Colega inmobiliario -> siempre administradores.
-    if rol == "colega_inmobiliario":
-        return await iniciar_contacto_administradores(
-            estado, mensaje, tipo_solicitante="colega",
-        )
-
-    # Rol "otro" (no cliente ni colega) -> administradores.
-    if rol == "otro":
-        return await iniciar_contacto_administradores(
-            estado, mensaje, tipo_solicitante="otro",
-        )
-
-    # Cliente con intención real de búsqueda -> flujo normal de lead.
     estado["objetivo"] = "captura_lead"
     estado["estado_conversacion"] = "captura_lead"
     estado["motivo_contacto"] = construir_motivo_contacto(mensaje, "Solicita atención humana")
+
     return mensaje_solicitud_datos_lead(estado, saludo=True)
-
-
-async def iniciar_contacto_administradores(
-    estado: dict, mensaje: str, tipo_solicitante: str,
-) -> str:
-    estado["tipo_solicitante_admin"] = tipo_solicitante
-    estado["asunto_contacto_colega"] = None
-    estado["asunto_contacto_colega_escrito"] = False
-    estado["mensaje_contacto_colega"] = mensaje
-
-    preparar_contacto_colega_desde_estado(estado)
-    actualizar_contacto_colega_desde_mensaje(estado, mensaje)
-
-    asunto_extraido = extraer_asunto_colega(mensaje)
-    if asunto_extraido:
-        estado["asunto_contacto_colega"] = asunto_extraido
-        estado["asunto_contacto_colega_escrito"] = True
-
-    estado["objetivo"] = "captura_contacto_colega"
-    estado["estado_conversacion"] = "captura_contacto_colega"
-
-    faltantes_contacto = datos_contacto_colega_faltantes(estado)
-    if faltantes_contacto:
-        estado["pregunta_pendiente"] = "datos_contacto_colega"
-        return mensaje_solicitud_contacto_colega(estado)
-
-    if not (
-        estado.get("asunto_contacto_colega_escrito", False)
-        and asunto_colega_valido(estado.get("asunto_contacto_colega"))
-    ):
-        estado["pregunta_pendiente"] = "asunto_contacto_colega"
-        return mensaje_solicitud_asunto_colega()
-
-    enviado = await notificar_colega_administradores(estado, mensaje)
-
-    if enviado:
-        estado["objetivo"] = "colega_notificado"
-        estado["estado_conversacion"] = "colega_notificado"
-        estado["pregunta_pendiente"] = None
-        return (
-            "Listo, ya envié tu solicitud al equipo administrativo "
-            "con el asunto y tus datos de contacto. Te atenderán "
-            "directamente por WhatsApp."
-        )
-
-    return (
-        "Registré tu solicitud y tus datos, pero no pude confirmar "
-        "el envío por Telegram. Puedes intentarlo nuevamente en "
-        "unos minutos."
-    )
 
 async def procesar_captura_contacto_colega(estado: dict, mensaje: str) -> str:
     pregunta_pendiente = estado.get("pregunta_pendiente")
@@ -5489,26 +5293,15 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     # --------------------------------------------------------
     rol_detectado = interpretar_respuesta_rol(texto, estado)
 
-    if not rol_detectado and estado.get("pregunta_pendiente") == "confirmar_rol_generico":
-        rol_detectado = interpretar_respuesta_rol_generico(texto, estado)
-
     if rol_detectado:
+        # CORREGIDO: se eliminó el borrado incondicional de
+        # pregunta_pendiente/rol_confirmado/confianza_rol que estaba
+        # aquí duplicado; interpretar_respuesta_rol ya lo maneja bien.
         respuesta_pendiente = await continuar_accion_pendiente_rol(estado)
         if respuesta_pendiente:
             return await finalizar(respuesta_pendiente)
 
     rol_confirmado_en_este_mensaje = rol_detectado
-
-    # FIX: corta el loop cuando había una pregunta de rol pendiente
-    # (confirmar_rol o confirmar_rol_generico) y el mensaje no
-    # permitió resolverla. Evita volver a caer en solicita_humano
-    # y regenerar la misma pregunta indefinidamente.
-    if not rol_detectado and estado.get("pregunta_pendiente") in {
-        "confirmar_rol", "confirmar_rol_generico",
-    }:
-        respuesta_loop = await manejar_respuesta_no_resuelta_de_rol(estado, texto)
-        if respuesta_loop:
-            return await finalizar(respuesta_loop)
 
     # --------------------------------------------------------
     # CONFIRMACIÓN FINAL DEL LEAD
