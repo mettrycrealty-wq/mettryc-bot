@@ -2631,6 +2631,22 @@ def interpretar_respuesta_rol(texto: str, estado: dict) -> Optional[str]:
         estado["pregunta_pendiente"] = None
         return "cliente"
 
+    # FIX: si la pregunta pendiente era confirmar el rol y la acción
+    # que la originó fue "hablar_con_humano", pero no fue posible
+    # identificar el rol de ninguna otra forma (ni cliente ni colega
+    # explícito), se asume internamente colega_inmobiliario para que
+    # la solicitud se enrute directamente a la notificación del
+    # equipo administrativo, en lugar de repetir la misma pregunta
+    # de rol en bucle.
+    if pregunta_pendiente == "confirmar_rol":
+        accion_pendiente = estado.get("accion_pendiente_rol") or {}
+        if accion_pendiente.get("tipo") == "hablar_con_humano":
+            estado["rol"] = "colega_inmobiliario"
+            estado["rol_confirmado"] = True
+            estado["confianza_rol"] = 1.0
+            estado["pregunta_pendiente"] = None
+            return "colega_inmobiliario"
+
     return None
 
 
