@@ -577,7 +577,7 @@ def extraer_area_principal_wasi(payload: Dict[str, Any]) -> Optional[float]:
 # ============================================================
 
 MERCADOLIBRE_URL_RE = re.compile(
-    r"https?://[^\s]+?-(\d+)-_JM\b",
+    r"https?://\S+-(\d+)-+_JM\b",
     re.IGNORECASE,
 )
 
@@ -699,7 +699,7 @@ def extraer_codigo_inmueble(
         r"mettryc\.com/inmueble/(\d+)",
         r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
         r"\b(?:ALM|EJL|LR|JM|MFR|TH|AM|ABJ|WD|JH|EM|JD)-?(\d{4,})\b",
-        r"/MLV-\d+-[A-Za-z0-9\-]+-(\d+)-?_JM",
+        r"/MLV-\d+-[A-Za-z0-9\-]+-(\d+)-+_JM",
     ]
 
     for patron in patrones:
