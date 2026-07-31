@@ -698,7 +698,7 @@ def extraer_codigo_inmueble(
     patrones = [
         r"mettryc\.com/inmueble/(\d+)",
         r"\b(?:codigo|código|cod|inmueble)\s*[:#-]?\s*(\d{4,})\b",
-        r"\b(?:ALM|EJL|LR|JM|MFR|TH|AM|ABJ|WD|JH|EM|JD)-?(\d{4,})\b",
+        r"\b[A-Za-z]{1,6}-?(\d{4,})\b",
         r"/MLV-\d+-[A-Za-z0-9\-]+-(\d+)-+_JM",
     ]
 
