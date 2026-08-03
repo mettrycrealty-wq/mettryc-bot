@@ -645,6 +645,8 @@ FRASES_HUMANO = [
 
 FRASES_VISITA = [
     "agendar una visita",
+    "agendar una cita",
+    "quiero una cita",
     "coordinar una visita",
     "quiero visitarla",
     "quiero visitarlo",
