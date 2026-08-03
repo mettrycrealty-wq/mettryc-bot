@@ -577,7 +577,7 @@ def extraer_area_principal_wasi(payload: Dict[str, Any]) -> Optional[float]:
 # ============================================================
 
 MERCADOLIBRE_URL_RE = re.compile(
-    r"https?://\S+-(\d+)-+_JM\b",
+    r"https?://\S+?(\d+)-+_JM\b",
     re.IGNORECASE,
 )
 
