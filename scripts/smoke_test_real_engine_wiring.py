@@ -94,14 +94,17 @@ async def _actualizar_inventario(*, force=False):
 
 
 def _buscar_mejores_propiedades(state, cantidad=5):
-    return [
-        {
-            "id": "A1",
-            "titulo": "Casa en Mañongo",
-            "precio_venta": 190000,
-            "captador_wasi": "Ana Ejemplo",
-        }
-    ][:cantidad]
+    return (
+        [
+            {
+                "id": "A1",
+                "titulo": "Casa en Mañongo",
+                "precio_venta": 190000,
+                "captador_wasi": "Ana Ejemplo",
+            }
+        ][:cantidad],
+        "Coincidencias directas con los criterios solicitados.",
+    )
 
 
 def _resumen_propiedad_para_ia(propiedad):
