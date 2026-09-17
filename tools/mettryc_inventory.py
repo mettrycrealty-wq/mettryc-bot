@@ -60,6 +60,80 @@ def normalize_legacy_property_type(value: str | None) -> str | None:
     return LEGACY_PROPERTY_TYPE_MAP.get(cleaned, cleaned)
 
 
+def _property_zone_text(property_item: dict[str, Any]) -> str:
+    """Build searchable location text from structured and descriptive fields.
+
+    WASI records can leave ``zona`` as ``N/D`` even when the requested
+    neighborhood appears in the listing title or description. This helper
+    deliberately reads only location-oriented textual fields so the fallback
+    does not accidentally match arbitrary metadata such as phone numbers.
+    """
+
+    fields = (
+        "titulo",
+        "title",
+        "nombre",
+        "descripcion",
+        "description",
+        "direccion",
+        "address",
+        "zona",
+        "ciudad",
+        "urbanizacion",
+        "urbanización",
+        "sector",
+        "municipio",
+        "parroquia",
+        "residencial",
+    )
+
+    values: list[str] = []
+    for field in fields:
+        value = property_item.get(field)
+        if value not in (None, "", "N/D"):
+            values.append(str(value))
+
+    return " ".join(values)
+
+
+def _zone_matches_text(
+    legacy: Any,
+    property_item: dict[str, Any],
+    requested_zone: str | None,
+) -> bool:
+    """Return True when the requested zone appears in location text.
+
+    Exact phrase matching is preferred. If that fails, all meaningful zone
+    tokens must occur in the same searchable text. The legacy normalizer is
+    reused so accents/case differences such as ``Mañongo``/``manongo`` do not
+    prevent a match.
+    """
+
+    if not requested_zone:
+        return False
+
+    searched = legacy.normalizar_texto(requested_zone)
+    searchable = legacy.normalizar_texto(_property_zone_text(property_item))
+
+    if not searched or not searchable:
+        return False
+
+    if searched in searchable:
+        return True
+
+    tokens = {
+        token
+        for token in searched.split()
+        if len(token) >= 2
+        and token not in {"el", "la", "los", "las", "de", "del", "en", "zona", "sector", "urbanizacion", "ciudad", "venezuela"}
+    }
+
+    if not tokens:
+        return False
+
+    return tokens.issubset(set(searchable.split()))
+
+
 async def search_mettryc_properties(
     state: ConversationState,
     analysis: UserTurnAnalysis,
@@ -111,6 +185,37 @@ async def search_mettryc_properties(
             legacy_state,
             cantidad=5,
         )
+
+        # Fallback geográfico: cuando la búsqueda estructurada devuelve cero
+        # resultados y el usuario sí indicó una zona, repetimos la búsqueda
+        # sin el filtro estructurado de zona y recuperamos solo propiedades
+        # donde esa zona aparece en título/descripción/dirección u otro campo
+        # locacional. Esto cubre registros WASI con zona=N/D pero con la zona
+        # claramente indicada en el anuncio, como el caso Mañongo.
+        if not propiedades and criteria.zone:
+            filtros_fallback = dict(filtros)
+            filtros_fallback["zona"] = None
+
+            legacy_state_fallback = {
+                **legacy_state,
+                "filtros": filtros_fallback,
+            }
+
+            candidatos, motivo_fallback = legacy.buscar_mejores_propiedades(
+                legacy_state_fallback,
+                cantidad=1000,
+            )
+
+            propiedades_fallback = [
+                item
+                for item in candidatos
+                if isinstance(item, dict)
+                and _zone_matches_text(legacy, item, criteria.zone)
+            ]
+
+            if propiedades_fallback:
+                propiedades = propiedades_fallback[:5]
+                motivo = f"{motivo_fallback}|zona_textual_fallback"
 
         safe_properties: list[dict[str, Any]] = []
         for property_item in propiedades:
