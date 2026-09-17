@@ -8,6 +8,7 @@ import httpx
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_FALLBACK_MODEL = "google/gemini-2.5-flash-lite"
 
 
 class OpenRouterClient:
@@ -33,6 +34,7 @@ class OpenRouterClient:
         self.fallback_model = (
             fallback_model
             or os.getenv("OPENROUTER_FALLBACK_MODEL", "").strip()
+            or DEFAULT_FALLBACK_MODEL
         )
         self.timeout = timeout
 
@@ -67,8 +69,6 @@ class OpenRouterClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            # El modelo puede razonar internamente, pero ese razonamiento nunca
-            # debe formar parte de la respuesta que verá el cliente.
             "reasoning": {"exclude": True},
         }
         if force_json:
@@ -114,12 +114,13 @@ class OpenRouterClient:
                 force_json=force_json,
             )
         except Exception as primary_error:
-            if not self.fallback_model or self.fallback_model == self.model:
+            fallback = self.fallback_model
+            if not fallback or fallback == self.model:
                 raise
             try:
                 return await self.chat(
                     messages,
-                    model=self.fallback_model,
+                    model=fallback,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     force_json=force_json,
@@ -127,7 +128,7 @@ class OpenRouterClient:
             except Exception as fallback_error:
                 raise RuntimeError(
                     "Fallaron el modelo principal y el modelo de respaldo de OpenRouter. "
-                    f"Principal: {primary_error}. Respaldo: {fallback_error}"
+                    f"Principal: {primary_error}. Respaldo ({fallback}): {fallback_error}"
                 ) from fallback_error
 
 
