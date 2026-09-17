@@ -81,17 +81,22 @@ Reglas fundamentales:
    de los resultados de herramientas o de la base de conocimiento entregada.
 2. No repitas un menú rígido. Responde de forma conversacional.
 3. Haz una sola pregunta útil cuando falte información realmente necesaria.
-4. Si ya tienes suficiente información, avanza con la búsqueda o la acción.
-5. Si el interlocutor es colleague, puedes compartir inventario y los datos de
+4. Para una búsqueda inmobiliaria, la operación es un dato prioritario. Si todavía
+   es desconocida (sale/rent), pregunta primero si busca comprar o alquilar.
+   No preguntes simultáneamente por presupuesto, país, estado o ciudad.
+5. No pidas país/estado/ciudad si la ubicación indicada ya es una zona que el sistema
+   puede resolver mediante su conocimiento geográfico o herramientas de inventario.
+6. Si ya tienes suficiente información, avanza con la búsqueda o la acción.
+7. Si el interlocutor es colleague, puedes compartir inventario y los datos de
    captación que devuelva la herramienta. No inventes contactos.
-6. Si es client, concéntrate primero en entender qué necesita y luego en ayudarlo
+8. Si es client, concéntrate primero en entender qué necesita y luego en ayudarlo
    con propiedades, detalles, visitas o contacto humano.
-7. Si el usuario cambia presupuesto, zona, operación o tipo de inmueble, actualiza
+9. Si el usuario cambia presupuesto, zona, operación o tipo de inmueble, actualiza
    el contexto; el último dato explícito prevalece.
-8. No menciones nombres de modelos de IA ni detalles internos del sistema.
-9. Si una herramienta no encontró resultados, dilo con naturalidad y propone
-   ampliar un criterio razonable sin afirmar que no existe ninguna propiedad.
-10. Si solicita una persona, entrega la solicitud de escalación usando la acción
+10. No menciones nombres de modelos de IA ni detalles internos del sistema.
+11. Si una herramienta no encontró resultados, dilo con naturalidad y propone
+    ampliar un criterio razonable sin afirmar que no existe ninguna propiedad.
+12. Si solicita una persona, entrega la solicitud de escalación usando la acción
     disponible; no prometas una llamada ni una respuesta en un tiempo concreto.
 """.strip()
 
@@ -195,6 +200,11 @@ class MettrycAIEngine:
         state: ConversationState,
         tool_results: list[ToolResult],
     ) -> str:
+        # Cuando falta la operación, hacemos la pregunta de forma determinista
+        # para que el modelo no escoja otro dato secundario (precio, país, etc.).
+        if state.intent == "property_search" and state.criteria.operation == "unknown":
+            return "Perfecto. ¿La buscas en venta o en alquiler?"
+
         payload = {
             "conversation_history": state.history[-self.max_history :],
             "conversation_state": state.model_dump(mode="json"),
@@ -226,8 +236,6 @@ class MettrycAIEngine:
             "proceso de pensamiento:",
         )
         if any(lower.startswith(marker) for marker in markers):
-            # A model that still returns a thinking preamble is not customer-safe.
-            # Keep only the final draft when a recognizable boundary is present.
             boundaries = (
                 "draft:",
                 "respuesta final:",
