@@ -99,10 +99,12 @@ class MettrycAIEngine:
         tools: dict[str, ToolHandler] | None = None,
         *,
         knowledge_context: str = "",
+        max_history: int = 20,
     ) -> None:
         self.llm = llm
         self.tools = tools or {}
         self.knowledge_context = knowledge_context.strip()
+        self.max_history = max(4, max_history)
 
     async def process(
         self,
@@ -143,7 +145,17 @@ class MettrycAIEngine:
             if result:
                 tool_results.append(result)
 
+        current_state.history = self._append_history(
+            current_state.history,
+            "user",
+            message,
+        )
         reply = await self._generate_reply(message, current_state, tool_results)
+        current_state.history = self._append_history(
+            current_state.history,
+            "assistant",
+            reply,
+        )
         current_state.summary = self._build_summary(current_state, analysis)
         return EngineResult(reply=reply, state=current_state, tool_results=tool_results)
 
@@ -153,6 +165,7 @@ class MettrycAIEngine:
         state: ConversationState,
     ) -> UserTurnAnalysis:
         context = {
+            "conversation_history": state.history[-self.max_history :],
             "state": state.model_dump(mode="json"),
             "user_message": user_message,
         }
@@ -177,6 +190,7 @@ class MettrycAIEngine:
         tool_results: list[ToolResult],
     ) -> str:
         payload = {
+            "conversation_history": state.history[-self.max_history :],
             "conversation_state": state.model_dump(mode="json"),
             "latest_user_message": user_message,
             "tool_results": [item.model_dump(mode="json") for item in tool_results],
@@ -247,6 +261,15 @@ class MettrycAIEngine:
                 old[key] = value
         merged.criteria = type(merged.criteria).model_validate(old)
         return merged
+
+    def _append_history(
+        self,
+        history: list[dict[str, str]],
+        role: str,
+        content: str,
+    ) -> list[dict[str, str]]:
+        updated = [*history, {"role": role, "content": content}]
+        return updated[-self.max_history :]
 
     @staticmethod
     def _safe_property_list(value: Any) -> list[dict[str, Any]]:
