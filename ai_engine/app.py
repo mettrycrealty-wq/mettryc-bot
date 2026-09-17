@@ -5,6 +5,11 @@ import os
 from .engine import MettrycAIEngine
 from .router import OpenRouterClient
 from .service import ConversationService
+from tools.mettryc_conversation import (
+    more_mettryc_properties,
+    request_mettryc_captador,
+    select_mettryc_property,
+)
 from tools.mettryc_inventory import (
     get_mettryc_property_detail,
     search_mettryc_properties,
@@ -12,11 +17,7 @@ from tools.mettryc_inventory import (
 
 
 def create_mettryc_ai_engine() -> MettrycAIEngine:
-    """Create the new AI engine with the real Mettryc inventory tools.
-
-    This factory is intentionally separate from main.py so the legacy bot can keep
-    running unchanged while the new engine is tested in isolation.
-    """
+    """Create the new AI engine with the real Mettryc inventory tools."""
 
     llm = OpenRouterClient(
         api_key=os.getenv("OPENROUTER_API_KEY"),
@@ -28,16 +29,20 @@ def create_mettryc_ai_engine() -> MettrycAIEngine:
         llm,
         tools={
             "search_properties": search_mettryc_properties,
+            "more_properties": more_mettryc_properties,
             "property_detail": get_mettryc_property_detail,
+            "select_property": select_mettryc_property,
+            "request_captador": request_mettryc_captador,
         },
-        knowledge_context="Mettryc Realty: asistente virtual inmobiliario. Usa únicamente los datos devueltos por las herramientas para propiedades, precios, disponibilidad y captadores.",
+        knowledge_context=(
+            "Mettryc Realty: asistente virtual inmobiliario. Usa únicamente los datos "
+            "devueltos por las herramientas para propiedades, precios, disponibilidad "
+            "y captadores."
+        ),
     )
 
 
 def create_mettryc_conversation_service(*, max_sessions: int = 5000) -> ConversationService:
     """Create a channel-independent conversation service backed by the AI engine."""
 
-    return ConversationService(
-        create_mettryc_ai_engine(),
-        max_sessions=max_sessions,
-    )
+    return ConversationService(create_mettryc_ai_engine(), max_sessions=max_sessions)
