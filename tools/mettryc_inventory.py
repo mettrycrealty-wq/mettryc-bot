@@ -61,13 +61,7 @@ def normalize_legacy_property_type(value: str | None) -> str | None:
 
 
 def _property_zone_text(property_item: dict[str, Any]) -> str:
-    """Build searchable location text from structured and descriptive fields.
-
-    WASI records can leave ``zona`` as ``N/D`` even when the requested
-    neighborhood appears in the listing title or description. This helper
-    deliberately reads only location-oriented textual fields so the fallback
-    does not accidentally match arbitrary metadata such as phone numbers.
-    """
+    """Build searchable location text from structured and descriptive fields."""
 
     fields = (
         "titulo",
@@ -101,13 +95,7 @@ def _zone_matches_text(
     property_item: dict[str, Any],
     requested_zone: str | None,
 ) -> bool:
-    """Return True when the requested zone appears in location text.
-
-    Exact phrase matching is preferred. If that fails, all meaningful zone
-    tokens must occur in the same searchable text. The legacy normalizer is
-    reused so accents/case differences such as ``Mañongo``/``manongo`` do not
-    prevent a match.
-    """
+    """Return True when the requested zone appears in location-oriented text."""
 
     if not requested_zone:
         return False
@@ -125,13 +113,74 @@ def _zone_matches_text(
         token
         for token in searched.split()
         if len(token) >= 2
-        and token not in {"el", "la", "los", "las", "de", "del", "en", "zona", "sector", "urbanizacion", "ciudad", "venezuela"}
+        and token not in {
+            "el", "la", "los", "las", "de", "del", "en", "zona",
+            "sector", "urbanizacion", "ciudad", "venezuela",
+        }
     }
 
-    if not tokens:
-        return False
+    return bool(tokens) and tokens.issubset(set(searchable.split()))
 
-    return tokens.issubset(set(searchable.split()))
+
+def _textual_zone_fallback(
+    legacy: Any,
+    state: ConversationState,
+    filtros: dict[str, Any],
+    requested_zone: str,
+) -> list[dict[str, Any]]:
+    """Search the already loaded WASI inventory, bypassing only the broken structured zone gate."""
+
+    candidatos: list[dict[str, Any]] = []
+    enviados = {
+        str(item.get("id"))
+        for item in state.last_properties
+        if isinstance(item, dict) and item.get("id")
+    }
+
+    filtros_sin_zona = dict(filtros)
+    filtros_sin_zona["zona"] = None
+
+    for original in legacy.inventory_cache.get("inventario", []):
+        if not isinstance(original, dict):
+            continue
+
+        property_id = str(original.get("id") or "")
+        if not property_id or property_id in enviados:
+            continue
+
+        if not original.get("activa", True):
+            continue
+
+        if not legacy.coincide_tipo(
+            original,
+            filtros_sin_zona.get("tipo_propiedad"),
+        ):
+            continue
+
+        if not legacy.ciudad_coincide(
+            original,
+            filtros_sin_zona.get("ciudad"),
+        ):
+            continue
+
+        propiedad = legacy.evaluar_propiedad(original, filtros_sin_zona)
+        if not propiedad:
+            continue
+
+        if not _zone_matches_text(legacy, propiedad, requested_zone):
+            continue
+
+        candidatos.append(propiedad)
+
+    candidatos.sort(
+        key=lambda item: (
+            item.get("_coincidencia") == "exacta",
+            item.get("_score", 0),
+        ),
+        reverse=True,
+    )
+
+    return candidatos
 
 
 async def search_mettryc_properties(
@@ -187,35 +236,22 @@ async def search_mettryc_properties(
         )
 
         # Fallback geográfico: cuando la búsqueda estructurada devuelve cero
-        # resultados y el usuario sí indicó una zona, repetimos la búsqueda
-        # sin el filtro estructurado de zona y recuperamos solo propiedades
-        # donde esa zona aparece en título/descripción/dirección u otro campo
-        # locacional. Esto cubre registros WASI con zona=N/D pero con la zona
-        # claramente indicada en el anuncio, como el caso Mañongo.
+        # resultados y el usuario indicó una zona, buscamos directamente en
+        # el inventario WASI ya cargado. Se conservan operación, tipo, ciudad,
+        # presupuesto, habitaciones, baños, puestos y características; solo
+        # se reemplaza temporalmente el filtro estructurado de zona por una
+        # coincidencia textual en campos locacionales.
         if not propiedades and criteria.zone:
-            filtros_fallback = dict(filtros)
-            filtros_fallback["zona"] = None
-
-            legacy_state_fallback = {
-                **legacy_state,
-                "filtros": filtros_fallback,
-            }
-
-            candidatos, motivo_fallback = legacy.buscar_mejores_propiedades(
-                legacy_state_fallback,
-                cantidad=1000,
+            propiedades_fallback = _textual_zone_fallback(
+                legacy,
+                state,
+                filtros,
+                criteria.zone,
             )
-
-            propiedades_fallback = [
-                item
-                for item in candidatos
-                if isinstance(item, dict)
-                and _zone_matches_text(legacy, item, criteria.zone)
-            ]
 
             if propiedades_fallback:
                 propiedades = propiedades_fallback[:5]
-                motivo = f"{motivo_fallback}|zona_textual_fallback"
+                motivo = f"{motivo}|zona_textual_fallback"
 
         safe_properties: list[dict[str, Any]] = []
         for property_item in propiedades:
