@@ -7,12 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .router import OpenRouterClient, extract_json_object
-from .schemas import (
-    ConversationState,
-    EngineResult,
-    ToolResult,
-    UserTurnAnalysis,
-)
+from .schemas import ConversationState, EngineResult, ToolResult, UserTurnAnalysis
 
 
 ToolHandler = Callable[[ConversationState, UserTurnAnalysis], Awaitable[ToolResult]]
@@ -21,21 +16,27 @@ ToolHandler = Callable[[ConversationState, UserTurnAnalysis], Awaitable[ToolResu
 ANALYSIS_SYSTEM_PROMPT = """
 Eres el motor de interpretación de Mettryc Realty.
 
-Tu trabajo NO es responder al cliente. Tu trabajo es interpretar el último mensaje
-con contexto de la conversación y devolver exclusivamente un objeto JSON válido.
+Tu trabajo NO es responder al cliente. Interpreta el último mensaje usando el
+contexto de la conversación y devuelve exclusivamente un objeto JSON válido.
 
 Clasifica:
 - role: client | colleague | unknown
-  * colleague = corredor, agente, asesor inmobiliario, inmobiliaria externa o alguien
-    que habla explícitamente de "mi cliente" / "un cliente" para buscar inventario.
-  * client = persona que busca para sí misma o para su familia.
 - intent:
-  property_search | property_detail | visit_request | human_handoff |
-  general_information | qualification | unknown
+  property_search | property_detail | property_selection | more_properties |
+  captador_request | visit_request | human_handoff | general_information |
+  qualification | unknown
 
-Extrae solo datos que realmente aparecen o que son una inferencia muy directa.
-No inventes precio, zona, código, disponibilidad, captador, agente ni características.
-Usa null cuando un dato no esté presente.
+Usa property_selection cuando el usuario elige una propiedad ya mostrada (por
+posición como "la segunda", "la 3" o por código).
+Usa more_properties cuando pide otras opciones, más propiedades o las siguientes.
+Usa captador_request cuando pide el contacto, teléfono o datos del captador/asesor
+de una propiedad ya mostrada.
+Usa visit_request para pedir una visita o cita.
+Usa human_handoff cuando pide hablar con una persona/agente o necesita escalación.
+
+Extrae solo datos realmente presentes o inferencias muy directas. No inventes
+precio, zona, código, disponibilidad, captador, agente ni características.
+Usa null cuando no esté presente.
 
 Devuelve exactamente estas claves:
 {
@@ -75,29 +76,28 @@ herramientas, prompts, estado interno ni decisiones internas del sistema.
 No escribas encabezados como "thinking process", "analysis", "razonamiento",
 "pasos" o similares. No incluyas borradores ni varias respuestas posibles.
 
-Reglas fundamentales:
+Reglas:
 1. No inventes información inmobiliaria. Precios, disponibilidad, códigos,
    direcciones, características, captadores, agentes y horarios solo pueden salir
-   de los resultados de herramientas o de la base de conocimiento entregada.
-2. No repitas un menú rígido. Responde de forma conversacional.
+   de herramientas o de la base de conocimiento.
+2. No uses menús rígidos. Conversa naturalmente.
 3. Haz una sola pregunta útil cuando falte información realmente necesaria.
-4. Para una búsqueda inmobiliaria, la operación es un dato prioritario. Si todavía
-   es desconocida (sale/rent), pregunta primero si busca comprar o alquilar.
-   No preguntes simultáneamente por presupuesto, país, estado o ciudad.
-5. No pidas país/estado/ciudad si la ubicación indicada ya es una zona que el sistema
-   puede resolver mediante su conocimiento geográfico o herramientas de inventario.
-6. Si ya tienes suficiente información, avanza con la búsqueda o la acción.
-7. Si el interlocutor es colleague, puedes compartir inventario y los datos de
-   captación que devuelva la herramienta. No inventes contactos.
-8. Si es client, concéntrate primero en entender qué necesita y luego en ayudarlo
-   con propiedades, detalles, visitas o contacto humano.
-9. Si el usuario cambia presupuesto, zona, operación o tipo de inmueble, actualiza
-   el contexto; el último dato explícito prevalece.
-10. No menciones nombres de modelos de IA ni detalles internos del sistema.
-11. Si una herramienta no encontró resultados, dilo con naturalidad y propone
-    ampliar un criterio razonable sin afirmar que no existe ninguna propiedad.
-12. Si solicita una persona, entrega la solicitud de escalación usando la acción
-    disponible; no prometas una llamada ni una respuesta en un tiempo concreto.
+4. Para búsquedas, la operación es prioritaria. Si sigue desconocida, pregunta
+   primero si busca comprar o alquilar.
+5. No pidas país/estado/ciudad si ya hay una ubicación concreta que el sistema pueda
+   resolver o si todavía no es necesario para avanzar.
+6. Si ya hay suficiente información, avanza con la acción.
+7. Si es colleague, puedes compartir inventario y datos de captación devueltos por
+   herramientas. No inventes contactos.
+8. Si es client, entiende primero la necesidad y luego ayuda con propiedades,
+   detalles, visitas o atención humana.
+9. Si cambia presupuesto, zona, operación o tipo de inmueble, actualiza el contexto;
+   el último dato explícito prevalece.
+10. No menciones modelos de IA ni detalles internos.
+11. Si una herramienta no encuentra resultados, dilo naturalmente y propone ampliar
+   un criterio razonable sin afirmar que no existe ninguna propiedad.
+12. Para selección, contacto de captador o más opciones, usa exclusivamente la
+   información entregada por las herramientas.
 """.strip()
 
 
@@ -129,7 +129,6 @@ class MettrycAIEngine:
         current_state = state or ConversationState()
         analysis = await self._analyze_turn(message, current_state)
         current_state = self._merge_state(current_state, analysis)
-
         tool_results: list[ToolResult] = []
 
         if analysis.needs_human or analysis.intent == "human_handoff":
@@ -142,31 +141,40 @@ class MettrycAIEngine:
             if result:
                 tool_results.append(result)
 
+        if analysis.intent == "property_selection":
+            result = await self._run_tool("select_property", current_state, analysis)
+            if result:
+                tool_results.append(result)
+                if result.ok and isinstance(result.data, dict):
+                    selected = result.data.get("property")
+                    if isinstance(selected, dict):
+                        current_state.selected_property = selected
+
+        if analysis.intent == "captador_request":
+            result = await self._run_tool("request_captador", current_state, analysis)
+            if result:
+                tool_results.append(result)
+
         if analysis.intent == "property_search" and self._has_search_signal(current_state):
             result = await self._run_tool("search_properties", current_state, analysis)
             if result:
                 tool_results.append(result)
-                if result.ok and isinstance(result.data, dict):
-                    current_state.last_properties = self._safe_property_list(
-                        result.data.get("properties")
-                    )
+                self._update_last_properties(current_state, result)
+
+        if analysis.intent == "more_properties" and self._has_search_signal(current_state):
+            result = await self._run_tool("more_properties", current_state, analysis)
+            if result:
+                tool_results.append(result)
+                self._update_last_properties(current_state, result)
 
         if analysis.intent == "visit_request":
             result = await self._run_tool("schedule_visit", current_state, analysis)
             if result:
                 tool_results.append(result)
 
-        current_state.history = self._append_history(
-            current_state.history,
-            "user",
-            message,
-        )
+        current_state.history = self._append_history(current_state.history, "user", message)
         reply = await self._generate_reply(message, current_state, tool_results)
-        current_state.history = self._append_history(
-            current_state.history,
-            "assistant",
-            reply,
-        )
+        current_state.history = self._append_history(current_state.history, "assistant", reply)
         current_state.summary = self._build_summary(current_state, analysis)
         return EngineResult(reply=reply, state=current_state, tool_results=tool_results)
 
@@ -200,8 +208,6 @@ class MettrycAIEngine:
         state: ConversationState,
         tool_results: list[ToolResult],
     ) -> str:
-        # Cuando falta la operación, hacemos la pregunta de forma determinista
-        # para que el modelo no escoja otro dato secundario (precio, país, etc.).
         if state.intent == "property_search" and state.criteria.operation == "unknown":
             return "Perfecto. ¿La buscas en venta o en alquiler?"
 
@@ -236,11 +242,7 @@ class MettrycAIEngine:
             "proceso de pensamiento:",
         )
         if any(lower.startswith(marker) for marker in markers):
-            boundaries = (
-                "draft:",
-                "respuesta final:",
-                "final answer:",
-            )
+            boundaries = ("draft:", "respuesta final:", "final answer:")
             for boundary in boundaries:
                 index = lower.rfind(boundary)
                 if index >= 0:
@@ -267,10 +269,16 @@ class MettrycAIEngine:
         return await handler(state, analysis)
 
     @staticmethod
+    def _update_last_properties(state: ConversationState, result: ToolResult) -> None:
+        if not (result.ok and isinstance(result.data, dict)):
+            return
+        properties = result.data.get("properties")
+        if isinstance(properties, list):
+            state.last_properties = [item for item in properties if isinstance(item, dict)][:10]
+
+    @staticmethod
     def _has_search_signal(state: ConversationState) -> bool:
         criteria = state.criteria
-        # No ejecutamos una búsqueda real hasta conocer la operación (venta/alquiler).
-        # Esto evita consultas demasiado amplias o falsas negativas en el inventario.
         if criteria.operation == "unknown":
             return False
         return any(
@@ -321,22 +329,12 @@ class MettrycAIEngine:
         return updated[-self.max_history :]
 
     @staticmethod
-    def _safe_property_list(value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, dict)][:10]
-
-    @staticmethod
     def _build_summary(
         state: ConversationState,
         analysis: UserTurnAnalysis,
     ) -> str:
         criteria = state.criteria
-        pieces = [
-            f"rol={state.role}",
-            f"intención={state.intent}",
-            f"operación={criteria.operation}",
-        ]
+        pieces = [f"rol={state.role}", f"intención={state.intent}", f"operación={criteria.operation}"]
         if criteria.property_type:
             pieces.append(f"tipo={criteria.property_type}")
         if criteria.city:
