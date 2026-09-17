@@ -52,6 +52,7 @@ class FakeLLM:
 async def main() -> None:
     # Reemplazamos temporalmente el módulo legacy main por un stub controlado.
     legacy = types.ModuleType("main")
+    legacy.WASI_TIMEOUT = 40.0
     legacy.http_client = None
     legacy.actualizar_inventario = _actualizar_inventario
     legacy.buscar_mejores_propiedades = _buscar_mejores_propiedades
@@ -92,7 +93,7 @@ async def _actualizar_inventario(*, force=False):
     return True
 
 
-async def _buscar_mejores_propiedades(state, cantidad=5):
+def _buscar_mejores_propiedades(state, cantidad=5):
     return [
         {
             "id": "A1",
