@@ -3,9 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
+
+# Permite ejecutar este script directamente con
+# ``python .\scripts\diagnostico_fallback_manongo.py`` desde la raíz del proyecto.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import main
-from tools.mettryc_inventory import _property_zone_text, _zone_matches_text
+from tools.mettryc_inventory import (
+    _property_zone_text,
+    _textual_zone_fallback,
+    _zone_matches_text,
+)
 
 
 TARGET_ID = "10294059"
@@ -13,10 +25,13 @@ TARGET_ID = "10294059"
 
 async def main_async() -> None:
     print("=== DIAGNOSTICO FALLBACK TEXTUAL: MANONGO ===")
+    print("Proyecto:", PROJECT_ROOT)
 
     if main.http_client is None:
         import httpx
-        main.http_client = httpx.AsyncClient(timeout=getattr(main, "WASI_TIMEOUT", 40.0))
+        main.http_client = httpx.AsyncClient(
+            timeout=getattr(main, "WASI_TIMEOUT", 40.0)
+        )
 
     await main.actualizar_inventario(force=True)
     inventario = main.inventory_cache.get("inventario", [])
@@ -53,7 +68,7 @@ async def main_async() -> None:
     print("ZONA:", propiedad.get("zona"))
     print("PRECIO VENTA:", propiedad.get("precio_venta"))
 
-    print("\n--- PRUEBAS ---")
+    print("\n--- PRUEBAS DEL INMUEBLE ---")
     print("coincide_tipo(casa):", main.coincide_tipo(propiedad, "casa"))
     print("ciudad_coincide(None):", main.ciudad_coincide(propiedad, None))
     print("obtener_precio(venta):", main.obtener_precio(propiedad, "venta"))
@@ -71,10 +86,33 @@ async def main_async() -> None:
         "filtros": filtros_sin_zona,
         "propiedades_enviadas": [],
     }
-    candidatos, motivo = main.buscar_mejores_propiedades(legacy_state, cantidad=1000)
+    candidatos, motivo = main.buscar_mejores_propiedades(
+        legacy_state,
+        cantidad=1000,
+    )
     print("candidatos legacy sin zona:", len(candidatos), "motivo:", motivo)
     target = next((p for p in candidatos if str(p.get("id")) == TARGET_ID), None)
     print("target dentro de candidatos:", bool(target))
+
+    print("\n--- FALLBACK DIRECTO AL INVENTARIO WASI ---")
+    candidatos_fallback = _textual_zone_fallback(
+        main,
+        type("State", (), {"last_properties": []})(),
+        filtros,
+        "Mañongo",
+    )
+    print("candidatos fallback directo:", len(candidatos_fallback))
+    for item in candidatos_fallback[:10]:
+        print(
+            "  id=",
+            item.get("id"),
+            "| titulo=",
+            item.get("titulo"),
+            "| precio=",
+            item.get("precio_venta"),
+            "| score=",
+            item.get("_score"),
+        )
 
 
 if __name__ == "__main__":
