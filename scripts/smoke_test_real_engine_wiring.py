@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from pathlib import Path
 
-from ai_engine.app import create_mettryc_ai_engine
-from ai_engine.router import extract_json_object
+# Allow running this file directly from the repository root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from ai_engine.app import create_mettryc_ai_engine  # noqa: E402
 
 
 class FakeLLM:
@@ -86,7 +89,7 @@ async def main() -> None:
 
 
 async def _actualizar_inventario(*, force=False):
-    return [{"id": "A1"}]
+    return True
 
 
 async def _buscar_mejores_propiedades(state, cantidad=5):
@@ -109,8 +112,8 @@ def _resumen_propiedad_para_ia(propiedad):
     }
 
 
-async def _sincronizar_google_sheet():
-    return None
+async def _sincronizar_google_sheet(*, force=False):
+    return True
 
 
 def _cruzar_captador_con_sheet(nombre_wasi):
