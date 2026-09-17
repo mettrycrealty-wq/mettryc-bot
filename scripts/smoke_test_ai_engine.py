@@ -204,7 +204,7 @@ async def main() -> None:
     unknown_result = await unknown_engine.process("Hola, busco una casa en Mañongo")
     assert unknown_result.state.criteria.operation == "unknown"
     assert not unknown_result.tool_results
-    assert unknown_result.reply == "¿La buscas en venta o alquiler?"
+    assert unknown_result.reply == "Perfecto. ¿La buscas en venta o en alquiler?"
 
     # A model must never expose its thinking process to the customer.
     leak_engine = MettrycAIEngine(llm=FakeLLMReasoningLeak())
