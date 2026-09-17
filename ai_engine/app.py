@@ -4,6 +4,7 @@ import os
 
 from .engine import MettrycAIEngine
 from .router import OpenRouterClient
+from .service import ConversationService
 from tools.mettryc_inventory import (
     get_mettryc_property_detail,
     search_mettryc_properties,
@@ -30,4 +31,13 @@ def create_mettryc_ai_engine() -> MettrycAIEngine:
             "property_detail": get_mettryc_property_detail,
         },
         knowledge_context="Mettryc Realty: asistente virtual inmobiliario. Usa únicamente los datos devueltos por las herramientas para propiedades, precios, disponibilidad y captadores.",
+    )
+
+
+def create_mettryc_conversation_service(*, max_sessions: int = 5000) -> ConversationService:
+    """Create a channel-independent conversation service backed by the AI engine."""
+
+    return ConversationService(
+        create_mettryc_ai_engine(),
+        max_sessions=max_sessions,
     )
