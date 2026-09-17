@@ -37,7 +37,8 @@ async def search_mettryc_properties(
         )
 
     if legacy.http_client is None:
-        legacy.http_client = httpx.AsyncClient(timeout=legacy.WASI_TIMEOUT)
+        timeout = getattr(legacy, "WASI_TIMEOUT", 40.0)
+        legacy.http_client = httpx.AsyncClient(timeout=timeout)
 
     try:
         await legacy.actualizar_inventario(force=False)
@@ -148,7 +149,8 @@ async def get_mettryc_property_detail(
         )
 
     if legacy.http_client is None:
-        legacy.http_client = httpx.AsyncClient(timeout=legacy.WASI_TIMEOUT)
+        timeout = getattr(legacy, "WASI_TIMEOUT", 40.0)
+        legacy.http_client = httpx.AsyncClient(timeout=timeout)
 
     code = analysis.requested_property_code
     if not code and analysis.requested_property_reference:
@@ -182,5 +184,6 @@ async def get_mettryc_property_detail(
         return ToolResult(
             ok=False,
             name="property_detail",
+            data=None,
             message=f"Error consultando el inmueble {code}: {type(exc).__name__}: {exc}",
         )
