@@ -20,6 +20,45 @@ LEGACY_OPERATION_MAP = {
     "unknown": None,
 }
 
+LEGACY_PROPERTY_TYPE_MAP = {
+    "house": "casa",
+    "houses": "casa",
+    "casa": "casa",
+    "casas": "casa",
+    "apartment": "apartamento",
+    "apartments": "apartamento",
+    "apartamento": "apartamento",
+    "apartamentos": "apartamento",
+    "apt": "apartamento",
+    "townhouse": "townhouse",
+    "townhouses": "townhouse",
+    "town house": "townhouse",
+    "office": "oficina",
+    "offices": "oficina",
+    "oficina": "oficina",
+    "commercial space": "local comercial",
+    "commercial premises": "local comercial",
+    "local comercial": "local comercial",
+    "clinic": "consultorio",
+    "medical office": "consultorio",
+    "consultorio": "consultorio",
+    "warehouse": "galpon",
+    "warehouses": "galpon",
+    "galpon": "galpon",
+    "galpón": "galpon",
+    "land": "terreno",
+    "lot": "terreno",
+    "terrain": "terreno",
+    "terreno": "terreno",
+}
+
+
+def normalize_legacy_property_type(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = " ".join(str(value).strip().lower().split())
+    return LEGACY_PROPERTY_TYPE_MAP.get(cleaned, cleaned)
+
 
 async def search_mettryc_properties(
     state: ConversationState,
@@ -45,10 +84,11 @@ async def search_mettryc_properties(
 
         criteria = state.criteria
         operation = LEGACY_OPERATION_MAP.get(criteria.operation)
+        legacy_property_type = normalize_legacy_property_type(criteria.property_type)
 
         filtros = {
             "tipo_operacion": operation,
-            "tipo_propiedad": criteria.property_type,
+            "tipo_propiedad": legacy_property_type,
             "ciudad": criteria.city,
             "zona": criteria.zone,
             "presupuesto_max": criteria.max_budget,
