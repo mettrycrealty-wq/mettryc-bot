@@ -67,6 +67,9 @@ class OpenRouterClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            # El modelo puede razonar internamente, pero ese razonamiento nunca
+            # debe formar parte de la respuesta que verá el cliente.
+            "reasoning": {"exclude": True},
         }
         if force_json:
             payload["response_format"] = {"type": "json_object"}
