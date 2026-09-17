@@ -10,6 +10,9 @@ Operation = Literal["sale", "rent", "unknown"]
 Intent = Literal[
     "property_search",
     "property_detail",
+    "property_selection",
+    "more_properties",
+    "captador_request",
     "visit_request",
     "human_handoff",
     "general_information",
