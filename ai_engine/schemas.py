@@ -47,6 +47,9 @@ class ConversationState(BaseModel):
     role: Role = "unknown"
     intent: Intent = "unknown"
     criteria: PropertyCriteria = Field(default_factory=PropertyCriteria)
+    # Recent messages are intentionally bounded so the state remains small enough
+    # for fast model calls while retaining actual conversational context.
+    history: list[dict[str, str]] = Field(default_factory=list)
     last_properties: list[dict[str, Any]] = Field(default_factory=list)
     selected_property: dict[str, Any] | None = None
     assigned_agent: dict[str, Any] | None = None
