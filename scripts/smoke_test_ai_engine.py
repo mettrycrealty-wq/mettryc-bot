@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 
 # Allow running this file directly from the repository root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from ai_engine.engine import MettrycAIEngine  # noqa: E402
 from ai_engine.schemas import ConversationState, ToolResult, UserTurnAnalysis  # noqa: E402
