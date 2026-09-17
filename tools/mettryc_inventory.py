@@ -314,6 +314,96 @@ async def search_mettryc_properties(
         )
 
 
+def _infer_property_type(legacy: Any, property_item: dict[str, Any]) -> str:
+    """Infer a human-readable property type when WASI's type label is empty."""
+
+    raw_type = str(property_item.get("tipo_propiedad_wasi") or "").strip()
+    normalized_type = legacy.normalizar_tipo_propiedad(raw_type)
+
+    if normalized_type and normalized_type not in {"n/d", "nd", "n d"}:
+        return normalized_type
+
+    checks = (
+        ("casa", "Casa"),
+        ("apartamento", "Apartamento"),
+        ("townhouse", "Townhouse"),
+        ("oficina", "Oficina"),
+        ("local", "Local comercial"),
+        ("galpon", "Galpón"),
+        ("terreno", "Terreno"),
+        ("penthouse", "Penthouse"),
+    )
+
+    for candidate, label in checks:
+        try:
+            if legacy.coincide_tipo(property_item, candidate):
+                return label
+        except Exception:
+            continue
+
+    return raw_type if raw_type else "No disponible"
+
+
+def _rich_property_summary(legacy: Any, property_item: dict[str, Any]) -> dict[str, Any]:
+    """Build a detailed, AI-safe view from the normalized WASI property."""
+
+    precio_venta = property_item.get("precio_venta")
+    precio_alquiler = property_item.get("precio_alquiler")
+    caracteristicas = []
+
+    for field in (
+        "caracteristicas_generales",
+        "caracteristicas_internas",
+        "caracteristicas_externas",
+    ):
+        value = property_item.get(field) or []
+        if isinstance(value, list):
+            caracteristicas.extend(str(item) for item in value if item)
+
+    seen = set()
+    caracteristicas_limpias = []
+    for item in caracteristicas:
+        key = legacy.normalizar_texto(item)
+        if key and key not in seen:
+            seen.add(key)
+            caracteristicas_limpias.append(item)
+
+    return {
+        "id": str(property_item.get("id") or ""),
+        "titulo": property_item.get("titulo") or "Propiedad Mettryc",
+        "tipo": _infer_property_type(legacy, property_item),
+        "tipo_wasi": property_item.get("tipo_propiedad_wasi") or "N/D",
+        "operacion": (
+            "venta" if legacy.convertir_float(precio_venta) > 0
+            else "alquiler" if legacy.convertir_float(precio_alquiler) > 0
+            else "desconocida"
+        ),
+        "ciudad": property_item.get("ciudad") or "N/D",
+        "zona": property_item.get("zona") or "N/D",
+        "direccion": property_item.get("direccion_publica") or "N/D",
+        "precio_venta": legacy.convertir_float(precio_venta) or None,
+        "precio_venta_label": property_item.get("precio_venta_label") or "N/D",
+        "precio_alquiler": legacy.convertir_float(precio_alquiler) or None,
+        "precio_alquiler_label": property_item.get("precio_alquiler_label") or "N/D",
+        "area": property_item.get("area") or "N/D",
+        "area_construida": property_item.get("area_construida"),
+        "area_terreno": property_item.get("area_terreno"),
+        "habitaciones": property_item.get("habitaciones") or "N/D",
+        "banos": property_item.get("banos") or "N/D",
+        "garajes": property_item.get("garajes") or "N/D",
+        "caracteristicas": caracteristicas_limpias,
+        "descripcion": property_item.get("descripcion") or "",
+        "observaciones": property_item.get("observaciones") or "",
+        "captador": {
+            "nombre": property_item.get("captador_wasi") or "Asesor Mettryc",
+            "telefono": property_item.get("telefono_captador_wasi") or None,
+        },
+        "imagenes": property_item.get("imagenes") or [],
+        "video": property_item.get("video"),
+        "enlace": property_item.get("enlace"),
+    }
+
+
 async def get_mettryc_property_detail(
     state: ConversationState,
     analysis: UserTurnAnalysis,
@@ -354,12 +444,12 @@ async def get_mettryc_property_detail(
                 message=f"No encontré el inmueble {code} en el inventario disponible.",
             )
 
-        summary = legacy.resumen_propiedad_para_ia(property_item)
+        summary = _rich_property_summary(legacy, property_item)
         return ToolResult(
             ok=True,
             name="property_detail",
             data={"property": summary},
-            message=f"Detalle del inmueble {code} obtenido del inventario real.",
+            message=f"Detalle completo del inmueble {code} obtenido del inventario real.",
         )
     except Exception as exc:
         return ToolResult(
