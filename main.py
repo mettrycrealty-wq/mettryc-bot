@@ -359,13 +359,13 @@ def extraer_telefono(texto: str) -> Optional[str]:
 
 def _limpiar_html_observaciones(valor: Any) -> str:
     texto = unescape(str(valor or ""))
-    texto = re.sub(r"<br\\s*/?>", "\\n", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"</(?:div|p|li|tr|td|th|section)>", "\\n", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"<br\s*/?>", "\n", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"</(?:div|p|li|tr|td|th|section)>", "\n", texto, flags=re.IGNORECASE)
     texto = re.sub(r"<[^>]+>", " ", texto)
-    texto = texto.replace("\\xa0", " ")
-    texto = re.sub(r"[ \\t]+", " ", texto)
-    texto = re.sub(r" *\\n *", "\\n", texto)
-    texto = re.sub(r"\\n{3,}", "\\n\\n", texto)
+    texto = texto.replace("\xa0", " ")
+    texto = re.sub(r"[ \t]+", " ", texto)
+    texto = re.sub(r" *\n *", "\n", texto)
+    texto = re.sub(r"\n{3,}", "\n\n", texto)
     return texto.strip()
 
 
@@ -384,21 +384,21 @@ def _recoger_observaciones_privadas(propiedad: dict) -> str:
         if limpio and firma not in vistos:
             vistos.add(firma)
             resultado.append(limpio)
-    return "\\n".join(resultado).strip()
+    return "\n".join(resultado).strip()
 
 
 def extraer_asesor_desde_observaciones(propiedad: dict) -> dict:
     texto = _recoger_observaciones_privadas(propiedad)
     if not texto: return {"nombre":"","telefono":"","fuente":None}
     bloque = texto
-    marcador = re.search(r"asesor\\s+encargado\\s*(?:---)?\\s*:?(.*)", texto, re.IGNORECASE|re.DOTALL)
+    marcador = re.search(r"asesor\s+encargado\s*(?:---)?\s*:?(.*)", texto, re.IGNORECASE|re.DOTALL)
     if marcador: bloque = marcador.group(1).strip()
-    nm = re.search(r"(?:nombre|asesor|asesora)\\s*:\\s*([^\\n\\r<]+)", bloque, re.IGNORECASE)
-    tm = re.search(r"(?:tel[eé]fono|telefono|whatsapp|celular|m[oó]vil)\\s*:\\s*(\\+?\\d[\\d\\s().-]{7,}\\d)", bloque, re.IGNORECASE)
+    nm = re.search(r"(?:nombre|asesor|asesora)\s*:\s*([^\n\\r<]+)", bloque, re.IGNORECASE)
+    tm = re.search(r"(?:tel[eé]fono|telefono|whatsapp|celular|m[oó]vil)\s*:\s*(\\+?\\d[\\d\s().-]{7,}\\d)", bloque, re.IGNORECASE)
     nombre = ""
     if nm:
         candidato = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ .-]", " ", nm.group(1))
-        candidato = re.sub(r"\\s+", " ", candidato).strip()
+        candidato = re.sub(r"\s+", " ", candidato).strip()
         if nombre_valido(candidato): nombre = normalizar_nombre(candidato)
     telefono = normalizar_telefono(tm.group(1)) if tm else None
     return {"nombre":nombre,"telefono":telefono or "","fuente":"observaciones" if nombre or telefono else None}
