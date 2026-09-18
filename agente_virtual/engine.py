@@ -61,6 +61,13 @@ Contexto de ANUNCIOS DE PORTALES:
 - Si pide más información, detalles o datos de la propiedad, debe mostrarse la ficha de esa propiedad.
 - Los turnos posteriores deben conservar esa propiedad en contexto.
 
+PRIORIDAD DE LAS ACCIONES INMOBILIARIAS:
+- La intención inmobiliaria principal tiene prioridad sobre cualquier señal comercial.
+- Si el usuario está buscando propiedades o pide más opciones, conserva la intención de búsqueda y permite que el programa ejecute la búsqueda.
+- Una señal de interés o alta intención NUNCA debe convertir una búsqueda en conversacion_casual, detalle, pregunta general o simple respuesta.
+- Las señales comerciales solo describen el momento comercial del usuario; NO sustituyen ni bloquean la acción inmobiliaria que corresponda.
+- Si existe una acción de negocio clara, clasifica esa acción aunque también detectes interés comercial.
+
 Señales comerciales para CLIENTES:
 - sales_signal="interesado" cuando expresa interés claro pero todavía está explorando.
 - sales_signal="alta_intencion" cuando quiere avanzar, comprar/alquilar, reservar, verla, recibir ayuda de un asesor o demuestra decisión cercana.
@@ -276,6 +283,17 @@ class AgenteVirtualEngine:
             text,
             self.bridge.conversation_context(state),
             legacy.construir_contexto_conocimiento(),
+        )
+
+        # Blindaje de compatibilidad: el motor legacy ya tiene detecciones
+        # deterministas de búsqueda y de "más opciones". Las usamos como
+        # salvaguarda para que una clasificación comercial del LLM nunca
+        # apague una acción inmobiliaria inequívoca.
+        analysis = self._enforce_legacy_business_intent(
+            legacy,
+            state,
+            text,
+            analysis,
         )
 
         if geo_zone:
@@ -584,6 +602,50 @@ class AgenteVirtualEngine:
         response = self._append_advisor_offer(state, response)
 
         return await self._finalize(sender, state, text, response)
+
+
+    @staticmethod
+    def _enforce_legacy_business_intent(
+        legacy: Any,
+        state: dict,
+        text: str,
+        analysis: TurnAnalysis,
+    ) -> TurnAnalysis:
+        """Mantiene la acción inmobiliaria legacy como fuente de verdad cuando es inequívoca."""
+        try:
+            if hasattr(legacy, "pide_mas_opciones") and legacy.pide_mas_opciones(text):
+                return analysis.model_copy(update={"intent": "mas_propiedades"})
+        except Exception:
+            pass
+
+        try:
+            property_question = (
+                legacy.es_pregunta_sobre_propiedad_activa(text, state)
+                if hasattr(legacy, "es_pregunta_sobre_propiedad_activa")
+                else False
+            )
+        except Exception:
+            property_question = False
+
+        if property_question and analysis.intent in {"conversacion_casual", "unknown"}:
+            return analysis.model_copy(update={"intent": "pregunta_propiedad"})
+
+        try:
+            legacy_search_intent = (
+                legacy.tiene_intencion_busqueda(state, None, text)
+                if hasattr(legacy, "tiene_intencion_busqueda")
+                else False
+            )
+        except Exception:
+            legacy_search_intent = False
+
+        if (
+            legacy_search_intent
+            and analysis.intent in {"conversacion_casual", "unknown"}
+        ):
+            return analysis.model_copy(update={"intent": "busqueda_propiedad"})
+
+        return analysis
 
 
     @staticmethod
