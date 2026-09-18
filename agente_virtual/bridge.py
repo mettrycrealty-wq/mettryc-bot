@@ -223,6 +223,7 @@ class LegacyMettrycBridge:
         *,
         code: str | None = None,
         position: int | None = None,
+        format_legacy: bool = True,
     ) -> BusinessActionResult:
         legacy = self.load()
         property_item = None
@@ -259,23 +260,36 @@ class LegacyMettrycBridge:
                 message="No pude identificar el código de la propiedad.",
             )
 
-        formatted = await legacy.mostrar_inmueble_especifico(
-            state,
-            property_id,
-        )
-
-        # mostrar_inmueble_especifico es la fuente de verdad del estado y del
-        # formato específico. Refrescamos el objeto final desde el contexto.
         final_property = state.get("propiedad_interes") or property_item
 
+        if format_legacy:
+            formatted = await legacy.mostrar_inmueble_especifico(
+                state,
+                property_id,
+            )
+            final_property = state.get("propiedad_interes") or property_item
+
+            return BusinessActionResult(
+                ok=True,
+                name="detalle_propiedad",
+                data={
+                    "property": legacy.detalle_propiedad_para_ia(final_property),
+                    "formatted_legacy": True,
+                },
+                message=formatted or "",
+            )
+
+        # Para una pregunta sobre una propiedad ya identificada no enviamos
+        # nuevamente la ficha completa. Entregamos los datos reales al LLM
+        # conversacional para que responda solo lo que el usuario preguntó.
         return BusinessActionResult(
             ok=True,
-            name="detalle_propiedad",
+            name="pregunta_propiedad",
             data={
                 "property": legacy.detalle_propiedad_para_ia(final_property),
-                "formatted_legacy": True,
+                "formatted_legacy": False,
             },
-            message=formatted or "",
+            message="Datos reales de la propiedad recuperados para responder la pregunta.",
         )
 
     async def captador(
