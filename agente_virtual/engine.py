@@ -219,8 +219,9 @@ class AgenteVirtualEngine:
                         "city": requested_city,
                     }
                 )
-            elif state.get("pregunta_pendiente") == "confirmar_ciudad_zona":
+            else:
                 opciones_texto = " y ".join(pending_geo.get("ciudades") or [])
+                state["pregunta_pendiente"] = "confirmar_ciudad_zona"
                 return await self._finalize(
                     sender,
                     state,
