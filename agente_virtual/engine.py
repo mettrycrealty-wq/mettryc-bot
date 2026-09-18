@@ -592,6 +592,21 @@ class AgenteVirtualEngine:
 
         self._update_sales_state(state, analysis)
 
+        # Segunda defensa: después de aplicar las extracciones al estado,
+        # si la intención es inmobiliaria de búsqueda y todavía no se ejecutó
+        # ninguna búsqueda, la hacemos aquí. Esto garantiza que el asistente
+        # entregue las fichas reales en lugar de quedarse en una frase genérica
+        # como "¿quieres que te muestre opciones?".
+        if (
+            analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
+            and not any(
+                result.ok and result.name == "buscar_propiedades"
+                for result in business_results
+            )
+            and self._search_signal(state)
+        ):
+            business_results.append(await self.bridge.search(state))
+
         response = await self._generate_response(
             text,
             state,
@@ -630,20 +645,39 @@ class AgenteVirtualEngine:
         if property_question and analysis.intent in {"conversacion_casual", "unknown"}:
             return analysis.model_copy(update={"intent": "pregunta_propiedad"})
 
+        # Importante: probar la detección legacy sobre una COPIA del estado
+        # y aplicar las extracciones técnicas del mensaje antes de decidir si
+        # existe intención de búsqueda. Así la clasificación comercial del LLM
+        # nunca puede apagar una búsqueda inequívoca.
         try:
-            legacy_search_intent = (
-                legacy.tiene_intencion_busqueda(state, None, text)
-                if hasattr(legacy, "tiene_intencion_busqueda")
-                else False
-            )
+            legacy_search_intent = False
+            if hasattr(legacy, "tiene_intencion_busqueda"):
+                estado_prueba = deepcopy(state)
+                if hasattr(legacy, "aplicar_extracciones_tecnicas"):
+                    legacy.aplicar_extracciones_tecnicas(estado_prueba, text)
+                legacy_search_intent = bool(
+                    legacy.tiene_intencion_busqueda(
+                        estado_prueba,
+                        None,
+                        text,
+                    )
+                )
         except Exception:
             legacy_search_intent = False
 
-        if (
-            legacy_search_intent
-            and analysis.intent in {"conversacion_casual", "unknown"}
-        ):
-            return analysis.model_copy(update={"intent": "busqueda_propiedad"})
+        if legacy_search_intent:
+            non_search_intents = {
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "captador",
+                "visita",
+                "atencion_humana",
+            }
+            if analysis.intent not in non_search_intents:
+                return analysis.model_copy(
+                    update={"intent": "busqueda_propiedad"}
+                )
 
         return analysis
 
