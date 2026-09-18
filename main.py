@@ -54,6 +54,12 @@ MAX_PROPIEDADES_POR_LOTE = int(os.getenv("MAX_PROPIEDADES_POR_LOTE", "3"))
 MAX_EXCESO_PRESUPUESTO = float(os.getenv("MAX_EXCESO_PRESUPUESTO", "0.20"))
 MAX_HISTORIAL = int(os.getenv("MAX_HISTORIAL", "24"))
 DUPLICATE_TTL_SECONDS = int(os.getenv("DUPLICATE_TTL_SECONDS", "180"))
+# Algunos módulos de autoresponder no envían message_id. Este TTL corto
+# evita procesar dos veces el mismo mensaje cuando dos rutas/acciones
+# reenvían la misma petición, sin bloquear una conversación normal.
+DUPLICATE_NO_ID_TTL_SECONDS = int(
+    os.getenv("DUPLICATE_NO_ID_TTL_SECONDS", "30")
+)
 
 # FIX #1: límite de repeticiones idénticas de "sin resultados" antes de
 # ofrecer escalamiento a un humano en lugar de repetir el mismo mensaje.
@@ -1255,6 +1261,24 @@ def mensaje_es_duplicado(sender: str, message_id: str) -> bool:
         return True
 
     mensajes_duplicados[clave] = ahora + DUPLICATE_TTL_SECONDS
+    return False
+
+
+def mensaje_sin_id_es_duplicado(sender: str, mensaje: str) -> bool:
+    """Deduplicación de respaldo para autoresponders sin message_id."""
+    ahora = time.time()
+
+    for clave, expiracion in list(mensajes_duplicados.items()):
+        if expiracion <= ahora:
+            mensajes_duplicados.pop(clave, None)
+
+    huella = normalizar_texto(mensaje)
+    clave = f"{sender}:noid:{huella}"
+
+    if clave in mensajes_duplicados:
+        return True
+
+    mensajes_duplicados[clave] = ahora + DUPLICATE_NO_ID_TTL_SECONDS
     return False
 
 # ============================================================
@@ -5933,7 +5957,14 @@ async def webhook_agente_virtual(
     if not mensaje:
         return {"replies": []}
 
-    if message_id and mensaje_es_duplicado(sender, message_id):
+    if message_id:
+        if mensaje_es_duplicado(sender, message_id):
+            return {"replies": []}
+    elif mensaje_sin_id_es_duplicado(sender, mensaje):
+        logger.info(
+            "Mensaje duplicado sin message_id ignorado sender=%s",
+            sender[-4:],
+        )
         return {"replies": []}
 
     if sender not in locks_usuarios:
@@ -6029,11 +6060,12 @@ async def webhook(
                 sender[-4:], message_id[-12:],
             )
             return {"replies": []}
-    else:
-        logger.debug(
-            "Mensaje sin message_id; se procesa sin deduplicación sender=%s",
+    elif mensaje_sin_id_es_duplicado(sender, mensaje):
+        logger.info(
+            "Mensaje duplicado sin message_id ignorado sender=%s",
             sender[-4:],
         )
+        return {"replies": []}
 
     if sender not in locks_usuarios:
         locks_usuarios[sender] = asyncio.Lock()
