@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
@@ -62,13 +61,6 @@ Contexto de ANUNCIOS DE PORTALES:
 - Si pide más información, detalles o datos de la propiedad, debe mostrarse la ficha de esa propiedad.
 - Los turnos posteriores deben conservar esa propiedad en contexto.
 
-PRIORIDAD DE LAS ACCIONES INMOBILIARIAS:
-- La intención inmobiliaria principal tiene prioridad sobre cualquier señal comercial.
-- Si el usuario está buscando propiedades o pide más opciones, conserva la intención de búsqueda y permite que el programa ejecute la búsqueda.
-- Una señal de interés o alta intención NUNCA debe convertir una búsqueda en conversacion_casual, detalle, pregunta general o simple respuesta.
-- Las señales comerciales solo describen el momento comercial del usuario; NO sustituyen ni bloquean la acción inmobiliaria que corresponda.
-- Si existe una acción de negocio clara, clasifica esa acción aunque también detectes interés comercial.
-
 Señales comerciales para CLIENTES:
 - sales_signal="interesado" cuando expresa interés claro pero todavía está explorando.
 - sales_signal="alta_intencion" cuando quiere avanzar, comprar/alquilar, reservar, verla, recibir ayuda de un asesor o demuestra decisión cercana.
@@ -108,21 +100,6 @@ Comportamiento para consultas originadas en portales:
 - Cuando el estado indique que la conversación comenzó desde una publicación de Mercado Libre, responde primero resolviendo la consulta concreta del anuncio.
 - No obligues al usuario a pasar por un flujo de búsqueda para obtener información de la propiedad enlazada.
 - Una vez identificada la propiedad, conserva el contexto y continúa naturalmente con sus preguntas.
-
-Estrategia comercial para CLIENTES:
-- Cuando role=cliente, actúa como asesor comercial consultivo, no como vendedor agresivo.
-- Usa preguntas de descubrimiento para entender necesidad, prioridad, presupuesto, urgencia y motivo de compra/alquiler cuando esos datos todavía sean relevantes.
-- Relaciona las características reales de una propiedad con el beneficio que pueden aportar al cliente, pero solo cuando la relación sea directa y razonable.
-- Detecta objeciones sobre precio, ubicación, características, estado, tiempo o incertidumbre. Primero valida la inquietud y después propone una alternativa concreta basada en datos reales.
-- Usa microcompromisos: avanzar de una pregunta a otra, elegir entre alternativas, revisar una propiedad concreta o dar el siguiente paso.
-- Busca un siguiente paso claro: revisar una propiedad, comparar opciones, coordinar una visita o conectar al cliente con un asesor.
-- Haz UNA sola pregunta comercial a la vez. Evita interrogatorios.
-- Si el cliente muestra alta intención de compra o alquiler respecto de una propiedad, facilita el cierre hacia un asesor humano y la captura del lead.
-- Respeta un "no" y continúa ayudando sin presión.
-- NUNCA inventes urgencia, escasez, descuentos, disponibilidad, número de interesados, exclusividad, revalorización ni beneficios financieros.
-- NUNCA uses amenazas, culpa, presión engañosa, falsa urgencia o manipulación emocional.
-- No pidas datos personales completos hasta que exista una razón comercial clara para avanzar con un asesor o visita.
-- Cuando el estado indique "ofrecer_asesor", responde la cuestión del cliente y termina con una invitación breve para que acepte o rechace el contacto de un asesor.
 
 Exactitud:
 - Los datos de propiedades solo pueden salir del contexto de negocio y de las
@@ -591,21 +568,29 @@ class AgenteVirtualEngine:
                     if notified:
                         admin_notified.add(reason)
 
-        self._update_sales_state(state, analysis)
+        # La capa comercial no interviene en la selección ni entrega de propiedades.
+        # Primero debe completarse la acción inmobiliaria; las técnicas de venta
+        # se incorporarán después como una capa independiente.
 
-        # Segunda defensa: después de aplicar las extracciones al estado,
-        # si la intención es inmobiliaria de búsqueda y todavía no se ejecutó
-        # ninguna búsqueda, la hacemos aquí. Esto garantiza que el asistente
-        # entregue las fichas reales en lugar de quedarse en una frase genérica
-        # como "¿quieres que te muestre opciones?".
-        if (
-            analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
-            and not any(
-                result.ok and result.name == "buscar_propiedades"
-                for result in business_results
-            )
-            and self._search_signal(state)
-        ):
+        # Segunda defensa determinista: si los criterios ya quedaron cargados
+        # en el estado, la ficha debe salir aunque el LLM haya elegido una
+        # intención conversacional distinta. Solo respetamos aquí intenciones
+        # que representan una acción sobre una propiedad ya identificada.
+        special_intents = {
+            "detalle_propiedad",
+            "pregunta_propiedad",
+            "seleccion_propiedad",
+            "captador",
+            "visita",
+            "atencion_humana",
+        }
+        search_ready = self._search_signal(state)
+        already_searched = any(
+            result.ok and result.name == "buscar_propiedades"
+            for result in business_results
+        )
+        if search_ready and not already_searched and analysis.intent not in special_intents:
+            analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
         response = await self._generate_response(
@@ -615,8 +600,6 @@ class AgenteVirtualEngine:
             business_results,
             legacy.construir_contexto_conocimiento(),
         )
-        response = self._append_advisor_offer(state, response)
-
         return await self._finalize(sender, state, text, response)
 
 
@@ -966,14 +949,6 @@ class AgenteVirtualEngine:
             ],
             "knowledge_mettryc": knowledge,
             "latest_user_message": message,
-            "commercial_instruction": (
-                "Aplica venta consultiva para cliente. Prioriza una sola acción "
-                "siguiente y una sola pregunta comercial. Si hay objeción, valida "
-                "y ofrece una alternativa basada en datos reales. Si hay intención "
-                "alta y la oferta de asesor está pendiente, facilita el cierre sin presión."
-                if state.get("rol") == "cliente"
-                else "No aplicar técnicas de cierre de cliente a un colega inmobiliario."
-            ),
         }
 
         try:
