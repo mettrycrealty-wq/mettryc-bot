@@ -24,6 +24,26 @@ Intent = Literal[
 ]
 
 
+SalesSignal = Literal[
+    "ninguna",
+    "interesado",
+    "alta_intencion",
+    "objecion",
+    "visita",
+    "asesor",
+]
+
+SalesNextStep = Literal[
+    "ninguno",
+    "seguir_explorando",
+    "profundizar",
+    "mostrar_alternativas",
+    "visita",
+    "asesor",
+    "captura_lead",
+]
+
+
 class TurnAnalysis(BaseModel):
     """Interpretación del turno. No ejecuta acciones de negocio."""
 
@@ -52,6 +72,9 @@ class TurnAnalysis(BaseModel):
     human_requested: bool = False
     information_not_available: bool = False
     unknown_information: str | None = None
+    sales_signal: SalesSignal = "ninguna"
+    sales_next_step: SalesNextStep = "ninguno"
+    objection_type: str | None = None
     reasoning_summary: str = ""
 
 
