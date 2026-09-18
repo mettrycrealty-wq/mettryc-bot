@@ -214,6 +214,38 @@ class AgenteVirtualEngine:
 
                     return await self._finalize(sender, state, text, response)
 
+        # SEGUIMIENTO DE ANUNCIO DE PORTAL
+        # Si el usuario ya fue atendido por un enlace de Mercado Libre y ahora
+        # pide "más información", "la ficha" o equivalente, la propiedad ya
+        # está identificada. Entregamos directamente la ficha completa.
+        portal_context = bool(
+            state.get("consulta_anuncio_pendiente")
+            and state.get("propiedad_interes")
+        )
+
+        if (
+            portal_context
+            and self._requests_more_property_info(text)
+            and not portal_code
+        ):
+            property_id = str(
+                state.get("propiedad_interes", {}).get("id")
+                or state.get("propiedad_activa_id")
+                or ""
+            )
+            if property_id:
+                ficha = await self.bridge.detail(
+                    state,
+                    code=property_id,
+                    format_legacy=True,
+                )
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    ficha.message or "",
+                )
+
         # La geografía se resuelve de forma determinista usando el catálogo
         # oficial + las variantes del inventario. Nunca dejamos que el modelo
         # elija una ciudad cuando una zona existe en varias ciudades.
@@ -384,6 +416,13 @@ class AgenteVirtualEngine:
             not legacy.rol_esta_confirmado(state)
             and not explicit_role
             and analysis.intent in role_required_intents
+            and not (
+                portal_context
+                and analysis.intent in {
+                    "detalle_propiedad",
+                    "pregunta_propiedad",
+                }
+            )
         ):
             self.bridge.apply_analysis(
                 state,
@@ -568,6 +607,22 @@ class AgenteVirtualEngine:
                 "cuánto cuesta",
                 "caracteristicas de la propiedad",
                 "características de la propiedad",
+                "ficha",
+                "ficha de la propiedad",
+                "pasame la ficha",
+                "pásame la ficha",
+                "enviame la ficha",
+                "envíame la ficha",
+                "mandame la ficha",
+                "mándame la ficha",
+                "quiero mas informacion",
+                "quiero más información",
+                "mas informacion sobre el inmueble",
+                "más información sobre el inmueble",
+                "mas informacion sobre la propiedad",
+                "más información sobre la propiedad",
+                "informame sobre la propiedad",
+                "infórmame sobre la propiedad",
             )
         )
 
