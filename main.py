@@ -15,6 +15,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from geografia import DICCIONARIO_GEOGRAFICO
 # ============================================================
 # LOGS Y CONFIGURACIÓN
 # ============================================================
@@ -1543,29 +1544,48 @@ def reconstruir_catalogo_geografico() -> None:
     zonas_norm: Dict[str, Set[str]] = {}
     zonas_por_ciudad: Dict[str, Set[str]] = {}
 
+    def agregar_ciudad_zona(ciudad: Any, zona: Any) -> None:
+        ciudad_texto = str(ciudad or "").strip()
+        zona_texto = str(zona or "").strip()
+        ciudad_norm = normalizar_texto(ciudad_texto)
+        zona_norm = normalizar_texto(zona_texto)
+
+        if (
+            not ciudad_norm
+            or ciudad_norm in ESTADOS_VENEZUELA
+            or not zona_norm
+            or len(zona_norm) < 4
+            or zona_norm in ESTADOS_VENEZUELA
+            or zona_norm == ciudad_norm
+        ):
+            return
+
+        ciudades_norm.setdefault(ciudad_norm, ciudad_texto)
+        zonas_norm.setdefault(zona_norm, set()).add(zona_texto)
+        zonas_por_ciudad.setdefault(zona_norm, set()).add(ciudad_texto)
+
+    # 1) La geografía oficial de GitHub es la base maestra.
+    # Esto permite detectar una misma zona en varias ciudades incluso cuando
+    # todavía no hay una propiedad WASI publicada en alguna de ellas.
+    for _, ciudades in DICCIONARIO_GEOGRAFICO.items():
+        if not isinstance(ciudades, dict):
+            continue
+
+        for ciudad, zonas in ciudades.items():
+            if not isinstance(zonas, list):
+                continue
+
+            for zona in zonas:
+                agregar_ciudad_zona(ciudad, zona)
+
+    # 2) WASI complementa la geografía oficial con variantes reales del
+    # inventario (por ejemplo, nombres compuestos de urbanización/sector).
     for propiedad in inventory_cache.get("inventario", []):
         ciudad = str(propiedad.get("ciudad") or "").strip()
         zona_completa = str(propiedad.get("zona") or "").strip()
-        ciudad_norm = normalizar_texto(ciudad)
 
-        if ciudad_norm and ciudad_norm not in ESTADOS_VENEZUELA:
-            ciudades_norm.setdefault(ciudad_norm, ciudad)
-
-        for zona in re.split(r"[\/|·–,]", zona_completa):
-            zona = zona.strip()
-            zona_norm = normalizar_texto(zona)
-
-            # FIX #5: se descartan estados y textos genéricos.
-            if len(zona_norm) < 4 or zona_norm in ESTADOS_VENEZUELA:
-                continue
-
-            if zona_norm == ciudad_norm:
-                continue
-
-            zonas_norm.setdefault(zona_norm, set()).add(zona)
-
-            if ciudad:
-                zonas_por_ciudad.setdefault(zona_norm, set()).add(ciudad)
+        for zona in re.split(r"[/|·–,]", zona_completa):
+            agregar_ciudad_zona(ciudad, zona)
 
     catalogo_geografico["ciudades_norm"] = ciudades_norm
     catalogo_geografico["zonas_norm"] = zonas_norm
@@ -1588,7 +1608,6 @@ def reconstruir_catalogo_geografico() -> None:
         key=lambda elemento: len(elemento[0]),
         reverse=True,
     )
-
 
 def obtener_ciudades_para_zona(zona: Optional[str]) -> Set[str]:
     zona_norm = normalizar_texto(zona)
@@ -1691,8 +1710,8 @@ def detectar_ciudad_y_sector(texto: Any) -> Tuple[Optional[str], Optional[str]]:
             # catálogo curado. Se continúa buscando y, si no hay otra
             # coincidencia más específica, se deja sin resolver para
             # que la desambiguación real (basada en inventario) actúe.
-            ciudades_posibles_ambiguas = FALLBACK_ZONAS_AMBIGUAS.get(
-                sector_norm, []
+            ciudades_posibles_ambiguas = sorted(
+                obtener_ciudades_para_zona(sector_original)
             )
             if len(ciudades_posibles_ambiguas) > 1:
                 continue
@@ -1828,8 +1847,16 @@ def detectar_zona_ciudad(texto: str) -> Dict[str, Any]:
                 resultado["zona"] = normalizar_nombre(zona_alias)
 
                 if not resultado.get("ciudad"):
-                    resultado["ambiguedad"] = True
-                    resultado["ciudades_posibles"] = ciudades
+                    ciudades_dinamicas = sorted(
+                        obtener_ciudades_para_zona(zona_alias)
+                    )
+                    ciudades_finales = (
+                        ciudades_dinamicas
+                        if len(ciudades_dinamicas) > 1
+                        else ciudades
+                    )
+                    resultado["ambiguedad"] = len(ciudades_finales) > 1
+                    resultado["ciudades_posibles"] = ciudades_finales
 
                 break
 
