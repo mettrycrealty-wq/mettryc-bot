@@ -266,6 +266,14 @@ class LegacyMettrycBridge:
 
         final_property = state.get("propiedad_interes") or property_item
 
+        # Una propiedad identificada por un anuncio externo queda inmediatamente
+        # en contexto para que los mensajes siguientes puedan preguntar por ella
+        # sin volver a identificarla.
+        state["propiedad_interes"] = final_property
+        state["propiedad_activa_id"] = property_id
+        state["ultima_propiedad_consultada_id"] = property_id
+        state["ultimo_lote"] = [property_id]
+
         if format_legacy:
             formatted = await legacy.mostrar_inmueble_especifico(
                 state,
