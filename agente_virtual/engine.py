@@ -164,6 +164,12 @@ class AgenteVirtualEngine:
         if explicit_role:
             analysis = analysis.model_copy(update={"role": explicit_role})
 
+            # La confirmación explícita debe actualizar el estado inmediatamente,
+            # incluso cuando todavía falta desambiguar la ciudad de una zona.
+            state["rol"] = explicit_role
+            state["rol_confirmado"] = True
+            state["confianza_rol"] = 1.0
+
             if pending_role_action:
                 pending_intents = {
                     "buscar_propiedades": "busqueda_propiedad",
