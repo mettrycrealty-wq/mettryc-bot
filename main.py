@@ -6,6 +6,7 @@ import re
 import time
 import unicodedata
 import uuid
+from html import unescape
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -356,6 +357,63 @@ def extraer_telefono(texto: str) -> Optional[str]:
     return normalizar_telefono(coincidencia.group(1))
 
 
+def _limpiar_html_observaciones(valor: Any) -> str:
+    texto = unescape(str(valor or ""))
+    texto = re.sub(r"<br\\s*/?>", "\\n", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"</(?:div|p|li|tr|td|th|section)>", "\\n", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"<[^>]+>", " ", texto)
+    texto = texto.replace("\\xa0", " ")
+    texto = re.sub(r"[ \\t]+", " ", texto)
+    texto = re.sub(r" *\\n *", "\\n", texto)
+    texto = re.sub(r"\\n{3,}", "\\n\\n", texto)
+    return texto.strip()
+
+
+def _recoger_observaciones_privadas(propiedad: dict) -> str:
+    fuentes: List[str] = []
+    if propiedad.get("observaciones"): fuentes.append(str(propiedad.get("observaciones")))
+    raw = propiedad.get("detalle_raw")
+    if isinstance(raw, dict):
+        for clave in ("comment","private_comment","private_observations","observations_private","internal_comment","internal_observations"):
+            if raw.get(clave): fuentes.append(str(raw.get(clave)))
+    resultado: List[str] = []
+    vistos: Set[str] = set()
+    for fuente in fuentes:
+        limpio = _limpiar_html_observaciones(fuente)
+        firma = normalizar_texto(limpio)
+        if limpio and firma not in vistos:
+            vistos.add(firma)
+            resultado.append(limpio)
+    return "\\n".join(resultado).strip()
+
+
+def extraer_asesor_desde_observaciones(propiedad: dict) -> dict:
+    texto = _recoger_observaciones_privadas(propiedad)
+    if not texto: return {"nombre":"","telefono":"","fuente":None}
+    bloque = texto
+    marcador = re.search(r"asesor\\s+encargado\\s*(?:---)?\\s*:?(.*)", texto, re.IGNORECASE|re.DOTALL)
+    if marcador: bloque = marcador.group(1).strip()
+    nm = re.search(r"(?:nombre|asesor|asesora)\\s*:\\s*([^\\n\\r<]+)", bloque, re.IGNORECASE)
+    tm = re.search(r"(?:tel[eé]fono|telefono|whatsapp|celular|m[oó]vil)\\s*:\\s*(\\+?\\d[\\d\\s().-]{7,}\\d)", bloque, re.IGNORECASE)
+    nombre = ""
+    if nm:
+        candidato = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ .-]", " ", nm.group(1))
+        candidato = re.sub(r"\\s+", " ", candidato).strip()
+        if nombre_valido(candidato): nombre = normalizar_nombre(candidato)
+    telefono = normalizar_telefono(tm.group(1)) if tm else None
+    return {"nombre":nombre,"telefono":telefono or "","fuente":"observaciones" if nombre or telefono else None}
+
+
+def obtener_datos_captador(propiedad: dict) -> dict:
+    principal = extraer_asesor_desde_observaciones(propiedad)
+    nombre_respaldo = str(propiedad.get("captador_wasi") or "").strip()
+    telefono_respaldo = normalizar_telefono(propiedad.get("telefono_captador_wasi")) or ""
+    nombre = principal.get("nombre") or nombre_respaldo or "Captador no identificado"
+    telefono = principal.get("telefono") or telefono_respaldo
+    fuente = "observaciones" if principal.get("nombre") or principal.get("telefono") else ("campos_wasi" if nombre_respaldo or telefono_respaldo else None)
+    return {"nombre":nombre,"telefono":telefono,"fuente":fuente}
+
+
 def extraer_correo(texto: str) -> Optional[str]:
     coincidencia = re.search(
         r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
@@ -603,6 +661,16 @@ PALABRAS_CONSULTA_DIRECTA = {
     "disponibilidad", "disponible", "sigue disponible",
 }
 
+PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA = (
+    "informacion de la propiedad","información de la propiedad","info de la propiedad",
+    "informacion del inmueble","información del inmueble","info del inmueble",
+    "dame informacion de la propiedad","dame información de la propiedad",
+    "dame informacion del inmueble","dame información del inmueble",
+    "quiero informacion de la propiedad","quiero información de la propiedad",
+    "quiero informacion del inmueble","quiero información del inmueble",
+    "detalle de la propiedad","detalles de la propiedad","ficha de la propiedad","ficha del inmueble",
+)
+
 # FIX #10: se amplía la lista de frases para detectar solicitud de
 # atención humana; antes frases como "pásame con un agente" o
 # "conectarme con alguien" no se reconocían.
@@ -760,6 +828,15 @@ def extraer_codigo_inmueble(
             return numero_limpio
 
     return None
+
+
+def solicita_informacion_propiedad_sin_referencia(texto: str) -> bool:
+    normalizado = normalizar_texto(texto)
+    if any(frase in normalizado for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA):
+        return True
+    pide_info = any(x in normalizado for x in ("informacion","información","info","detalles","ficha"))
+    menciona = any(x in normalizado for x in ("propiedad","inmueble","casa","apartamento","townhouse","oficina","local","terreno","galpon"))
+    return pide_info and menciona
 
 
 def detectar_posicion(texto: str) -> Optional[int]:
