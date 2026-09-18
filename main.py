@@ -3787,16 +3787,18 @@ async def formatear_ficha(
     # FIX (requisito explícito del usuario): para colegas SIEMPRE se
     # incluyen los datos del captador en cada ficha.
     if es_colega:
-        await sincronizar_google_sheet()
-        captador_wasi = propiedad.get("captador_wasi", "Asesor Mettryc")
-        cruce = cruzar_captador_con_sheet(captador_wasi)
+        datos_captador = obtener_datos_captador(propiedad)
 
-        lineas.append(f"👤 *Captador:* {cruce.get('nombre') or captador_wasi}")
+        lineas.append(f"👤 *Captador:* {datos_captador['nombre']}")
 
-        if cruce.get("telefono"):
-            lineas.append(f"📲 *WhatsApp captador:* https://wa.me/{cruce['telefono']}")
+        if datos_captador["telefono"]:
+            lineas.append(
+                f"📲 *WhatsApp captador:* https://wa.me/{datos_captador['telefono']}"
+            )
         else:
-            lineas.append("📲 *WhatsApp captador:* No localizado en el directorio.")
+            lineas.append(
+                "📲 *WhatsApp captador:* No disponible en la información de la propiedad."
+            )
 
     return "\n".join(lineas)
 
@@ -3930,19 +3932,10 @@ async def atender_solicitud_captador(
     estado["propiedad_interes"] = detalle
     estado["propiedad_activa_id"] = property_id
 
-    captador_wasi = str(
-        detalle.get("captador_wasi") or propiedad.get("captador_wasi") or ""
-    ).strip()
+    datos_captador = obtener_datos_captador(detalle or propiedad)
 
-    telefono_wasi = normalizar_telefono(
-        detalle.get("telefono_captador_wasi") or propiedad.get("telefono_captador_wasi")
-    )
-
-    await sincronizar_google_sheet()
-    cruce = cruzar_captador_con_sheet(captador_wasi)
-
-    nombre_captador = cruce.get("nombre") or captador_wasi or "Captador no identificado"
-    telefono_captador = normalizar_telefono(cruce.get("telefono")) or telefono_wasi
+    nombre_captador = datos_captador["nombre"]
+    telefono_captador = datos_captador["telefono"]
 
     estado["accion_pendiente_rol"] = None
     estado["pregunta_pendiente"] = None
@@ -3957,15 +3950,13 @@ async def atender_solicitud_captador(
     if captador_wasi:
         return (
             f"El captador registrado en Wasi es {nombre_captador}, "
-            "pero no pude localizar su WhatsApp en el directorio de "
-            "Google Sheets. Si quieres, puedo notificar al equipo "
-            "administrativo."
+            "pero no pude localizar su WhatsApp en la información de la "
+            "propiedad. Si quieres, puedo notificar al equipo administrativo."
         )
 
     return (
-        "No pude identificar al captador de esta propiedad en Wasi "
-        "ni en el directorio de Google Sheets. Si quieres, puedo "
-        "notificar al equipo administrativo."
+        "No pude identificar al captador de esta propiedad en la información "
+        "disponible de Wasi. Si quieres, puedo notificar al equipo administrativo."
     )
 
 def detalle_propiedad_para_ia(propiedad: dict) -> dict:
