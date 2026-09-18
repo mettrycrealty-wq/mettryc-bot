@@ -23,6 +23,16 @@ class FakeRouter:
         context = json.loads(messages[-1]["content"])
         text = context["latest_user_message"].lower()
 
+        if any(marker in text for marker in ("soy corredor", "soy agente", "soy broker", "para mi cliente")):
+            return TurnAnalysis(
+                role="colega_inmobiliario",
+                intent="busqueda_propiedad",
+                operation="venta" if "comprar" in text or "venta" in text else None,
+                property_type="casa" if "casa" in text else None,
+                zone="Mañongo" if "mañongo" in text else None,
+                max_budget=250000 if "250" in text else None,
+            )
+
         if "casa" in text or "comprar" in text or "buscar" in text:
             return TurnAnalysis(
                 role="cliente",
@@ -151,19 +161,58 @@ class FakeLegacy:
     def detalle_propiedad_para_ia(self, prop):
         return deepcopy(prop)
 
-    def buscar_mejores_propiedades(self, state, cantidad=3):
+    async def mostrar_propiedades(self, state):
         self.events.append("search")
+        property_item = {
+            "id": "1001",
+            "titulo": "Casa en Mañongo",
+            "zona": "Mañongo",
+            "ciudad": "Valencia",
+            "precio_venta": 200000,
+            "area": 200,
+            "habitaciones": 4,
+            "banos": 3,
+            "garajes": 2,
+            "enlace": "https://mettryc.com/p/1001",
+        }
+        state["ultimo_lote"] = ["1001"]
+        state["propiedades_enviadas"] = ["1001"]
+        state["estado_conversacion"] = "propiedades_mostradas"
+        state["pregunta_pendiente"] = "visita_o_pregunta_propiedad"
+
+        if state.get("rol") == "colega_inmobiliario":
+            return (
+                "Encontré estas opciones que pueden encajar con lo que buscas:
+
+"
+                "Opción 1: Casa en Mañongo
+"
+                "👤 *Captador:* Ana Ejemplo
+"
+                "📲 *WhatsApp captador:* https://wa.me/584120000001
+
+"
+                "Puedes contactar al captador indicado en la ficha."
+            )
+
         return (
-            [
-                {
-                    "id": "1001",
-                    "titulo": "Casa en Mañongo",
-                    "zona": "Mañongo",
-                    "precio_venta": 200000,
-                }
-            ],
-            "",
+            "Encontré estas opciones que pueden encajar con lo que buscas:
+
+"
+            "*Opción 1: Casa en Mañongo*
+"
+            "📍 Mañongo, Valencia
+"
+            "💰 $200.000
+"
+            "📐 200 m² | 🛏️ 4 | 🛁 3 | 🚗 2
+"
+            "🔗 https://mettryc.com/p/1001
+
+"
+            "¿Quieres agendar una visita o prefieres preguntarme algo sobre alguna de estas propiedades?"
         )
+
 
     def resolver_propiedad_contexto(self, state):
         self.events.append("resolve_property")
@@ -178,7 +227,25 @@ class FakeLegacy:
             "id": code or "1001",
             "titulo": "Casa en Mañongo",
             "descripcion": "Casa de prueba.",
+            "activa": True,
         }
+
+    async def mostrar_inmueble_especifico(self, state, code):
+        self.events.append("detail_format")
+        state["propiedad_interes"] = {
+            "id": code,
+            "titulo": "Casa en Mañongo",
+            "precio_venta": 200000,
+            "area": 200,
+            "habitaciones": 4,
+            "banos": 3,
+            "garajes": 2,
+        }
+        state["ultimo_lote"] = [code]
+        state["propiedad_activa_id"] = code
+        return "*Casa en Mañongo*
+💰 $200.000
+🔗 https://mettryc.com/p/1001"
 
     async def atender_solicitud_captador(self, state, posicion=None, codigo=None):
         self.events.append("captador")
@@ -239,8 +306,18 @@ async def main():
         sender,
         "Hola, busco una casa en Mañongo para comprar hasta 250 mil.",
     )
-    assert "revisé" in response.lower()
+    assert "*Opción 1: Casa en Mañongo*" in response
+    assert "💰 $200.000" in response
+    assert "🔗 https://mettryc.com/p/1001" in response
     assert "search" in legacy.events
+
+    colleague_sender = "whatsapp:+584120000002"
+    response = await engine.process(
+        colleague_sender,
+        "Hola, soy corredor. Busco una casa en Mañongo para mi cliente, en venta hasta 250 mil.",
+    )
+    assert "*Captador:* Ana Ejemplo" in response
+    assert "https://wa.me/584120000001" in response
 
     response = await engine.process(
         sender,
@@ -272,7 +349,8 @@ async def main():
     assert len(state["historial"]) == 10
 
     print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
-    print("Búsqueda natural: OK")
+    print("Búsqueda natural + ficha cliente: OK")
+    print("Ficha para colega + captador: OK")
     print("Cambio de tema casual: OK")
     print("Regreso al contexto de propiedad: OK")
     print("Solicitud humana + aviso administrativo: OK")
