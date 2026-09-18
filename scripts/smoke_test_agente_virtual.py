@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -176,6 +177,10 @@ class FakeLegacy:
 
     def detalle_propiedad_para_ia(self, prop):
         return deepcopy(prop)
+
+    def extraer_codigo_mercadolibre(self, message):
+        match = re.search(r"https?://\\S+?(\\d+)-+_JM\\b", message or "", re.IGNORECASE)
+        return match.group(1) if match else None
 
     def detectar_rol_explicito(self, message):
         text = message.strip().lower()
@@ -372,6 +377,21 @@ async def main():
     assert legacy.states[client_sender]["filtros"]["zona"] == "El Trigal"
     assert legacy.events.count("search") == 1
 
+    portal_sender = "whatsapp:+584120000003"
+    response = await engine.process(
+        portal_sender,
+        "Hola, tengo algunas preguntas sobre tu publicación en Mercado Libre: "
+        "https://inmueble.mercadolibre.com.ve/MLV-779448427-anexo-en-alquiler-urb-prebo-aa-9464257-_JM",
+    )
+    assert "disponible" in response.lower()
+    assert "para ti o para un cliente" not in response.lower()
+    assert legacy.states[portal_sender]["propiedad_interes"]["id"] == "9464257"
+    assert legacy.states[portal_sender]["consulta_anuncio_pendiente"] is True
+
+    response = await engine.process(portal_sender, "Sí, quiero más información.")
+    assert "*Casa en Mañongo*" in response
+    assert "detail_format" in legacy.events
+
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(
         colleague_sender,
@@ -438,6 +458,7 @@ async def main():
     print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
     print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
+    print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
     print("Información no disponible + aviso administrativo: OK")
 
 
