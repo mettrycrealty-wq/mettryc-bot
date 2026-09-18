@@ -181,52 +181,25 @@ class LegacyMettrycBridge:
     async def search(self, state: dict) -> BusinessActionResult:
         legacy = self.load()
 
-        cantidad = (
-            5
-            if state.get("rol") == "colega_inmobiliario"
-            else getattr(legacy, "MAX_PROPIEDADES_POR_LOTE", 3)
-        )
+        # La búsqueda continúa delegándose COMPLETAMENTE al chatbot legacy.
+        # Así se conservan sus reglas de complementariedad, exclusiones,
+        # diagnóstico de cero resultados y, especialmente, el formato de
+        # fichas diferente para clientes y colegas.
+        formatted = await legacy.mostrar_propiedades(state)
 
-        propiedades, motivo = legacy.buscar_mejores_propiedades(
-            state,
-            cantidad=cantidad,
-        )
-
-        if not propiedades:
-            return BusinessActionResult(
-                ok=False,
-                name="buscar_propiedades",
-                data={"count": 0, "reason": motivo},
-                message=(
-                    "No encontré coincidencias con los criterios actuales "
-                    "en el inventario disponible."
-                ),
-            )
-
-        ids = [
-            str(item.get("id"))
-            for item in propiedades
-            if item.get("id")
+        property_ids = [
+            str(property_id)
+            for property_id in state.get("ultimo_lote", [])
+            if property_id
         ]
 
-        enviados = state.setdefault("propiedades_enviadas", [])
-        for property_id in ids:
-            if property_id not in enviados:
-                enviados.append(property_id)
-
-        state["ultimo_lote"] = ids
-        state["propiedad_activa_id"] = ids[0] if len(ids) == 1 else None
-        state["propiedad_interes"] = (
-            deepcopy(propiedades[0]) if len(propiedades) == 1 else None
-        )
-        state["objetivo"] = "evaluar_resultados"
-        state["estado_conversacion"] = "propiedades_mostradas"
-        state["pregunta_pendiente"] = None
-
-        safe_properties = [
-            legacy.detalle_propiedad_para_ia(item)
-            for item in propiedades
-        ]
+        safe_properties = []
+        for property_id in property_ids:
+            property_item = legacy.buscar_por_codigo(property_id)
+            if property_item:
+                safe_properties.append(
+                    legacy.detalle_propiedad_para_ia(property_item)
+                )
 
         return BusinessActionResult(
             ok=True,
@@ -234,12 +207,14 @@ class LegacyMettrycBridge:
             data={
                 "properties": safe_properties,
                 "count": len(safe_properties),
-                "reason": motivo,
+                "formatted_legacy": True,
+                "legacy_state": {
+                    "rol": state.get("rol"),
+                    "estado_conversacion": state.get("estado_conversacion"),
+                    "pregunta_pendiente": state.get("pregunta_pendiente"),
+                },
             },
-            message=(
-                str(len(safe_properties))
-                + " propiedades encontradas en el inventario real."
-            ),
+            message=formatted or "",
         )
 
     async def detail(
@@ -252,6 +227,8 @@ class LegacyMettrycBridge:
         legacy = self.load()
         property_item = None
 
+        # Primero resolvemos la referencia para poder entregar el mismo
+        # formato de ficha específica que usaba el chatbot antiguo.
         if code:
             property_item = await legacy.consultar_detalle_propiedad_wasi(
                 str(code)
@@ -275,22 +252,30 @@ class LegacyMettrycBridge:
             )
 
         property_id = str(property_item.get("id") or "")
+        if not property_id:
+            return BusinessActionResult(
+                ok=False,
+                name="detalle_propiedad",
+                message="No pude identificar el código de la propiedad.",
+            )
 
-        state["propiedad_interes"] = deepcopy(property_item)
-        state["propiedad_activa_id"] = property_id
-        state["ultima_propiedad_consultada_id"] = property_id
+        formatted = await legacy.mostrar_inmueble_especifico(
+            state,
+            property_id,
+        )
+
+        # mostrar_inmueble_especifico es la fuente de verdad del estado y del
+        # formato específico. Refrescamos el objeto final desde el contexto.
+        final_property = state.get("propiedad_interes") or property_item
 
         return BusinessActionResult(
             ok=True,
             name="detalle_propiedad",
             data={
-                "property": legacy.detalle_propiedad_para_ia(property_item)
+                "property": legacy.detalle_propiedad_para_ia(final_property),
+                "formatted_legacy": True,
             },
-            message=(
-                "Detalle real del inmueble "
-                + property_id
-                + " recuperado."
-            ),
+            message=formatted or "",
         )
 
     async def captador(
