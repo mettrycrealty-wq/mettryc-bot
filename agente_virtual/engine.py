@@ -522,12 +522,19 @@ class AgenteVirtualEngine:
             "captura_contacto_colega",
         }
 
+        pending_question = state.get("pregunta_pendiente")
+        blocking_pending = pending_question in {
+            "confirmar_rol",
+            "confirmar_ciudad_zona",
+            "ofrecer_asesor",
+        }
+
         if (
             signal == "alta_intencion"
             and property_in_context
             and not already_assigned
             and not transactional_flow
-            and not state.get("pregunta_pendiente")
+            and not blocking_pending
         ):
             state["pregunta_pendiente"] = "ofrecer_asesor"
             state["oferta_asesor_pendiente"] = True
