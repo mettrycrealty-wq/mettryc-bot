@@ -146,6 +146,21 @@ class AgenteVirtualEngine:
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
 
+        # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
+        # decida si debe procesar los datos o no. El motor legacy es la
+        # fuente de verdad para captura, confirmación, asignación y aviso.
+        lead_result = await self._process_lead_flow_deterministic(
+            text,
+            state,
+        )
+        if lead_result is not None:
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                lead_result,
+            )
+
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
         # resolverse antes de la conversación normal: no corresponde pedir rol,
@@ -853,6 +868,74 @@ class AgenteVirtualEngine:
         if offer.lower() in clean.lower():
             return clean
         return f"{clean}\\n\\n{offer}" if clean else offer
+
+    async def _process_lead_flow_deterministic(
+        self,
+        text: str,
+        state: dict,
+    ) -> str | None:
+        """Ejecuta el flujo de lead sin depender de la clasificación del LLM."""
+        legacy = self.bridge.load()
+
+        if state.get("lead_confirmacion_pendiente"):
+            if legacy.es_respuesta_afirmativa(text):
+                result = await self.bridge.complete_lead(state)
+                return result.message
+
+            if legacy.es_respuesta_negativa(text):
+                state["lead_confirmacion_pendiente"] = False
+                state["lead_confirmado"] = False
+                legacy.actualizar_lead_desde_mensaje(state, text)
+                return (
+                    "Entendido. No enviaré esos datos todavía. "
+                    "Indícame qué dato deseas corregir y lo actualizamos."
+                )
+
+            # Una corrección de datos durante la confirmación vuelve a pasar
+            # directamente por el flujo legacy, no por la IA conversacional.
+            if self._looks_like_data_turn_without_analysis(legacy, text):
+                result = await self.bridge.capture_lead(state, text)
+                return result.message
+
+            return (
+                "Estoy revisando los datos que registré. "
+                "¿Están correctos o deseas corregir alguno?"
+            )
+
+        if state.get("objetivo") == "captura_lead":
+            if self._looks_like_data_turn_without_analysis(legacy, text):
+                result = await self.bridge.capture_lead(state, text)
+                return result.message
+
+        return None
+
+
+    @staticmethod
+    def _looks_like_data_turn_without_analysis(
+        legacy: Any,
+        text: str,
+    ) -> bool:
+        """Detecta datos de lead sin depender de la clasificación del modelo."""
+        if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
+            return True
+
+        normalized = legacy.normalizar_texto(text)
+        return any(
+            marker in normalized
+            for marker in (
+                "me llamo",
+                "mi nombre es",
+                "soy ",
+                "mi whatsapp",
+                "mi telefono",
+                "mi teléfono",
+                "mismo numero",
+                "numero del chat",
+                "numero actual",
+                "este numero",
+            )
+        )
+
 
     async def _process_pending_transaction(
         self,
