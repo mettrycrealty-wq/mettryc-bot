@@ -46,6 +46,14 @@ class FakeRouter:
                 max_budget=250000 if "250" in text else None,
             )
 
+        if "me interesa" in text or "me encanta" in text or "quiero comprarla" in text:
+            return TurnAnalysis(
+                role="cliente",
+                intent="pregunta_propiedad",
+                sales_signal="alta_intencion",
+                sales_next_step="asesor",
+            )
+
         if "precio" in text or (
             "propiedad" in text and ("detalle" in text or "esa" in text)
         ):
@@ -386,6 +394,27 @@ async def main():
     assert "detail_format" not in legacy.events
     assert "Perfecto" in response or "$" in response
 
+    sales_sender = "whatsapp:+584120000003"
+    response = await engine.process(
+        sales_sender,
+        "Busco una casa en Mañongo para comprar hasta 250 mil.",
+    )
+    assert "para ti o para un cliente" in response.lower()
+
+    response = await engine.process(sales_sender, "Para mí")
+    assert "💰 $200.000" in response
+
+    response = await engine.process(
+        sales_sender,
+        "Esta casa me interesa mucho, quiero comprarla.",
+    )
+    assert "quieres que te contacte" in response.lower()
+    assert legacy.states[sales_sender]["pregunta_pendiente"] == "ofrecer_asesor"
+
+    response = await engine.process(sales_sender, "Sí")
+    assert "human" in legacy.events
+    assert legacy.states[sales_sender]["objetivo"] == "captura_lead"
+
     response = await engine.process(
         client_sender,
         "Ahora sí, quiero hablar con un asesor.",
@@ -408,6 +437,7 @@ async def main():
     print("Cambio de tema casual: OK")
     print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
+    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
     print("Información no disponible + aviso administrativo: OK")
 
 
