@@ -53,6 +53,14 @@ No borres otros criterios que siguen siendo válidos.
 Identifica códigos de propiedad y referencias como "la segunda", "esa casa",
 "la que acabas de mostrar" cuando el contexto permita resolverlas.
 
+Contexto de ANUNCIOS DE PORTALES:
+- Si el usuario incluye una URL de Mercado Libre que corresponde a un inmueble, el programa ya puede identificar esa propiedad por su código.
+- No conviertas ese mensaje en una búsqueda nueva ni pidas ciudad, zona, presupuesto o tipo de propiedad para identificar el anuncio.
+- No exijas confirmar el rol para contestar si la propiedad del anuncio está activa.
+- Si la persona dice que tiene preguntas sobre la publicación pero no formula todavía una pregunta concreta, basta con confirmar disponibilidad y preguntarle qué dato desea conocer.
+- Si pide más información, detalles o datos de la propiedad, debe mostrarse la ficha de esa propiedad.
+- Los turnos posteriores deben conservar esa propiedad en contexto.
+
 Señales comerciales para CLIENTES:
 - sales_signal="interesado" cuando expresa interés claro pero todavía está explorando.
 - sales_signal="alta_intencion" cuando quiere avanzar, comprar/alquilar, reservar, verla, recibir ayuda de un asesor o demuestra decisión cercana.
@@ -87,6 +95,11 @@ Comportamiento conversacional:
   cuando encaje de forma natural.
 - No menciones que estás clasificando la intención ni que tienes memoria interna.
 
+
+Comportamiento para consultas originadas en portales:
+- Cuando el estado indique que la conversación comenzó desde una publicación de Mercado Libre, responde primero resolviendo la consulta concreta del anuncio.
+- No obligues al usuario a pasar por un flujo de búsqueda para obtener información de la propiedad enlazada.
+- Una vez identificada la propiedad, conserva el contexto y continúa naturalmente con sus preguntas.
 
 Estrategia comercial para CLIENTES:
 - Cuando role=cliente, actúa como asesor comercial consultivo, no como vendedor agresivo.
@@ -147,6 +160,59 @@ class AgenteVirtualEngine:
         legacy = self.bridge.load()
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
+
+        # ANUNCIOS DE MERCADO LIBRE / PORTALES
+        # Un enlace de portal trae una referencia concreta del inmueble. Debe
+        # resolverse antes de la conversación normal: no corresponde pedir rol,
+        # ubicación, presupuesto ni otros criterios de búsqueda para identificarlo.
+        portal_code = legacy.extraer_codigo_mercadolibre(text)
+        if portal_code:
+            portal_result = await self.bridge.detail(
+                state,
+                code=portal_code,
+                format_legacy=False,
+            )
+
+            if portal_result.ok and portal_result.data:
+                portal_property = portal_result.data.get("property") or {}
+                if portal_property:
+                    state["origen_anuncio"] = "mercadolibre"
+                    state["consulta_anuncio_pendiente"] = True
+                    state["estado_conversacion"] = "consulta_anuncio_portal"
+
+                    # Si el primer mensaje ya pide precio, detalles o información,
+                    # entregamos la ficha completa de inmediato. Si solo remite al
+                    # anuncio y dice que tiene preguntas, primero confirmamos
+                    # disponibilidad y dejamos la propiedad lista para la siguiente
+                    # pregunta.
+                    if self._requests_more_property_info(text):
+                        ficha = await self.bridge.detail(
+                            state,
+                            code=portal_code,
+                            format_legacy=True,
+                        )
+                        return await self._finalize(
+                            sender,
+                            state,
+                            text,
+                            ficha.message or "",
+                        )
+
+                    active = portal_property.get("activa", True)
+                    if active:
+                        response = (
+                            "Sí, la propiedad de esa publicación de Mercado Libre "
+                            "está disponible actualmente en nuestro inventario. "
+                            "¿Qué información te gustaría conocer?"
+                        )
+                    else:
+                        response = (
+                            "La propiedad de esa publicación ya no aparece activa "
+                            "en nuestro inventario. Si quieres, puedo ayudarte a "
+                            "buscar una alternativa similar."
+                        )
+
+                    return await self._finalize(sender, state, text, response)
 
         # La geografía se resuelve de forma determinista usando el catálogo
         # oficial + las variantes del inventario. Nunca dejamos que el modelo
@@ -480,6 +546,30 @@ class AgenteVirtualEngine:
 
         return await self._finalize(sender, state, text, response)
 
+
+    @staticmethod
+    def _requests_more_property_info(text: str) -> bool:
+        """Detecta cuando un mensaje de anuncio pide información inmediata."""
+        normalized = str(text or "").lower()
+        return any(
+            phrase in normalized
+            for phrase in (
+                "mas informacion",
+                "más información",
+                "mas info",
+                "más info",
+                "informacion de la propiedad",
+                "información de la propiedad",
+                "detalles de la propiedad",
+                "precio de la propiedad",
+                "cual es el precio",
+                "cuál es el precio",
+                "cuanto cuesta",
+                "cuánto cuesta",
+                "caracteristicas de la propiedad",
+                "características de la propiedad",
+            )
+        )
 
     def _update_sales_state(
         self,
