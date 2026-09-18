@@ -121,17 +121,95 @@ class AgenteVirtualEngine:
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
 
+        # El rol no se debe adivinar. Primero respetamos una confirmación
+        # explícita del usuario y, si existe una acción pendiente de rol,
+        # la retomamos después de esa confirmación.
+        pending_role_action = None
+        explicit_role = legacy.detectar_rol_explicito(text)
+        if state.get("pregunta_pendiente") == "confirmar_rol":
+            pending_role_action = (
+                (state.get("accion_pendiente_rol") or {}).get("tipo")
+            )
+            respuesta_rol = legacy.interpretar_respuesta_rol(text, state)
+            if respuesta_rol:
+                explicit_role = respuesta_rol
+
         analysis = await self._analyze_turn(
             text,
             self.bridge.conversation_context(state),
             legacy.construir_contexto_conocimiento(),
         )
 
+        if explicit_role:
+            analysis = analysis.model_copy(update={"role": explicit_role})
+
+            if pending_role_action:
+                pending_intents = {
+                    "buscar_propiedades": "busqueda_propiedad",
+                    "mostrar_mas_propiedades": "mas_propiedades",
+                    "seleccionar_propiedad": "seleccion_propiedad",
+                    "consultar_propiedad": "detalle_propiedad",
+                    "solicitar_captador": "captador",
+                    "agendar_visita": "visita",
+                    "hablar_con_humano": "atencion_humana",
+                }
+                pending_intent = pending_intents.get(pending_role_action)
+                if pending_intent:
+                    analysis = analysis.model_copy(
+                        update={"intent": pending_intent}
+                    )
+                state["accion_pendiente_rol"] = None
+                state["pregunta_pendiente"] = None
+
         transaction_result = await self._process_pending_transaction(
             text, state, analysis
         )
         if transaction_result is not None:
             return await self._finalize(sender, state, text, transaction_result)
+
+        role_required_intents = {
+            "busqueda_propiedad",
+            "mas_propiedades",
+            "detalle_propiedad",
+            "pregunta_propiedad",
+            "seleccion_propiedad",
+            "captador",
+            "visita",
+            "atencion_humana",
+        }
+        if (
+            not legacy.rol_esta_confirmado(state)
+            and not explicit_role
+            and analysis.intent in role_required_intents
+        ):
+            self.bridge.apply_analysis(
+                state,
+                analysis.model_copy(update={"role": "desconocido"}),
+                text,
+            )
+
+            if analysis.intent in {"busqueda_propiedad", "mas_propiedades"}:
+                pending_type = "buscar_propiedades"
+            elif analysis.intent == "captador":
+                pending_type = "solicitar_captador"
+            elif analysis.intent == "visita":
+                pending_type = "agendar_visita"
+            elif analysis.intent == "atencion_humana":
+                pending_type = "hablar_con_humano"
+            elif analysis.intent == "seleccion_propiedad":
+                pending_type = "seleccionar_propiedad"
+            else:
+                pending_type = "consultar_propiedad"
+
+            state["accion_pendiente_rol"] = {"tipo": pending_type}
+            state["pregunta_pendiente"] = "confirmar_rol"
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                legacy.mensaje_confirmacion_rol(),
+            )
 
         self.bridge.apply_analysis(state, analysis, text)
 
@@ -179,6 +257,7 @@ class AgenteVirtualEngine:
                     state,
                     code=analysis.property_code,
                     position=analysis.property_position,
+                    format_legacy=analysis.intent != "pregunta_propiedad",
                 )
             )
 
