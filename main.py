@@ -389,19 +389,51 @@ def _recoger_observaciones_privadas(propiedad: dict) -> str:
 
 def extraer_asesor_desde_observaciones(propiedad: dict) -> dict:
     texto = _recoger_observaciones_privadas(propiedad)
-    if not texto: return {"nombre":"","telefono":"","fuente":None}
+    if not texto:
+        return {"nombre": "", "telefono": "", "fuente": None}
+
     bloque = texto
-    marcador = re.search(r"asesor\s+encargado\s*(?:---)?\s*:?(.*)", texto, re.IGNORECASE|re.DOTALL)
-    if marcador: bloque = marcador.group(1).strip()
-    nm = re.search(r"(?:nombre|asesor|asesora)\s*:\s*([^\n\\r<]+)", bloque, re.IGNORECASE)
-    tm = re.search(r"(?:tel[eé]fono|telefono|whatsapp|celular|m[oó]vil)\s*:\s*(\\+?\\d[\\d\s().-]{7,}\\d)", bloque, re.IGNORECASE)
+    marcador = re.search(
+        r"asesor\s+encargado\s*(?:---)?\s*:?(.*)",
+        texto,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if marcador:
+        bloque = marcador.group(1).strip()
+
+    nombre_match = re.search(
+        r"(?:nombre|asesor|asesora)\s*:\s*([^\n\r<]+)",
+        bloque,
+        re.IGNORECASE,
+    )
+    telefono_match = re.search(
+        r"(?:tel[eé]fono|telefono|whatsapp|celular|m[oó]vil)\s*:\s*(\+?\d[\d\s().-]{7,}\d)",
+        bloque,
+        re.IGNORECASE,
+    )
+
     nombre = ""
-    if nm:
-        candidato = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ .-]", " ", nm.group(1))
+    if nombre_match:
+        candidato = re.sub(
+            r"[^A-Za-zÀ-ÖØ-öø-ÿ .-]",
+            " ",
+            nombre_match.group(1),
+        )
         candidato = re.sub(r"\s+", " ", candidato).strip()
-        if nombre_valido(candidato): nombre = normalizar_nombre(candidato)
-    telefono = normalizar_telefono(tm.group(1)) if tm else None
-    return {"nombre":nombre,"telefono":telefono or "","fuente":"observaciones" if nombre or telefono else None}
+        if nombre_valido(candidato):
+            nombre = normalizar_nombre(candidato)
+
+    telefono = (
+        normalizar_telefono(telefono_match.group(1))
+        if telefono_match
+        else None
+    )
+
+    return {
+        "nombre": nombre,
+        "telefono": telefono or "",
+        "fuente": "observaciones" if nombre or telefono else None,
+    }
 
 
 def obtener_datos_captador(propiedad: dict) -> dict:
