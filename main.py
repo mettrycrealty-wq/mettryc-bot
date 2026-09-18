@@ -1560,9 +1560,7 @@ def reconstruir_catalogo_geografico() -> None:
         ):
             return
 
-        # Guardamos y reutilizamos el nombre canónico de la ciudad. Así,
-        # "Valencia", "valencia" o "VALENCIA" nunca crean ciudades distintas
-        # dentro de una misma zona.
+        # Nombre canónico: mayúsculas/minúsculas nunca crean ciudades distintas.
         ciudad_canonica = ciudades_norm.setdefault(ciudad_norm, ciudad_texto)
         zonas_norm.setdefault(zona_norm, set()).add(zona_texto)
         zonas_por_ciudad.setdefault(zona_norm, set()).add(ciudad_canonica)
@@ -1619,8 +1617,7 @@ def obtener_ciudades_para_zona(zona: Optional[str]) -> Set[str]:
 
     ciudades_raw = set(catalogo_geografico["zonas_por_ciudad"].get(zona_norm, set()))
 
-    # Segunda defensa: incluso si una fuente antigua dejó variantes de
-    # mayúsculas/minúsculas, aquí las unificamos por la clave normalizada.
+    # Defensa adicional para entradas antiguas con distinta capitalización.
     ciudades_por_normalizada: Dict[str, str] = {}
     for ciudad in ciudades_raw:
         ciudad_texto = str(ciudad or "").strip()
@@ -5982,3 +5979,179 @@ async def webhook_agente_virtual(
 
     try:
         data = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="JSON inválido.") from exc
+
+    payload = data.get("query") if isinstance(data.get("query"), dict) else data
+    sender = str(payload.get("sender", "")).strip()
+    mensaje = str(
+        payload.get("message")
+        or payload.get("text")
+        or payload.get("body")
+        or ""
+    ).strip()
+
+    message_id = str(
+        payload.get("message_id")
+        or payload.get("messageId")
+        or payload.get("message-id")
+        or payload.get("wamid")
+        or payload.get("id")
+        or ""
+    ).strip()
+
+    if not sender:
+        raise HTTPException(status_code=422, detail="Falta sender.")
+    if not mensaje:
+        return {"replies": []}
+
+    if message_id:
+        if mensaje_es_duplicado(sender, message_id):
+            return {"replies": []}
+    elif mensaje_sin_id_es_duplicado(sender, mensaje):
+        logger.info(
+            "Mensaje duplicado sin message_id ignorado sender=%s",
+            sender[-4:],
+        )
+        return {"replies": []}
+
+    if sender not in locks_usuarios:
+        locks_usuarios[sender] = asyncio.Lock()
+
+    try:
+        if not inventory_cache.get("inventario"):
+            await actualizar_inventario(force=True)
+        elif inventario_necesita_actualizacion():
+            asyncio.create_task(actualizar_inventario())
+
+        if sheets_necesita_actualizacion():
+            asyncio.create_task(sincronizar_google_sheet())
+
+        global agente_virtual_engine
+        if agente_virtual_engine is None:
+            from agente_virtual.engine import AgenteVirtualEngine
+            agente_virtual_engine = AgenteVirtualEngine()
+
+        async with locks_usuarios[sender]:
+            respuesta = await agente_virtual_engine.process(sender, mensaje)
+
+        return {
+            "replies": [{"message": str(respuesta).replace("**", "*")}]
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "Error webhook-agente-virtual sender=%s tipo=%s",
+            sender[-4:],
+            type(exc).__name__,
+        )
+        return {
+            "replies": [
+                {
+                    "message": (
+                        "Disculpa, tuve un inconveniente procesando "
+                        "tu mensaje. ¿Puedes intentarlo nuevamente?"
+                    )
+                }
+            ]
+        }
+
+
+@app.post("/webhook")
+async def webhook(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    validar_api_key(x_api_key)
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON inválido.")
+
+    payload = data.get("query") if isinstance(data.get("query"), dict) else data
+
+    sender = str(payload.get("sender", "")).strip()
+    mensaje = str(payload.get("message", "")).strip()
+    message_id = str(
+        payload.get("message_id")
+        or payload.get("messageId")
+        or payload.get("message-id")
+        or payload.get("wamid")
+        or payload.get("id")
+        or ""
+    ).strip()
+
+    if not sender:
+        raise HTTPException(status_code=422, detail="Falta sender.")
+
+    # FIX #11: cuando llega un mensaje multimedia (imagen, audio,
+    # documento) sin texto, en vez de ignorarlo silenciosamente se
+    # convierte en un marcador interno para que el bot responda
+    # pidiendo el código o el detalle por escrito.
+    if not mensaje:
+        claves_adjunto = [
+            "media_url", "mediaUrl", "image", "images", "attachment",
+            "attachments", "file", "document", "video", "audio", "sticker",
+        ]
+        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
+
+        if not tiene_adjunto:
+            return {"replies": []}
+
+        mensaje = MARCADOR_MULTIMEDIA
+
+    if message_id:
+        if mensaje_es_duplicado(sender, message_id):
+            logger.info(
+                "Mensaje duplicado ignorado sender=%s id=%s",
+                sender[-4:], message_id[-12:],
+            )
+            return {"replies": []}
+    elif mensaje_sin_id_es_duplicado(sender, mensaje):
+        logger.info(
+            "Mensaje duplicado sin message_id ignorado sender=%s",
+            sender[-4:],
+        )
+        return {"replies": []}
+
+    if sender not in locks_usuarios:
+        locks_usuarios[sender] = asyncio.Lock()
+
+    try:
+        if not inventory_cache.get("inventario"):
+            await actualizar_inventario(force=True)
+        elif inventario_necesita_actualizacion():
+            asyncio.create_task(actualizar_inventario())
+
+        if sheets_necesita_actualizacion():
+            asyncio.create_task(sincronizar_google_sheet())
+
+    except Exception as exc:
+        logger.error(
+            "Error preparando datos tipo=%s detalle=%s",
+            type(exc).__name__, str(exc)[:160],
+        )
+
+    try:
+        async with locks_usuarios[sender]:
+            respuesta = await procesar_mensaje(sender, mensaje)
+
+        if not respuesta:
+            return {"replies": []}
+
+        return {"replies": [{"message": str(respuesta).replace("**", "*")}]}
+
+    except Exception as exc:
+        logger.exception("Error webhook sender=%s tipo=%s", sender[-4:], type(exc).__name__)
+
+        return {
+            "replies": [
+                {
+                    "message": (
+                        "Disculpa, tuve un inconveniente procesando "
+                        "tu mensaje. ¿Puedes intentarlo nuevamente?"
+                    )
+                }
+            ]
+        }
