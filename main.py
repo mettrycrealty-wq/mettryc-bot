@@ -80,6 +80,16 @@ TELEGRAM_ADMIN_IDS = [
     if valor.strip()
 ]
 
+# Agente Virtual: capa conversacional nueva sobre el motor legacy.
+# En esta rama de pruebas se puede activar desde el entorno sin modificar la
+# lógica inmobiliaria existente. El valor por defecto permanece desactivado
+# para que main siga siendo seguro si la rama se despliega por accidente.
+AGENTE_VIRTUAL_ACTIVO = (
+    os.getenv("AGENTE_VIRTUAL_ACTIVO", "false").lower()
+    in {"1", "true", "yes", "si", "sí"}
+)
+agente_virtual_engine = None
+
 INTERVALO_ACTUALIZACION_SHEETS = timedelta(
     minutes=int(os.getenv("INTERVALO_ACTUALIZACION_SHEETS_MINUTOS", "60"))
 )
@@ -5278,6 +5288,30 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     texto = str(mensaje or "").strip()
     texto_norm = normalizar_texto(texto)
 
+    # El agente virtual sustituye solo la capa conversacional. WASI, Sheets,
+    # captadores, agentes, leads, visitas y notificaciones siguen en main.py.
+    if (
+        AGENTE_VIRTUAL_ACTIVO
+        and texto != MARCADOR_MULTIMEDIA
+        and texto_norm != "/reiniciar"
+    ):
+        global agente_virtual_engine
+
+        if agente_virtual_engine is None:
+            from agente_virtual.engine import AgenteVirtualEngine
+            agente_virtual_engine = AgenteVirtualEngine()
+
+        try:
+            return await agente_virtual_engine.process(sender, texto)
+        except Exception as exc:
+            logger.exception(
+                "Agente Virtual falló; se activa fallback legacy sender=%s tipo=%s",
+                sender[-4:],
+                type(exc).__name__,
+            )
+            # Fallback inmediato: una incidencia del modelo no debe dejar
+            # al usuario sin respuesta. El chatbot antiguo permanece intacto.
+
     async def finalizar(respuesta: str) -> str:
         agregar_historial(estado, "user", texto)
         if respuesta:
@@ -5859,7 +5893,89 @@ async def admin_status(x_api_key: Optional[str] = Header(default=None, alias="x-
         "openrouter_configurado": bool(OPENROUTER_API_KEY),
         "telegram_configurado": bool(TELEGRAM_BOT_TOKEN),
         "wasi_configurado": bool(WASI_TOKEN and WASI_COMPANY_ID),
+        "agente_virtual_activo": AGENTE_VIRTUAL_ACTIVO,
     }
+
+
+@app.post("/webhook-agente-virtual")
+async def webhook_agente_virtual(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    """Endpoint de pruebas: fuerza el agente virtual sin cambiar /webhook."""
+    validar_api_key(x_api_key)
+
+    try:
+        data = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="JSON inválido.") from exc
+
+    payload = data.get("query") if isinstance(data.get("query"), dict) else data
+    sender = str(payload.get("sender", "")).strip()
+    mensaje = str(
+        payload.get("message")
+        or payload.get("text")
+        or payload.get("body")
+        or ""
+    ).strip()
+
+    message_id = str(
+        payload.get("message_id")
+        or payload.get("messageId")
+        or payload.get("message-id")
+        or payload.get("wamid")
+        or payload.get("id")
+        or ""
+    ).strip()
+
+    if not sender:
+        raise HTTPException(status_code=422, detail="Falta sender.")
+    if not mensaje:
+        return {"replies": []}
+
+    if message_id and mensaje_es_duplicado(sender, message_id):
+        return {"replies": []}
+
+    if sender not in locks_usuarios:
+        locks_usuarios[sender] = asyncio.Lock()
+
+    try:
+        if not inventory_cache.get("inventario"):
+            await actualizar_inventario(force=True)
+        elif inventario_necesita_actualizacion():
+            asyncio.create_task(actualizar_inventario())
+
+        if sheets_necesita_actualizacion():
+            asyncio.create_task(sincronizar_google_sheet())
+
+        global agente_virtual_engine
+        if agente_virtual_engine is None:
+            from agente_virtual.engine import AgenteVirtualEngine
+            agente_virtual_engine = AgenteVirtualEngine()
+
+        async with locks_usuarios[sender]:
+            respuesta = await agente_virtual_engine.process(sender, mensaje)
+
+        return {
+            "replies": [{"message": str(respuesta).replace("**", "*")}]
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "Error webhook-agente-virtual sender=%s tipo=%s",
+            sender[-4:],
+            type(exc).__name__,
+        )
+        return {
+            "replies": [
+                {
+                    "message": (
+                        "Disculpa, tuve un inconveniente procesando "
+                        "tu mensaje. ¿Puedes intentarlo nuevamente?"
+                    )
+                }
+            ]
+        }
 
 
 @app.post("/webhook")
