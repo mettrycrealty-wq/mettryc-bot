@@ -121,6 +121,19 @@ class AgenteVirtualEngine:
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
 
+        # La geografía se resuelve de forma determinista usando el catálogo
+        # oficial + las variantes del inventario. Nunca dejamos que el modelo
+        # elija una ciudad cuando una zona existe en varias ciudades.
+        geo = legacy.detectar_zona_ciudad(text)
+        geo_zone = geo.get("zona")
+        geo_city = geo.get("ciudad")
+        geo_ambiguous = bool(geo.get("ambiguedad")) and not geo_city
+        geo_options = [
+            str(item).strip()
+            for item in (geo.get("ciudades_posibles") or [])
+            if str(item).strip()
+        ]
+
         # El rol no se debe adivinar. Primero respetamos una confirmación
         # explícita del usuario y, si existe una acción pendiente de rol,
         # la retomamos después de esa confirmación.
@@ -139,6 +152,14 @@ class AgenteVirtualEngine:
             self.bridge.conversation_context(state),
             legacy.construir_contexto_conocimiento(),
         )
+
+        if geo_zone:
+            analysis = analysis.model_copy(
+                update={
+                    "zone": geo_zone,
+                    "city": geo_city if geo_city else None,
+                }
+            )
 
         if explicit_role:
             analysis = analysis.model_copy(update={"role": explicit_role})
@@ -167,6 +188,81 @@ class AgenteVirtualEngine:
             analysis = analysis.model_copy(
                 update={"role": state.get("rol") or "desconocido"}
             )
+
+        # Si una búsqueda quedó pendiente por una zona ambigua, la respuesta
+        # del usuario con la ciudad resuelve esa ambigüedad y recién entonces
+        # se ejecuta la búsqueda. Una respuesta como "Valencia" no necesita
+        # volver a describir todos los criterios.
+        pending_geo = state.get("ambiguedad_geografica")
+        if pending_geo:
+            pending_cities = {
+                legacy.normalizar_texto(item)
+                for item in (pending_geo.get("ciudades") or [])
+            }
+
+            requested_city = geo_city or (
+                legacy.detectar_ciudad_canonica(text)
+                if hasattr(legacy, "detectar_ciudad_canonica")
+                else None
+            )
+
+            if requested_city and legacy.normalizar_texto(requested_city) in pending_cities:
+                state.setdefault("filtros", {})["zona"] = pending_geo.get("zona")
+                state["filtros"]["ciudad"] = requested_city
+                state["ambiguedad_geografica"] = None
+
+                pending_intent = pending_geo.get("intent") or "busqueda_propiedad"
+                analysis = analysis.model_copy(
+                    update={
+                        "intent": pending_intent,
+                        "zone": pending_geo.get("zona"),
+                        "city": requested_city,
+                    }
+                )
+            elif state.get("pregunta_pendiente") == "confirmar_ciudad_zona":
+                opciones_texto = " y ".join(pending_geo.get("ciudades") or [])
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        f"La zona {pending_geo.get('zona')} la tenemos en "
+                        f"{opciones_texto}. ¿En cuál de esas ciudades quieres "
+                        "que busque la propiedad?"
+                    ),
+                )
+
+        # Una zona con más de una ciudad se pregunta antes de buscar.
+        if (
+            geo_ambiguous
+            and analysis.intent in {
+                "busqueda_propiedad",
+                "mas_propiedades",
+            }
+        ):
+            opciones = geo_options or sorted(
+                legacy.obtener_ciudades_para_zona(geo_zone)
+            )
+            if len(opciones) > 1 and legacy.rol_esta_confirmado(state):
+                filtros = state.setdefault("filtros", {})
+                filtros["zona"] = geo_zone
+                filtros["ciudad"] = None
+                state["ambiguedad_geografica"] = {
+                    "zona": geo_zone,
+                    "ciudades": opciones,
+                    "intent": analysis.intent,
+                }
+                state["pregunta_pendiente"] = "confirmar_ciudad_zona"
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        f"La zona {geo_zone} la tenemos en "
+                        f"{' y '.join(opciones)}. ¿En cuál de esas ciudades "
+                        "quieres que busque la propiedad?"
+                    ),
+                )
 
         transaction_result = await self._process_pending_transaction(
             text, state, analysis
@@ -209,6 +305,19 @@ class AgenteVirtualEngine:
                 pending_type = "consultar_propiedad"
 
             state["accion_pendiente_rol"] = {"tipo": pending_type}
+            if (
+                geo_ambiguous
+                and analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
+            ):
+                opciones = geo_options or sorted(
+                    legacy.obtener_ciudades_para_zona(geo_zone)
+                )
+                if len(opciones) > 1:
+                    state["ambiguedad_geografica"] = {
+                        "zona": geo_zone,
+                        "ciudades": opciones,
+                        "intent": analysis.intent,
+                    }
             state["pregunta_pendiente"] = "confirmar_rol"
 
             return await self._finalize(
