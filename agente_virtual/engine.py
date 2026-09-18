@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from .bridge import LegacyMettrycBridge
 from .router import AgentModelRouter
-from .schemas import AgentReply, BusinessActionResult, TurnAnalysis
+from .schemas import BusinessActionResult, TurnAnalysis
 
 
 ANALYSIS_PROMPT = """
@@ -119,21 +119,19 @@ class AgenteVirtualEngine:
 
         legacy = self.bridge.load()
         state = self.bridge.get_state(sender)
-        self.bridge.prepare_data()
-
-        # Las transacciones que ya están en curso se respetan para no romper
-        # asignaciones, capturas de datos o notificaciones del sistema anterior.
-        transaction_result = await self._process_pending_transaction(
-            sender, text, state
-        )
-        if transaction_result is not None:
-            return await self._finalize(sender, state, text, transaction_result)
+        await self.bridge.prepare_data()
 
         analysis = await self._analyze_turn(
             text,
             self.bridge.conversation_context(state),
             legacy.construir_contexto_conocimiento(),
         )
+
+        transaction_result = await self._process_pending_transaction(
+            text, state, analysis
+        )
+        if transaction_result is not None:
+            return await self._finalize(sender, state, text, transaction_result)
 
         self.bridge.apply_analysis(state, analysis, text)
 
@@ -252,35 +250,77 @@ class AgenteVirtualEngine:
 
     async def _process_pending_transaction(
         self,
-        sender: str,
         text: str,
         state: dict,
+        analysis: TurnAnalysis,
     ) -> str | None:
         legacy = self.bridge.load()
 
         if state.get("lead_confirmacion_pendiente"):
-            if legacy.es_respuesta_afirmativa(text):
-                result = await self.bridge.complete_lead(state)
-                return result.message
+            es_confirmacion = (
+                legacy.es_respuesta_afirmativa(text)
+                or legacy.es_respuesta_negativa(text)
+            )
+            if analysis.intent == "captura_datos" or es_confirmacion:
+                if legacy.es_respuesta_afirmativa(text):
+                    result = await self.bridge.complete_lead(state)
+                    return result.message
 
-            if legacy.es_respuesta_negativa(text):
-                state["lead_confirmacion_pendiente"] = False
-                state["lead_confirmado"] = False
-                legacy.actualizar_lead_desde_mensaje(state, text)
-                return (
-                    "Entendido. No enviaré esos datos todavía. "
-                    "Indícame qué dato deseas corregir y lo actualizamos."
-                )
+                if legacy.es_respuesta_negativa(text):
+                    state["lead_confirmacion_pendiente"] = False
+                    state["lead_confirmado"] = False
+                    legacy.actualizar_lead_desde_mensaje(state, text)
+                    return (
+                        "Entendido. No enviaré esos datos todavía. "
+                        "Indícame qué dato deseas corregir y lo actualizamos."
+                    )
 
-        if state.get("objetivo") == "captura_lead":
+        objetivo = state.get("objetivo")
+
+        if objetivo == "captura_lead" and self._looks_like_data_turn(
+            legacy, text, analysis
+        ):
             result = await self.bridge.capture_lead(state, text)
             return result.message
 
-        if state.get("objetivo") == "captura_contacto_colega":
-            result = await self.bridge.capture_colleague_contact(state, text)
+        if (
+            objetivo == "captura_contacto_colega"
+            and self._looks_like_data_turn(legacy, text, analysis)
+        ):
+            result = await self.bridge.capture_colleague_contact(
+                state, text
+            )
             return result.message
 
         return None
+
+    @staticmethod
+    def _looks_like_data_turn(
+        legacy: Any,
+        text: str,
+        analysis: TurnAnalysis,
+    ) -> bool:
+        if analysis.intent == "captura_datos":
+            return True
+
+        if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
+            return True
+
+        normalized = legacy.normalizar_texto(text)
+        if any(
+            marker in normalized
+            for marker in (
+                "me llamo",
+                "mi nombre es",
+                "soy ",
+                "mi whatsapp",
+                "mi telefono",
+                "mi teléfono",
+            )
+        ):
+            return True
+
+        return False
 
     async def _analyze_turn(
         self,
