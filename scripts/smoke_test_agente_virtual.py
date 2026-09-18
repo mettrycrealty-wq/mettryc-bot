@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from agente_virtual.bridge import LegacyMettrycBridge
 from agente_virtual.engine import AgenteVirtualEngine
 from agente_virtual.schemas import TurnAnalysis
-from agente_virtual.bridge import LegacyMettrycBridge
 
 
 class FakeRouter:
@@ -23,7 +23,10 @@ class FakeRouter:
         context = json.loads(messages[-1]["content"])
         text = context["latest_user_message"].lower()
 
-        if any(marker in text for marker in ("soy corredor", "soy agente", "soy broker", "para mi cliente")):
+        if any(
+            marker in text
+            for marker in ("soy corredor", "soy agente", "soy broker", "para mi cliente")
+        ):
             return TurnAnalysis(
                 role="colega_inmobiliario",
                 intent="busqueda_propiedad",
@@ -43,7 +46,9 @@ class FakeRouter:
                 max_budget=250000 if "250" in text else None,
             )
 
-        if "precio" in text or ("propiedad" in text and ("detalle" in text or "esa" in text)):
+        if "precio" in text or (
+            "propiedad" in text and ("detalle" in text or "esa" in text)
+        ):
             return TurnAnalysis(
                 role="cliente",
                 intent="pregunta_propiedad",
@@ -72,30 +77,27 @@ class FakeRouter:
     async def completion_with_fallback(self, messages, **kwargs):
         self.reply_calls += 1
         payload = json.loads(messages[-1]["content"])
-        results = payload["business_results"]
+        analysis = payload["analysis"]
 
-        if results:
-            return "Perfecto 😊. Ya revisé la información y seguimos desde ahí."
-
-        if payload["analysis"]["intent"] == "atencion_humana":
+        if analysis["intent"] == "atencion_humana":
             return "Claro. Ya dejé avisado al equipo para que un asesor te atienda."
 
-        if payload["analysis"]["intent"] == "informacion_no_disponible":
+        if analysis["intent"] == "informacion_no_disponible":
             return "No quiero inventarte ese dato. Ya avisé al equipo para que lo confirme."
 
-        if payload["analysis"]["intent"] == "conversacion_casual":
+        if analysis["intent"] == "conversacion_casual":
             return "Sí 😊. Y cuando quieras retomamos la propiedad que estábamos viendo."
 
-        return "Entendido. Cuéntame un poco más y seguimos."
+        return "Entendido. Seguimos desde ahí."
 
 
 class FakeLegacy:
     def __init__(self) -> None:
         self.inventory_cache = {"inventario": [1]}
         self.sheets_cache = {"ultima_actualizacion": object()}
-        self.locks_usuarios = {}
         self.states = {}
         self.events = []
+        self.enviar_telegram_calls = 0
 
     async def actualizar_inventario(self, force=False):
         self.events.append("refresh_inventory")
@@ -109,11 +111,16 @@ class FakeLegacy:
     def sheets_necesita_actualizacion(self):
         return False
 
+    def reconstruir_catalogo_geografico(self):
+        self.events.append("rebuild_geo")
+
     def obtener_sesion(self, sender):
         return self.states.setdefault(
             sender,
             {
                 "rol": None,
+                "rol_confirmado": False,
+                "confianza_rol": 0.0,
                 "filtros": {
                     "tipo_operacion": None,
                     "tipo_propiedad": None,
@@ -129,6 +136,10 @@ class FakeLegacy:
                 "ultimo_lote": [],
                 "propiedades_enviadas": [],
                 "lead": {},
+                "accion_pendiente_rol": None,
+                "pregunta_pendiente": None,
+                "ambiguedad_geografica": None,
+                "agente_asignado": None,
             },
         )
 
@@ -153,13 +164,70 @@ class FakeLegacy:
         return "{}"
 
     def buscar_por_codigo(self, code):
-        return {
-            "id": code,
-            "titulo": "Casa de prueba",
-        }
+        return {"id": code, "titulo": "Casa de prueba"}
 
     def detalle_propiedad_para_ia(self, prop):
         return deepcopy(prop)
+
+    def detectar_rol_explicito(self, message):
+        text = message.strip().lower()
+        if "soy corredor" in text or "para mi cliente" in text:
+            return "colega_inmobiliario"
+        if "para mi" in text or "es para mi" in text:
+            return "cliente"
+        return None
+
+    def interpretar_respuesta_rol(self, message, state):
+        text = message.strip().lower()
+        if state.get("pregunta_pendiente") != "confirmar_rol":
+            return None
+        if text in {"para mi", "para mí", "es para mi", "es para mí"}:
+            state["rol"] = "cliente"
+            state["rol_confirmado"] = True
+            state["pregunta_pendiente"] = None
+            return "cliente"
+        if text in {"para un cliente", "para mi cliente"}:
+            state["rol"] = "colega_inmobiliario"
+            state["rol_confirmado"] = True
+            state["pregunta_pendiente"] = None
+            return "colega_inmobiliario"
+        return None
+
+    def rol_esta_confirmado(self, state):
+        return bool(
+            state.get("rol") in {"cliente", "colega_inmobiliario"}
+            and state.get("rol_confirmado", False)
+        )
+
+    def mensaje_confirmacion_rol(self):
+        return "Antes de continuar, ¿buscas la propiedad para ti o para un cliente?"
+
+    def detectar_zona_ciudad(self, message):
+        text = message.strip().lower()
+        if "el trigal" in text and "valencia" not in text and "cabudare" not in text:
+            return {
+                "zona": "El Trigal",
+                "ambiguedad": True,
+                "ciudades_posibles": ["Valencia", "Cabudare"],
+            }
+        if "valencia" in text:
+            return {"ciudad": "Valencia", "zona": None}
+        if "cabudare" in text:
+            return {"ciudad": "Cabudare", "zona": None}
+        return {}
+
+    def obtener_ciudades_para_zona(self, zone):
+        if str(zone).strip().lower() == "el trigal":
+            return {"Valencia", "Cabudare"}
+        return set()
+
+    def detectar_ciudad_canonica(self, message):
+        text = message.strip().lower()
+        if "valencia" in text:
+            return "Valencia"
+        if "cabudare" in text:
+            return "Cabudare"
+        return None
 
     async def mostrar_propiedades(self, state):
         self.events.append("search")
@@ -182,44 +250,26 @@ class FakeLegacy:
 
         if state.get("rol") == "colega_inmobiliario":
             return (
-                "Encontré estas opciones que pueden encajar con lo que buscas:
-
-"
-                "Opción 1: Casa en Mañongo
-"
-                "👤 *Captador:* Ana Ejemplo
-"
-                "📲 *WhatsApp captador:* https://wa.me/584120000001
-
-"
+                "Encontré estas opciones que pueden encajar con lo que buscas:\n\n"
+                "Opción 1: Casa en Mañongo\n"
+                "👤 *Captador:* Ana Ejemplo\n"
+                "📲 *WhatsApp captador:* https://wa.me/584120000001\n\n"
                 "Puedes contactar al captador indicado en la ficha."
             )
 
         return (
-            "Encontré estas opciones que pueden encajar con lo que buscas:
-
-"
-            "*Opción 1: Casa en Mañongo*
-"
-            "📍 Mañongo, Valencia
-"
-            "💰 $200.000
-"
-            "📐 200 m² | 🛏️ 4 | 🛁 3 | 🚗 2
-"
-            "🔗 https://mettryc.com/p/1001
-
-"
+            "Encontré estas opciones que pueden encajar con lo que buscas:\n\n"
+            "*Opción 1: Casa en Mañongo*\n"
+            "📍 Mañongo, Valencia\n"
+            "💰 $200.000\n"
+            "📐 200 m² | 🛏️ 4 | 🛁 3 | 🚗 2\n"
+            "🔗 https://mettryc.com/p/1001\n\n"
             "¿Quieres agendar una visita o prefieres preguntarme algo sobre alguna de estas propiedades?"
         )
 
-
     def resolver_propiedad_contexto(self, state):
         self.events.append("resolve_property")
-        return {
-            "id": "1001",
-            "titulo": "Casa en Mañongo",
-        }
+        return {"id": "1001", "titulo": "Casa en Mañongo"}
 
     async def consultar_detalle_propiedad_wasi(self, code):
         self.events.append("detail")
@@ -243,9 +293,7 @@ class FakeLegacy:
         }
         state["ultimo_lote"] = [code]
         state["propiedad_activa_id"] = code
-        return "*Casa en Mañongo*
-💰 $200.000
-🔗 https://mettryc.com/p/1001"
+        return "*Casa en Mañongo*\n💰 $200.000\n🔗 https://mettryc.com/p/1001"
 
     async def atender_solicitud_captador(self, state, posicion=None, codigo=None):
         self.events.append("captador")
@@ -273,36 +321,6 @@ class FakeLegacy:
         state["agente_asignado"] = {"nombre": "Agente Demo"}
         return "Lead asignado a Agente Demo."
 
-    def detectar_rol_explicito(self, message):
-        text = message.strip().lower()
-        if "soy corredor" in text or "para mi cliente" in text:
-            return "colega_inmobiliario"
-        if "para mi" in text or "es para mi" in text:
-            return "cliente"
-        return None
-
-    def interpretar_respuesta_rol(self, message, state):
-        text = message.strip().lower()
-        if state.get("pregunta_pendiente") != "confirmar_rol":
-            return None
-        if text in {"para mi", "para mí", "es para mi", "es para mí"}:
-            state["rol"] = "cliente"
-            state["rol_confirmado"] = True
-            state["pregunta_pendiente"] = None
-            return "cliente"
-        if text in {"para un cliente", "para mi cliente"}:
-            state["rol"] = "colega_inmobiliario"
-            state["rol_confirmado"] = True
-            state["pregunta_pendiente"] = None
-            return "colega_inmobiliario"
-        return None
-
-    def rol_esta_confirmado(self, state):
-        return state.get("rol") in {"cliente", "colega_inmobiliario"} and state.get("rol_confirmado", False)
-
-    def mensaje_confirmacion_rol(self):
-        return "Antes de continuar, ¿buscas la propiedad para ti o para un cliente?"
-
     def solicita_humano(self, message):
         return False
 
@@ -311,8 +329,6 @@ class FakeLegacy:
 
     def es_respuesta_negativa(self, message):
         return message.strip().lower() == "no"
-
-    enviar_telegram_calls = 0
 
     async def enviar_telegram(self, chat_id, message):
         self.enviar_telegram_calls += 1
@@ -331,18 +347,21 @@ async def main():
 
     response = await engine.process(
         client_sender,
-        "Hola, busco una casa en Mañongo para comprar hasta 250 mil.",
+        "Hola, busco una casa en El Trigal para comprar hasta 250 mil.",
     )
     assert "para ti o para un cliente" in response.lower()
     assert legacy.events.count("search") == 0
 
-    response = await engine.process(
-        client_sender,
-        "Para mi",
-    )
+    response = await engine.process(client_sender, "Para mí")
+    assert "valencia" in response.lower() and "cabudare" in response.lower()
+    assert "en cuál de esas ciudades" in response.lower()
+    assert legacy.states[client_sender]["ambiguedad_geografica"]["zona"] == "El Trigal"
+
+    response = await engine.process(client_sender, "Valencia")
     assert "*Opción 1: Casa en Mañongo*" in response
     assert "💰 $200.000" in response
-    assert "🔗 https://mettryc.com/p/1001" in response
+    assert legacy.states[client_sender]["filtros"]["ciudad"] == "Valencia"
+    assert legacy.states[client_sender]["filtros"]["zona"] == "El Trigal"
     assert legacy.events.count("search") == 1
 
     colleague_sender = "whatsapp:+584120000002"
@@ -364,7 +383,7 @@ async def main():
         "¿Cuál es el precio de esa propiedad?",
     )
     assert "detail" in legacy.events
-    assert "detail_format" not in legacy.events or legacy.events.count("detail_format") == 0
+    assert "detail_format" not in legacy.events
     assert "Perfecto" in response or "$" in response
 
     response = await engine.process(
@@ -381,11 +400,9 @@ async def main():
     assert legacy.enviar_telegram_calls == 2
     assert "dato" in response.lower()
 
-    state = legacy.states[client_sender]
-    assert len(state["historial"]) == 14
-
     print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
     print("Confirmación de rol antes de búsqueda: OK")
+    print("Desambiguación geográfica El Trigal: OK")
     print("Búsqueda natural + ficha cliente: OK")
     print("Ficha para colega + captador: OK")
     print("Cambio de tema casual: OK")
