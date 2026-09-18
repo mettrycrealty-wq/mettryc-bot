@@ -266,7 +266,7 @@ async def main():
         "Necesito un dato que no tienes a mano.",
     )
     assert legacy.enviar_telegram_calls == 2
-    assert "confirm" in response.lower()
+    assert "dato" in response.lower()
 
     state = legacy.states[sender]
     assert len(state["historial"]) == 10
