@@ -291,7 +291,7 @@ class AgenteVirtualEngine:
                 ),
             )
 
-        if codigo_explicito and not legacy.resolver_propiedad_contexto(state):
+        if codigo_explicito:
             ficha = await self.bridge.detail(
                 state,
                 code=codigo_explicito,
