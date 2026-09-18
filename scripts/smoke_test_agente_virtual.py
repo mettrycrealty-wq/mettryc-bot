@@ -43,7 +43,7 @@ class FakeRouter:
                 max_budget=250000 if "250" in text else None,
             )
 
-        if "propiedad" in text and ("detalle" in text or "esa" in text):
+        if "precio" in text or ("propiedad" in text and ("detalle" in text or "esa" in text)):
             return TurnAnalysis(
                 role="cliente",
                 intent="pregunta_propiedad",
@@ -274,7 +274,34 @@ class FakeLegacy:
         return "Lead asignado a Agente Demo."
 
     def detectar_rol_explicito(self, message):
+        text = message.strip().lower()
+        if "soy corredor" in text or "para mi cliente" in text:
+            return "colega_inmobiliario"
+        if "para mi" in text or "es para mi" in text:
+            return "cliente"
         return None
+
+    def interpretar_respuesta_rol(self, message, state):
+        text = message.strip().lower()
+        if state.get("pregunta_pendiente") != "confirmar_rol":
+            return None
+        if text in {"para mi", "para mí", "es para mi", "es para mí"}:
+            state["rol"] = "cliente"
+            state["rol_confirmado"] = True
+            state["pregunta_pendiente"] = None
+            return "cliente"
+        if text in {"para un cliente", "para mi cliente"}:
+            state["rol"] = "colega_inmobiliario"
+            state["rol_confirmado"] = True
+            state["pregunta_pendiente"] = None
+            return "colega_inmobiliario"
+        return None
+
+    def rol_esta_confirmado(self, state):
+        return state.get("rol") in {"cliente", "colega_inmobiliario"} and state.get("rol_confirmado", False)
+
+    def mensaje_confirmacion_rol(self):
+        return "Antes de continuar, ¿buscas la propiedad para ti o para un cliente?"
 
     def solicita_humano(self, message):
         return False
@@ -300,16 +327,23 @@ async def main():
     router = FakeRouter()
     engine = AgenteVirtualEngine(router=router, bridge=bridge)
 
-    sender = "whatsapp:+584120000001"
+    client_sender = "whatsapp:+584120000001"
 
     response = await engine.process(
-        sender,
+        client_sender,
         "Hola, busco una casa en Mañongo para comprar hasta 250 mil.",
+    )
+    assert "para ti o para un cliente" in response.lower()
+    assert legacy.events.count("search") == 0
+
+    response = await engine.process(
+        client_sender,
+        "Para mi",
     )
     assert "*Opción 1: Casa en Mañongo*" in response
     assert "💰 $200.000" in response
     assert "🔗 https://mettryc.com/p/1001" in response
-    assert "search" in legacy.events
+    assert legacy.events.count("search") == 1
 
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(
@@ -320,39 +354,42 @@ async def main():
     assert "https://wa.me/584120000001" in response
 
     response = await engine.process(
-        sender,
+        client_sender,
         "Qué bello está el día, ¿verdad?",
     )
     assert "retomamos" in response.lower()
 
     response = await engine.process(
-        sender,
-        "Quiero saber más detalles de esa propiedad.",
+        client_sender,
+        "¿Cuál es el precio de esa propiedad?",
     )
     assert "detail" in legacy.events
+    assert "detail_format" not in legacy.events or legacy.events.count("detail_format") == 0
+    assert "Perfecto" in response or "$" in response
 
     response = await engine.process(
-        sender,
+        client_sender,
         "Ahora sí, quiero hablar con un asesor.",
     )
     assert "human" in legacy.events
     assert legacy.enviar_telegram_calls == 1
 
     response = await engine.process(
-        sender,
+        client_sender,
         "Necesito un dato que no tienes a mano.",
     )
     assert legacy.enviar_telegram_calls == 2
     assert "dato" in response.lower()
 
-    state = legacy.states[sender]
-    assert len(state["historial"]) == 10
+    state = legacy.states[client_sender]
+    assert len(state["historial"]) == 14
 
     print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
+    print("Confirmación de rol antes de búsqueda: OK")
     print("Búsqueda natural + ficha cliente: OK")
     print("Ficha para colega + captador: OK")
     print("Cambio de tema casual: OK")
-    print("Regreso al contexto de propiedad: OK")
+    print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
     print("Información no disponible + aviso administrativo: OK")
 
