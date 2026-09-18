@@ -45,6 +45,10 @@ class LegacyMettrycBridge:
         if legacy.sheets_necesita_actualizacion():
             await legacy.sincronizar_google_sheet()
 
+        # La geografía oficial se reconstruye también sin depender de WASI.
+        if hasattr(legacy, "reconstruir_catalogo_geografico"):
+            legacy.reconstruir_catalogo_geografico()
+
     def get_state(self, sender: str) -> dict:
         return self.load().obtener_sesion(sender)
 
