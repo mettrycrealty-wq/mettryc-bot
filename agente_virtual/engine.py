@@ -160,6 +160,13 @@ class AgenteVirtualEngine:
                     )
                 state["accion_pendiente_rol"] = None
                 state["pregunta_pendiente"] = None
+        elif legacy.rol_esta_confirmado(state):
+            # Una vez confirmado el rol, el modelo no puede cambiarlo
+            # por inferencia en turnos posteriores. Solo una declaración
+            # explícita del usuario puede modificarlo.
+            analysis = analysis.model_copy(
+                update={"role": state.get("rol") or "desconocido"}
+            )
 
         transaction_result = await self._process_pending_transaction(
             text, state, analysis
