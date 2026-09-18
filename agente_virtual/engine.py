@@ -76,6 +76,22 @@ Comportamiento conversacional:
   cuando encaje de forma natural.
 - No menciones que estás clasificando la intención ni que tienes memoria interna.
 
+
+Estrategia comercial para CLIENTES:
+- Cuando role=cliente, actúa como asesor comercial consultivo, no como vendedor agresivo.
+- Usa preguntas de descubrimiento para entender necesidad, prioridad, presupuesto, urgencia y motivo de compra/alquiler cuando esos datos todavía sean relevantes.
+- Relaciona las características reales de una propiedad con el beneficio que pueden aportar al cliente, pero solo cuando la relación sea directa y razonable.
+- Detecta objeciones sobre precio, ubicación, características, estado, tiempo o incertidumbre. Primero valida la inquietud y después propone una alternativa concreta basada en datos reales.
+- Usa microcompromisos: avanzar de una pregunta a otra, elegir entre alternativas, revisar una propiedad concreta o dar el siguiente paso.
+- Busca un siguiente paso claro: revisar una propiedad, comparar opciones, coordinar una visita o conectar al cliente con un asesor.
+- Haz UNA sola pregunta comercial a la vez. Evita interrogatorios.
+- Si el cliente muestra alta intención de compra o alquiler respecto de una propiedad, facilita el cierre hacia un asesor humano y la captura del lead.
+- Respeta un "no" y continúa ayudando sin presión.
+- NUNCA inventes urgencia, escasez, descuentos, disponibilidad, número de interesados, exclusividad, revalorización ni beneficios financieros.
+- NUNCA uses amenazas, culpa, presión engañosa, falsa urgencia o manipulación emocional.
+- No pidas datos personales completos hasta que exista una razón comercial clara para avanzar con un asesor o visita.
+- Cuando el estado indique "ofrecer_asesor", responde la cuestión del cliente y termina con una invitación breve para que acepte o rechace el contacto de un asesor.
+
 Exactitud:
 - Los datos de propiedades solo pueden salir del contexto de negocio y de las
   herramientas.
@@ -440,6 +456,8 @@ class AgenteVirtualEngine:
                     if notified:
                         admin_notified.add(reason)
 
+        self._update_sales_state(state, analysis)
+
         response = await self._generate_response(
             text,
             state,
@@ -447,8 +465,78 @@ class AgenteVirtualEngine:
             business_results,
             legacy.construir_contexto_conocimiento(),
         )
+        response = self._append_advisor_offer(state, response)
 
         return await self._finalize(sender, state, text, response)
+
+
+    def _update_sales_state(
+        self,
+        state: dict,
+        analysis: TurnAnalysis,
+    ) -> None:
+        """Actualiza el estado comercial sin interferir con el motor de negocio legacy."""
+        if state.get("rol") != "cliente":
+            return
+
+        signal = analysis.sales_signal
+        if signal == "alta_intencion":
+            state["estado_comercial"] = "intencion_alta"
+        elif signal == "objecion":
+            state["estado_comercial"] = "objecion"
+        elif signal == "visita":
+            state["estado_comercial"] = "visita"
+        elif signal == "asesor":
+            state["estado_comercial"] = "asesor"
+        elif signal == "interesado":
+            state["estado_comercial"] = "interesado"
+        elif not state.get("estado_comercial"):
+            state["estado_comercial"] = "descubrimiento"
+
+        state["ultima_senal_comercial"] = signal
+        state["siguiente_paso_comercial"] = analysis.sales_next_step
+        if analysis.objection_type:
+            state["ultima_objecion_comercial"] = analysis.objection_type
+
+        # Solo ofrecemos un asesor de forma proactiva cuando hay una señal clara
+        # de intención alta, existe una propiedad en contexto y todavía no hay
+        # un agente asignado. La oferta queda pendiente para que el "sí" active
+        # el flujo legacy de captura/asignación del lead.
+        property_in_context = bool(
+            state.get("propiedad_interes") or state.get("ultimo_lote")
+        )
+        already_assigned = bool(state.get("agente_asignado"))
+        transactional_flow = state.get("objetivo") in {
+            "captura_lead",
+            "captura_contacto_colega",
+        }
+
+        if (
+            signal == "alta_intencion"
+            and property_in_context
+            and not already_assigned
+            and not transactional_flow
+            and not state.get("pregunta_pendiente")
+        ):
+            state["pregunta_pendiente"] = "ofrecer_asesor"
+            state["oferta_asesor_pendiente"] = True
+
+    @staticmethod
+    def _append_advisor_offer(
+        state: dict,
+        response: str,
+    ) -> str:
+        if state.get("pregunta_pendiente") != "ofrecer_asesor":
+            return response
+
+        offer = (
+            "Si te parece, puedo conectarte con un asesor de Mettryc para ayudarte "
+            "con esta propiedad y dar el siguiente paso. ¿Quieres que te contacte?"
+        )
+        clean = str(response or "").rstrip()
+        if offer.lower() in clean.lower():
+            return clean
+        return f"{clean}\\n\\n{offer}" if clean else offer
 
     async def _process_pending_transaction(
         self,
@@ -457,6 +545,21 @@ class AgenteVirtualEngine:
         analysis: TurnAnalysis,
     ) -> str | None:
         legacy = self.bridge.load()
+
+        if state.get("pregunta_pendiente") == "ofrecer_asesor":
+            if legacy.es_respuesta_afirmativa(text):
+                state["pregunta_pendiente"] = None
+                state["oferta_asesor_pendiente"] = False
+                result = await self.bridge.human(state, text)
+                return result.message
+
+            if legacy.es_respuesta_negativa(text):
+                state["pregunta_pendiente"] = None
+                state["oferta_asesor_pendiente"] = False
+                return (
+                    "Perfecto. Seguimos viendo opciones sin compromiso. "
+                    "Cuando quieras, puedo ayudarte a comparar o coordinar una visita."
+                )
 
         if state.get("lead_confirmacion_pendiente"):
             es_confirmacion = (
@@ -603,6 +706,14 @@ class AgenteVirtualEngine:
             ],
             "knowledge_mettryc": knowledge,
             "latest_user_message": message,
+            "commercial_instruction": (
+                "Aplica venta consultiva para cliente. Prioriza una sola acción "
+                "siguiente y una sola pregunta comercial. Si hay objeción, valida "
+                "y ofrece una alternativa basada en datos reales. Si hay intención "
+                "alta y la oferta de asesor está pendiente, facilita el cierre sin presión."
+                if state.get("rol") == "cliente"
+                else "No aplicar técnicas de cierre de cliente a un colega inmobiliario."
+            ),
         }
 
         try:
