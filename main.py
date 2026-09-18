@@ -58,7 +58,7 @@ DUPLICATE_TTL_SECONDS = int(os.getenv("DUPLICATE_TTL_SECONDS", "180"))
 # evita procesar dos veces el mismo mensaje cuando dos rutas/acciones
 # reenvían la misma petición, sin bloquear una conversación normal.
 DUPLICATE_NO_ID_TTL_SECONDS = int(
-    os.getenv("DUPLICATE_NO_ID_TTL_SECONDS", "30")
+    os.getenv("DUPLICATE_NO_ID_TTL_SECONDS", "10")
 )
 
 # FIX #1: límite de repeticiones idénticas de "sin resultados" antes de
