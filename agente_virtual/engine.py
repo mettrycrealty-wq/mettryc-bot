@@ -379,6 +379,18 @@ class AgenteVirtualEngine:
         business_results: list[BusinessActionResult],
         knowledge: str,
     ) -> str:
+        # Las fichas comerciales se entregan con el formato exacto del
+        # chatbot anterior. El LLM conversacional no debe reescribirlas ni
+        # convertirlas en una frase genérica, porque aquí importan sus campos,
+        # enlaces y, para colegas, los datos del captador.
+        for result in business_results:
+            if (
+                result.ok
+                and result.data
+                and result.data.get("formatted_legacy")
+            ):
+                return result.message or ""
+
         context = {
             "conversation_history": state.get("historial", [])[-self.max_history :],
             "business_state": self.bridge.conversation_context(state),
