@@ -33,7 +33,7 @@ DICCIONARIO_GEOGRAFICO = {
     },
     'lara': {
         'barquisimeto': ['el este', 'centro', 'oeste', 'fundalara', 'santa elena', 'el parral', 'colinas de santa rosa', 'la rosaleda', 'los leones', 'nueva segovia', 'patarata', 'pueblo nuevo', 'san jose', 'san juan', 'zona industrial'],
-        'cabudare': ['la mora', 'valle hondo', 'el recreo', 'las mercedes', 'los rastrojos', 'agua viva', 'centro', 'el palmar', 'el trigal', 'el parral', 'la trigaleña'],
+        'cabudare': ['la mora', 'valle hondo', 'el recreo', 'las mercedes', 'los rastrojos', 'agua viva', 'centro', 'el palmar'],
         'quibor': ['centro', 'la ermita', 'san rafael'],
         'el tocuyo': ['centro', 'la concordia', 'los hornos'],
         'carora': ['centro', 'torres', 'el roble'],
