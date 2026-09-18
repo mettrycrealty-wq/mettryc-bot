@@ -231,6 +231,79 @@ class AgenteVirtualEngine:
                     ficha.message or "",
                 )
 
+        # CONSULTA DE PROPIEDAD SIN REFERENCIA
+        # Si piden información de una propiedad pero no indican cuál es y no
+        # existe una propiedad activa en contexto, no permitimos que el LLM
+        # adivine. Pedimos el ID/código y el siguiente turno lo resolvemos
+        # directamente contra WASI.
+        codigo_explicito = legacy.extraer_codigo_inmueble(
+            text,
+            permitir_solo_digitos=False,
+        )
+
+        if state.get("pregunta_pendiente") == "codigo_para_detalle":
+            codigo_pendiente = codigo_explicito or legacy.extraer_codigo_inmueble(
+                text,
+                permitir_solo_digitos=True,
+            )
+            if codigo_pendiente:
+                ficha = await self.bridge.detail(
+                    state,
+                    code=codigo_pendiente,
+                    format_legacy=True,
+                )
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
+                )
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para darte la información exacta necesito identificar "
+                    "la propiedad. Envíame el código o ID que aparece normalmente "
+                    "al final del título del anuncio."
+                ),
+            )
+
+        if (
+            legacy.solicita_informacion_propiedad_sin_referencia(text)
+            and not codigo_explicito
+            and not legacy.resolver_propiedad_contexto(state)
+        ):
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para darte la información exacta necesito identificar "
+                    "la propiedad. Envíame el código o ID que aparece normalmente "
+                    "al final del título del anuncio."
+                ),
+            )
+
+        if codigo_explicito and not legacy.resolver_propiedad_contexto(state):
+            ficha = await self.bridge.detail(
+                state,
+                code=codigo_explicito,
+                format_legacy=True,
+            )
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                ficha.message or "No pude recuperar la ficha de esa propiedad.",
+            )
+
         # La geografía se resuelve de forma determinista usando el catálogo
         # oficial + las variantes del inventario. Nunca dejamos que el modelo
         # elija una ciudad cuando una zona existe en varias ciudades.
