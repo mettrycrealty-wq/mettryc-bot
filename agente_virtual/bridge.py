@@ -264,7 +264,9 @@ class LegacyMettrycBridge:
                 message="No pude identificar el código de la propiedad.",
             )
 
-        final_property = state.get("propiedad_interes") or property_item
+        # Una referencia explícita (código o posición) siempre tiene prioridad
+        # sobre la propiedad que pudiera estar previamente en contexto.
+        final_property = property_item or state.get("propiedad_interes")
 
         # Una propiedad identificada por un anuncio externo queda inmediatamente
         # en contexto para que los mensajes siguientes puedan preguntar por ella
