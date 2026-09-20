@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agente_virtual.bridge import LegacyMettrycBridge
 from agente_virtual.engine import AgenteVirtualEngine
-from agente_virtual.schemas import TurnAnalysis
+from agente_virtual.schemas import ImagenCodigoResult, TurnAnalysis
 
 
 class FakeRouter:
@@ -21,6 +21,14 @@ class FakeRouter:
 
     async def json_completion(self, schema, messages, **kwargs):
         self.analysis_calls += 1
+
+        if isinstance(messages[-1].get("content"), list):
+            assert schema is ImagenCodigoResult
+            return ImagenCodigoResult(
+                codigo="MF-9979795",
+                visible=True,
+            )
+
         context = json.loads(messages[-1]["content"])
         text = context["latest_user_message"].lower()
 
@@ -410,6 +418,15 @@ async def main():
     response = await engine.process(portal_sender, "Sí, quiero más información.")
     assert "*Casa en Mañongo*" in response
     assert "detail_format" in legacy.events
+
+    image_sender = "whatsapp:+584120000005"
+    response = await engine.process(
+        image_sender,
+        "",
+        image_source="data:image/jpeg;base64,ZmFrZQ==",
+    )
+    assert "*Casa en Mañongo*" in response
+    assert legacy.states[image_sender]["propiedad_interes"]["id"] == "MF-9979795"
 
     # Regresión: un agradecimiento no puede disparar una nueva búsqueda
     # solo porque quedaron filtros de propiedad en el estado.
