@@ -6229,7 +6229,10 @@ async def webhook_agente_virtual(
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
             return {"replies": []}
-    elif mensaje_sin_id_es_duplicado(sender, mensaje):
+    elif mensaje_sin_id_es_duplicado(
+        sender,
+        mensaje + ("|imagen:" + image_source[:120] if image_source else ""),
+    ):
         logger.info(
             "Mensaje duplicado sin message_id ignorado sender=%s",
             sender[-4:],
@@ -6239,9 +6242,7 @@ async def webhook_agente_virtual(
     if sender not in locks_usuarios:
         locks_usuarios[sender] = asyncio.Lock()
 
-    image_source = extraer_url_imagen_payload(payload)
-
-    try:
+    try
         if not inventory_cache.get("inventario"):
             await actualizar_inventario(force=True)
         elif inventario_necesita_actualizacion():
