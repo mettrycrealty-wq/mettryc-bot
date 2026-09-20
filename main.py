@@ -17,6 +17,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from geografia import DICCIONARIO_GEOGRAFICO
+from agente_virtual.learning_analyzer import PatyLearningAnalyzer
 # ============================================================
 # LOGS Y CONFIGURACIÓN
 # ============================================================
@@ -6024,6 +6025,40 @@ async def health():
         "modelo_principal": MODELO_AGENTE_PRINCIPAL,
         "persistencia": "memoria_del_proceso",
     }
+
+
+@app.get("/admin/paty-learning")
+async def admin_paty_learning(
+    limit: int = 1000,
+    include_ai: bool = True,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    """
+    Informe de aprendizaje de Paty.
+
+    Lee las conversaciones persistidas en Google Sheets y devuelve métricas
+    y, opcionalmente, un análisis del modelo. No modifica el comportamiento
+    de Paty ni sus reglas comerciales.
+    """
+    validar_api_key(x_api_key)
+
+    limit = max(1, min(limit, 5000))
+
+    try:
+        analyzer = PatyLearningAnalyzer()
+        return await analyzer.analyze(
+            limit=limit,
+            include_ai=include_ai,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Error generando informe de aprendizaje de Paty: %s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo obtener o analizar el historial de aprendizaje.",
+        ) from exc
 
 
 @app.post("/admin/refresh")
