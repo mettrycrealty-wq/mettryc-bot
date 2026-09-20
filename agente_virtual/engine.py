@@ -443,6 +443,13 @@ class AgenteVirtualEngine:
             text,
             analysis,
         )
+        if self._is_corporate_topic(text):
+            analysis = analysis.model_copy(update={"intent": "informacion_mettryc"})
+            state["esperando_codigo"] = False
+            state["pregunta_pendiente"] = None
+            state["detalle_pregunta_pendiente"] = None
+            state["consulta_anuncio_pendiente"] = False
+            state["origen_anuncio"] = None
 
         if state.get("pregunta_pendiente") == "codigo_para_detalle":
             property_intents = {
@@ -869,6 +876,25 @@ class AgenteVirtualEngine:
 
         return analysis
 
+
+    @staticmethod
+    def _is_corporate_topic(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        phrases = (
+            "como se llama la empresa", "cómo se llama la empresa",
+            "cual es la empresa", "cuál es la empresa",
+            "que empresa es", "qué empresa es",
+            "quien me atiende", "quién me atiende",
+            "con quien me comunique", "con quién me comuniqué",
+            "con quien me comunique", "con quién me comuniqué",
+            "tienes atencion automatica", "tienes atención automática",
+            "esto es automatico", "esto es automático",
+            "eres un bot", "eres una inteligencia artificial",
+            "quien eres", "quién eres",
+            "que servicios ofrecen", "qué servicios ofrecen",
+            "como funciona mettryc", "cómo funciona mettryc",
+        )
+        return any(phrase in normalized for phrase in phrases)
 
     @staticmethod
     def _requests_more_property_info(text: str) -> bool:
