@@ -6242,7 +6242,7 @@ async def webhook_agente_virtual(
     if sender not in locks_usuarios:
         locks_usuarios[sender] = asyncio.Lock()
 
-    try
+    try:
         if not inventory_cache.get("inventario"):
             await actualizar_inventario(force=True)
         elif inventario_necesita_actualizacion():
