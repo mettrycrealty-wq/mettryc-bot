@@ -1186,7 +1186,10 @@ class AgenteVirtualEngine:
             "por ejemplo MF-9979795, BS-9398123, LAC-10390892 o FH-10293826. "
             "Si también aparece un número general del anuncio de Mercado Libre (MLV-...), "
             "NO lo devuelvas: queremos el código del inmueble publicado por la inmobiliaria. "
-            "No inventes ni deduzcas. Si el código no es legible, devuelve codigo=null y visible=false."
+            "Si no puedes leer el código, intenta copiar literalmente el título o texto principal "
+            "del anuncio en texto_visible, sin inventar ni resumir. "
+            "No inventes ni deduzcas. Si no hay código ni texto legible, devuelve codigo=null, "
+            "visible=false y texto_visible=null."
         )
 
         try:
@@ -1211,16 +1214,20 @@ class AgenteVirtualEngine:
             result = None
 
         codigo = None
-        if isinstance(result, ImagenCodigoResult) and result.visible:
-            candidato = str(result.codigo or "").strip()
-            if candidato:
-                codigo = (
-                    legacy.extraer_codigo_inmueble(
-                        candidato,
-                        permitir_solo_digitos=True,
+        texto_visible = ""
+        if isinstance(result, ImagenCodigoResult):
+            texto_visible = str(result.texto_visible or "").strip()
+
+            if result.visible:
+                candidato = str(result.codigo or "").strip()
+                if candidato:
+                    codigo = (
+                        legacy.extraer_codigo_inmueble(
+                            candidato,
+                            permitir_solo_digitos=True,
+                        )
+                        or legacy.extraer_codigo_mercadolibre(candidato)
                     )
-                    or legacy.extraer_codigo_mercadolibre(candidato)
-                )
 
         if codigo:
             ficha = await self.bridge.detail(
@@ -1238,16 +1245,111 @@ class AgenteVirtualEngine:
                     ficha.message,
                 )
 
+        # Si la imagen no contiene un código pero sí texto legible,
+        # intentamos identificarla contra las últimas propiedades mostradas.
+        if texto_visible:
+            codigo_por_texto = self._match_recent_property_from_image_text(
+                legacy,
+                state,
+                texto_visible,
+            )
+            if codigo_por_texto:
+                ficha = await self.bridge.detail(
+                    state,
+                    code=codigo_por_texto,
+                    format_legacy=True,
+                )
+                if ficha.ok and ficha.message:
+                    state["esperando_codigo"] = False
+                    state["pregunta_pendiente"] = None
+                    return await self._finalize(
+                        sender,
+                        state,
+                        text or "[imagen]",
+                        ficha.message,
+                    )
+
+        lote = [
+            str(pid)
+            for pid in (state.get("ultimo_lote") or [])
+            if str(pid).strip()
+        ]
+        if len(lote) > 1:
+            opciones = ", ".join(
+                f"opción {i + 1}"
+                for i in range(min(5, len(lote)))
+            )
+            return await self._finalize(
+                sender,
+                state,
+                text or "[imagen]",
+                (
+                    "Recibí la imagen. No pude identificar con suficiente claridad "
+                    "el código del anuncio. Si es una de las propiedades que acabamos "
+                    f"de mostrar, indícame cuál ({opciones}) o envíame el código/ID."
+                ),
+            )
+
         return await self._finalize(
             sender,
             state,
             text or "[imagen]",
             (
-                "Recibí la captura. No pude leer con suficiente claridad el código "
+                "Recibí la imagen. No pude leer con suficiente claridad el código "
                 "del inmueble. Envíame una imagen donde se vea completo el título "
                 "del anuncio o escríbeme el código/ID que aparece al final del título."
             ),
         )
+
+    @staticmethod
+    def _match_recent_property_from_image_text(
+        legacy: Any,
+        state: dict,
+        texto_visible: str,
+    ) -> str | None:
+        """Relaciona texto visible de una captura con propiedades recientes."""
+        candidatos = []
+        for pid in state.get("ultimo_lote") or []:
+            propiedad = legacy.buscar_por_codigo(str(pid))
+            if propiedad:
+                titulo = str(propiedad.get("titulo") or "")
+                contexto = " ".join(
+                    [
+                        titulo,
+                        str(propiedad.get("zona") or ""),
+                        str(propiedad.get("ciudad") or ""),
+                    ]
+                )
+                candidatos.append((str(pid), contexto))
+
+        if not candidatos:
+            return None
+
+        def tokens(valor: str) -> set[str]:
+            palabras = legacy.normalizar_texto(valor).split()
+            return {p for p in palabras if len(p) >= 3}
+
+        imagen_tokens = tokens(texto_visible)
+        if not imagen_tokens:
+            return None
+
+        puntuaciones = []
+        for pid, contexto in candidatos:
+            prop_tokens = tokens(contexto)
+            inter = imagen_tokens & prop_tokens
+            union = imagen_tokens | prop_tokens
+            score = len(inter) / len(union) if union else 0.0
+            cobertura = len(inter) / len(imagen_tokens) if imagen_tokens else 0.0
+            puntuaciones.append((max(score, cobertura), pid))
+
+        puntuaciones.sort(reverse=True)
+        mejor_score, mejor_id = puntuaciones[0]
+        segundo_score = puntuaciones[1][0] if len(puntuaciones) > 1 else 0.0
+
+        if mejor_score >= 0.55 and (len(puntuaciones) == 1 or mejor_score - segundo_score >= 0.15):
+            return mejor_id
+
+        return None
 
     @staticmethod
     async def _image_source_to_data_url(source: str) -> str | None:
