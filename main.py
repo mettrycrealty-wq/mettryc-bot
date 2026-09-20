@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -301,19 +302,51 @@ def normalizar_nombre(valor: Any) -> str:
 
 
 def extraer_url_imagen_payload(payload: Any) -> Optional[str]:
-    """Busca una URL/data URI de imagen en el payload del autoresponder."""
+    """Busca URL, data URI o base64 de imagen en el payload del autoresponder."""
     claves_imagen = {
         "media_url", "mediaurl", "image", "images", "image_url",
         "imageurl", "photo", "photos", "picture", "pictures",
         "attachment", "attachments", "file", "files", "document",
+        "media", "media_object", "media_data",
+    }
+    claves_base64 = {
+        "base64", "base64data", "base64_data", "data_base64",
+        "image_base64", "content_base64", "data",
     }
 
-    def recorrer(valor: Any, es_imagen: bool = False) -> Optional[str]:
+    def convertir_base64(valor: str, tipo: str) -> Optional[str]:
+        texto = str(valor or "").strip()
+        mime = str(tipo or "").lower().split(";")[0].strip()
+
+        if texto.startswith("data:image/"):
+            return texto
+
+        if not (mime.startswith("image/") or mime in {"image", "photo", "picture"}):
+            return None
+
+        if len(texto) < 100:
+            return None
+
+        limpio = re.sub(r"\s+", "", texto)
+        if not re.fullmatch(r"[A-Za-z0-9+/=]+", limpio):
+            return None
+
+        try:
+            base64.b64decode(limpio, validate=True)
+        except Exception:
+            return None
+
+        tipo_final = mime if mime.startswith("image/") else "image/jpeg"
+        return f"data:{tipo_final};base64,{limpio}"
+
+    def recorrer(valor: Any, es_imagen: bool = False, tipo_imagen: str = "") -> Optional[str]:
         if isinstance(valor, dict):
             tipo = str(
                 valor.get("type")
                 or valor.get("mime_type")
                 or valor.get("mime")
+                or valor.get("content_type")
+                or tipo_imagen
                 or ""
             ).lower()
 
@@ -325,26 +358,51 @@ def extraer_url_imagen_payload(payload: Any) -> Optional[str]:
 
             for clave, contenido in valor.items():
                 clave_norm = str(clave).lower()
-                siguiente_imagen = contexto_imagen or clave_norm in claves_imagen
+                siguiente_imagen = (
+                    contexto_imagen
+                    or clave_norm in claves_imagen
+                    or clave_norm in claves_base64
+                )
 
                 if isinstance(contenido, str):
                     texto = contenido.strip()
+
                     if texto.startswith("data:image/"):
                         return texto
+
                     if siguiente_imagen and texto.startswith(
                         ("http://", "https://")
                     ):
                         return texto
 
-                encontrado = recorrer(contenido, siguiente_imagen)
+                    if contexto_imagen and clave_norm in claves_base64:
+                        convertido = convertir_base64(texto, tipo)
+                        if convertido:
+                            return convertido
+
+                encontrado = recorrer(
+                    contenido,
+                    siguiente_imagen,
+                    tipo if contexto_imagen else tipo_imagen,
+                )
                 if encontrado:
                     return encontrado
 
         elif isinstance(valor, list):
             for item in valor:
-                encontrado = recorrer(item, es_imagen)
+                encontrado = recorrer(item, es_imagen, tipo_imagen)
                 if encontrado:
                     return encontrado
+
+        elif isinstance(valor, str) and es_imagen:
+            texto = valor.strip()
+            if texto.startswith("data:image/") or texto.startswith(
+                ("http://", "https://")
+            ):
+                return texto
+            convertido = convertir_base64(texto, tipo_imagen)
+            if convertido:
+                return convertido
 
         return None
 
