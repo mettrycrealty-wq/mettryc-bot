@@ -6380,7 +6380,10 @@ async def webhook(
         raise HTTPException(status_code=422, detail="Falta sender.")
 
     if not mensaje:
-        return {"replies": []}
+        if payload_tiene_multimedia(payload):
+            mensaje = MARCADOR_MULTIMEDIA
+        else:
+            return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
