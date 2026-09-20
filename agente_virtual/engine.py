@@ -1256,7 +1256,6 @@ class AgenteVirtualEngine:
         }
 
     @staticmethod
-    @staticmethod
     def _current_turn_has_search_signal(
         legacy: Any,
         state: dict,
