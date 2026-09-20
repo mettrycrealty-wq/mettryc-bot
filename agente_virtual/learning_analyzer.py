@@ -336,5 +336,3 @@ class PatyLearningAnalyzer:
                     return value
 
         return None
-
-        return result
