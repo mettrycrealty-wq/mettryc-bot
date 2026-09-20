@@ -15,7 +15,6 @@ class AgenteVirtualService:
         self,
         sender: str,
         message: str,
-        image_source: str | None = None,
     ) -> str:
         sender_key = str(sender or "").strip()
         if not sender_key:
@@ -31,7 +30,6 @@ class AgenteVirtualService:
             return await self.engine.process(
                 sender_key,
                 message,
-                image_source=image_source,
             )
 
     async def close(self) -> None:
