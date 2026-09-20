@@ -11,7 +11,12 @@ class AgenteVirtualService:
     def __init__(self, engine: AgenteVirtualEngine | None = None) -> None:
         self.engine = engine or AgenteVirtualEngine()
 
-    async def process(self, sender: str, message: str) -> str:
+    async def process(
+        self,
+        sender: str,
+        message: str,
+        image_source: str | None = None,
+    ) -> str:
         sender_key = str(sender or "").strip()
         if not sender_key:
             raise ValueError("El sender no puede estar vacío.")
@@ -23,7 +28,11 @@ class AgenteVirtualService:
         )
 
         async with lock:
-            return await self.engine.process(sender_key, message)
+            return await self.engine.process(
+                sender_key,
+                message,
+                image_source=image_source,
+            )
 
     async def close(self) -> None:
         legacy = self.engine.bridge.legacy
