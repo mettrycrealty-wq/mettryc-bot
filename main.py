@@ -4913,6 +4913,15 @@ async def iniciar_visita(
         )
 
 
+    estado["accion_pendiente_rol"] = None
+    estado["pregunta_pendiente"] = None
+    estado["objetivo"] = "captura_lead"
+    estado["estado_conversacion"] = "captura_lead"
+    estado["motivo_contacto"] = "Agendar visita"
+
+    return mensaje_solicitud_datos_lead(estado, saludo=True)
+
+
 async def iniciar_atencion_humana(estado: dict, mensaje: str) -> str:
     if not rol_esta_confirmado(estado):
         return solicitar_rol_para_accion(
