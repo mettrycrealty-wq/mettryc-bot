@@ -1317,6 +1317,67 @@ class AgenteVirtualEngine:
             message,
         )
 
+    @staticmethod
+    def _sanitize_redundant_role_confirmation(
+        state: dict,
+        response: str,
+    ) -> str:
+        """Impide volver a preguntar el rol una vez que ya fue confirmado."""
+        if not state.get("rol_confirmado"):
+            return response
+
+        texto = str(response or "").strip()
+        if not texto:
+            return texto
+
+        salida = []
+        for bloque in texto.split("\n\n"):
+            limpio = bloque.strip()
+            if not limpio:
+                continue
+
+            lower = limpio.lower()
+            role_question = (
+                "para ti o para un cliente" in lower
+                or "¿para ti?" in limpio
+                or "¿para mí?" in limpio
+                or "¿para usted?" in limpio
+                or "entonces, ¿para ti" in lower
+                or "entonces ¿para ti" in lower
+                or "buscas la propiedad para ti?" in lower
+                or "es para ti?" in lower
+                or "es para usted?" in lower
+            )
+
+            if role_question:
+                # Si el bloque trae otra pregunta útil además de la redundante,
+                # conservamos solo el contenido que aparece después.
+                partes = re.split(
+                    r"(?<=\?)\s*",
+                    limpio,
+                )
+                partes_utiles = [
+                    parte.strip()
+                    for parte in partes
+                    if parte.strip()
+                    and not (
+                        "para ti" in parte.lower()
+                        or "para mí" in parte.lower()
+                        or "para un cliente" in parte.lower()
+                        or "para una cliente" in parte.lower()
+                        or "para usted" in parte.lower()
+                    )
+                ]
+                if partes_utiles:
+                    salida.append(" ".join(partes_utiles))
+                continue
+
+            salida.append(limpio)
+
+        resultado = "\n\n".join(salida).strip()
+        return resultado or "Perfecto, ya tengo ese dato registrado."
+
+
     async def _finalize(
         self,
         sender: str,
@@ -1324,6 +1385,11 @@ class AgenteVirtualEngine:
         user_message: str,
         response: str,
     ) -> str:
+        response = self._sanitize_redundant_role_confirmation(
+            state,
+            response,
+        )
+
         self.bridge.append_history(state, "user", user_message)
         if response:
             self.bridge.append_history(state, "assistant", response)
