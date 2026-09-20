@@ -164,6 +164,35 @@ class AgenteVirtualEngine:
                 lead_result,
             )
 
+        # MULTIMEDIA SIN TEXTO
+        if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
+            if state.get("pregunta_pendiente") == "codigo_para_detalle":
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        "Recibí la imagen. Para ubicar la propiedad con precisión, "
+                        "envíame el código o ID que aparece al final del título del anuncio "
+                        "o copia aquí el enlace de la publicación."
+                    ),
+                )
+
+            if state.get("propiedad_interes"):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    "Recibí la imagen. ¿Qué te gustaría consultar sobre esta propiedad?",
+                )
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "Recibí la imagen. ¿Qué información necesitas de la propiedad que aparece allí?",
+            )
+
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
         # resolverse antes de la conversación normal: no corresponde pedir rol,
@@ -962,7 +991,12 @@ class AgenteVirtualEngine:
         if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
             return True
 
-        normalized = legacy.normalizar_texto(text)
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
         return any(
             marker in normalized
             for marker in (
