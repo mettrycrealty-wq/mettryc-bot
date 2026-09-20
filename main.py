@@ -49,6 +49,9 @@ MODELO_AGENTE_RESPALDO = os.getenv(
 
 OPENROUTER_TIMEOUT = float(os.getenv("OPENROUTER_TIMEOUT", "35"))
 WASI_TIMEOUT = float(os.getenv("WASI_TIMEOUT", "40"))
+WASI_PAGE_SIZE = int(os.getenv("WASI_PAGE_SIZE", "50"))
+WASI_MAX_RETRIES = int(os.getenv("WASI_MAX_RETRIES", "3"))
+WASI_RETRY_BASE_SECONDS = float(os.getenv("WASI_RETRY_BASE_SECONDS", "2"))
 SHEETS_TIMEOUT = float(os.getenv("SHEETS_TIMEOUT", "20"))
 TELEGRAM_TIMEOUT = float(os.getenv("TELEGRAM_TIMEOUT", "15"))
 
@@ -1521,38 +1524,154 @@ async def obtener_inventario_wasi() -> List[dict]:
         return []
 
     propiedades: List[dict] = []
-    take = 100
     skip = 0
+    pagina_base = max(1, min(WASI_PAGE_SIZE, 100))
 
-    for _ in range(100):
-        params = {
-            "wasi_token": WASI_TOKEN,
-            "id_company": WASI_COMPANY_ID,
-            "take": take,
-            "skip": skip,
-            "status": 1,
-        }
-
+    for pagina in range(100):
         data = None
-        for intento in range(3):
-            try:
-                respuesta = await http_client.get(
-                    "https://api.wasi.co/v1/property/search",
-                    params=params,
-                    timeout=WASI_TIMEOUT,
-                )
-                respuesta.raise_for_status()
-                data = respuesta.json()
+        take_usado = pagina_base
+        ultimo_error: Optional[Exception] = None
+
+        tamanos = []
+        for candidato in (pagina_base, 50, 25):
+            candidato = max(1, min(int(candidato), 100))
+            if candidato not in tamanos:
+                tamanos.append(candidato)
+
+        for take in tamanos:
+            params = {
+                "wasi_token": WASI_TOKEN,
+                "id_company": WASI_COMPANY_ID,
+                "take": take,
+                "skip": skip,
+                "status": 1,
+            }
+
+            exito = False
+
+            for intento in range(WASI_MAX_RETRIES):
+                try:
+                    respuesta = await http_client.get(
+                        "https://api.wasi.co/v1/property/search",
+                        params=params,
+                        timeout=WASI_TIMEOUT,
+                    )
+                    respuesta.raise_for_status()
+                    data = respuesta.json()
+
+                    if isinstance(data, dict) and str(data.get("status", "")).lower() == "error":
+                        codigo_error = data.get("code", "N/D")
+                        mensaje_error = data.get("message", "Error no especificado")
+                        logger.error(
+                            "Wasi API devolvió error HTTP 200 skip=%s take=%s code=%s message=%s",
+                            skip,
+                            take,
+                            codigo_error,
+                            str(mensaje_error)[:240],
+                        )
+                        return propiedades
+
+                    exito = True
+                    take_usado = take
+                    break
+
+                except httpx.HTTPStatusError as exc:
+                    ultimo_error = exc
+                    status_code = exc.response.status_code
+
+                    cuerpo = ""
+                    try:
+                        payload_error = exc.response.json()
+                        if isinstance(payload_error, dict):
+                            cuerpo = (
+                                f" code={payload_error.get('code')}"
+                                f" message={payload_error.get('message')}"
+                            )
+                        else:
+                            cuerpo = str(payload_error)
+                    except Exception:
+                        cuerpo = str(exc.response.text or "")[:240]
+
+                    es_transitorio = status_code == 429 or status_code >= 500
+
+                    if status_code in {401, 403}:
+                        logger.error(
+                            "Wasi rechazó las credenciales/permisos HTTP=%s skip=%s take=%s%s",
+                            status_code,
+                            skip,
+                            take,
+                            cuerpo,
+                        )
+                        return propiedades
+
+                    logger.warning(
+                        "Error Wasi skip=%s take=%s intento=%s HTTP=%s%s",
+                        skip,
+                        take,
+                        intento + 1,
+                        status_code,
+                        cuerpo,
+                    )
+
+                    if not es_transitorio:
+                        break
+
+                    espera = WASI_RETRY_BASE_SECONDS * (2 ** intento)
+
+                    if status_code == 429:
+                        retry_after = exc.response.headers.get("Retry-After")
+                        try:
+                            espera = max(espera, float(retry_after))
+                        except (TypeError, ValueError):
+                            pass
+
+                    await asyncio.sleep(espera)
+
+                except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as exc:
+                    ultimo_error = exc
+                    logger.warning(
+                        "Timeout/conexión Wasi skip=%s take=%s intento=%s tipo=%s",
+                        skip,
+                        take,
+                        intento + 1,
+                        type(exc).__name__,
+                    )
+                    await asyncio.sleep(
+                        WASI_RETRY_BASE_SECONDS * (2 ** intento)
+                    )
+
+                except Exception as exc:
+                    ultimo_error = exc
+                    logger.warning(
+                        "Error Wasi skip=%s take=%s intento=%s tipo=%s",
+                        skip,
+                        take,
+                        intento + 1,
+                        type(exc).__name__,
+                    )
+                    await asyncio.sleep(
+                        WASI_RETRY_BASE_SECONDS * (2 ** intento)
+                    )
+
+            if exito:
                 break
-            except Exception as exc:
+
+            if take != tamanos[-1] and ultimo_error is not None:
                 logger.warning(
-                    "Error Wasi skip=%s intento=%s tipo=%s",
-                    skip, intento + 1, type(exc).__name__,
+                    "Wasi no pudo responder el lote skip=%s take=%s; probando lote más pequeño.",
+                    skip,
+                    take,
                 )
-                await asyncio.sleep(2 ** intento)
 
         if not isinstance(data, dict):
+            if ultimo_error:
+                logger.error(
+                    "Wasi no pudo cargar la página skip=%s. Último error=%s",
+                    skip,
+                    type(ultimo_error).__name__,
+                )
             break
+
         cantidad_pagina = 0
 
         for clave, valor in data.items():
@@ -1566,15 +1685,22 @@ async def obtener_inventario_wasi() -> List[dict]:
                 propiedades.append(propiedad)
                 property_detail_cache[propiedad["id"]] = propiedad
 
-        if cantidad_pagina < take:
+        if cantidad_pagina == 0:
+            logger.warning(
+                "Wasi respondió sin propiedades para skip=%s take=%s.",
+                skip,
+                take_usado,
+            )
             break
 
-        skip += take
-        await asyncio.sleep(0.2)
+        if cantidad_pagina < take_usado:
+            break
+
+        skip += cantidad_pagina
+        await asyncio.sleep(0.5)
 
     logger.info("Inventario Wasi cargado: %s propiedades", len(propiedades))
     return propiedades
-
 
 async def actualizar_inventario(force: bool = False) -> bool:
     if not force and not inventario_necesita_actualizacion():
