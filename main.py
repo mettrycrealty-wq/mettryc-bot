@@ -289,6 +289,58 @@ def normalizar_para_comparar(valor: Any) -> str:
     return re.sub(r"\s+", " ", texto).strip()
 
 
+def normalizar_mensaje_multimedia(mensaje: Any, payload: Optional[dict] = None) -> str:
+    """Normaliza placeholders de imagen/audio/archivo enviados por el puente de WhatsApp."""
+    texto = str(mensaje or "").strip()
+    limpio = (
+        texto.replace("\u200e", "")
+        .replace("\u200f", "")
+        .replace("\u200b", "")
+        .strip()
+    )
+    normalizado = normalizar_para_comparar(limpio)
+
+    marcadores = {
+        "<multimedia omitido>",
+        "[multimedia omitido]",
+        "multimedia omitido",
+        "<media omitted>",
+        "[media omitted]",
+        "media omitted",
+        "<imagen omitida>",
+        "imagen omitida",
+        "<image omitted>",
+        "image omitted",
+        "<audio omitido>",
+        "audio omitido",
+        "<audio omitted>",
+        "audio omitted",
+        "<documento omitido>",
+        "documento omitido",
+        "<document omitted>",
+        "document omitted",
+    }
+
+    tiene_adjunto = False
+    if isinstance(payload, dict):
+        claves_adjunto = (
+            "media_url", "mediaUrl", "image", "images",
+            "attachment", "attachments", "file", "document",
+            "video", "audio", "sticker",
+        )
+        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
+
+    nombre_adjunto = re.fullmatch(
+        r"(?i)\s*(?:‎)?(?:img|vid|aud|ptt|stk|doc)[-_a-z0-9]+(?:\.[a-z0-9]+)?\s*\(archivo adjunto\)\s*",
+        limpio,
+    )
+
+    if normalizado in marcadores or nombre_adjunto or (tiene_adjunto and not limpio):
+        return MARCADOR_MULTIMEDIA
+
+    return texto
+
+
 def normalizar_nombre(valor: Any) -> str:
     palabras = re.findall(
         r"[A-Za-zÀ-ÖØ-ÿ'’-]+",
@@ -5472,7 +5524,7 @@ ACCIONES_QUE_REQUIEREN_ROL = {
 
 async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado = obtener_sesion(sender)
-    texto = str(mensaje or "").strip()
+    texto = normalizar_mensaje_multimedia(mensaje)
     texto_norm = normalizar_texto(texto)
 
     # El agente virtual sustituye solo la capa conversacional. WASI, Sheets,
@@ -6116,6 +6168,8 @@ async def webhook_agente_virtual(
 
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
+
+    mensaje = normalizar_mensaje_multimedia(mensaje, payload)
     if not mensaje:
         return {"replies": []}
 
@@ -6199,21 +6253,11 @@ async def webhook(
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
 
-    # FIX #11: cuando llega un mensaje multimedia (imagen, audio,
-    # documento) sin texto, en vez de ignorarlo silenciosamente se
-    # convierte en un marcador interno para que el bot responda
-    # pidiendo el código o el detalle por escrito.
+    # FIX #11/#12: normalizar tanto multimedia sin texto como los
+    # placeholders que el puente de WhatsApp puede colocar en message.
+    mensaje = normalizar_mensaje_multimedia(mensaje, payload)
     if not mensaje:
-        claves_adjunto = [
-            "media_url", "mediaUrl", "image", "images", "attachment",
-            "attachments", "file", "document", "video", "audio", "sticker",
-        ]
-        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
-
-        if not tiene_adjunto:
-            return {"replies": []}
-
-        mensaje = MARCADOR_MULTIMEDIA
+        return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
