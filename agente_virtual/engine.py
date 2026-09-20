@@ -615,18 +615,11 @@ class AgenteVirtualEngine:
         admin_notified: set[str] = set()
 
         if analysis.human_requested or analysis.intent == "atencion_humana":
-            # Para clientes avisamos al administrador de inmediato. Para colegas,
-            # la propia rutina legacy conserva el proceso especial que ya funciona.
-            if state.get("rol") != "colega_inmobiliario":
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason="Solicitud explícita de atención humana",
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add("atencion_humana")
-
+            # Para clientes NO enviamos una alerta administrativa aquí.
+            # La notificación correcta se produce una sola vez al completar
+            # el lead, dentro de completar_y_asignar_lead(), junto con el
+            # agente asignado por Round Robin.
+            # Para colegas, la propia rutina legacy conserva su flujo especial.
             result = await self.bridge.human(state, text)
             business_results.append(result)
 
