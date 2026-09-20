@@ -818,6 +818,30 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
+    def _is_generic_availability_question(text: str, legacy: Any) -> bool:
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
+        return any(
+            phrase in normalized
+            for phrase in (
+                "esta disponible",
+                "esta aun disponible",
+                "esta disponible todavia",
+                "sigue disponible",
+                "aun disponible",
+                "todavia esta disponible",
+                "todavia disponible",
+                "esta aun disponible la propiedad",
+                "esta disponible la propiedad",
+            )
+        )
+
+
+    @staticmethod
     def _requests_more_property_info(text: str) -> bool:
         """Detecta una solicitud directa de información/fotos de un anuncio."""
         normalized = str(text or "").lower()
