@@ -36,11 +36,22 @@ class PatyLearningAnalyzer:
             )
 
         params = {"limit": str(max(1, min(limit, 5000)))}
+
         if self.read_key:
             params["key"] = self.read_key
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(self.read_url, params=params)
+        # FIX:
+        # Google Apps Script devuelve 302 hacia script.googleusercontent.com.
+        # httpx necesita follow_redirects=True para continuar la petición.
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                self.read_url,
+                params=params,
+            )
+
             response.raise_for_status()
             payload = response.json()
 
@@ -50,23 +61,29 @@ class PatyLearningAnalyzer:
             events = payload
 
         if not isinstance(events, list):
-            raise RuntimeError("Google Apps Script devolvió un formato inválido.")
+            raise RuntimeError(
+                "Google Apps Script devolvió un formato inválido."
+            )
 
         return [
-            item for item in events
+            item
+            for item in events
             if isinstance(item, dict)
         ]
 
     @staticmethod
     def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
         turns = [
-            e for e in events
+            e
+            for e in events
             if e.get("event_type", e.get("event")) == "conversation_turn"
         ]
 
         conversations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
         for event in events:
             cid = str(event.get("conversation_id") or "").strip()
+
             if cid:
                 conversations[cid].append(event)
 
@@ -74,7 +91,11 @@ class PatyLearningAnalyzer:
 
         def truth(value: Any) -> bool:
             return str(value).strip().lower() in {
-                "true", "1", "yes", "si", "sí"
+                "true",
+                "1",
+                "yes",
+                "si",
+                "sí",
             }
 
         converted = set()
@@ -82,10 +103,13 @@ class PatyLearningAnalyzer:
         abandoned = set()
 
         for cid, rows in conversations.items():
+
             if any(truth(r.get("lead_captured")) for r in rows):
                 converted.add(cid)
+
             if any(truth(r.get("lead_assigned")) for r in rows):
                 assigned.add(cid)
+
             if any(truth(r.get("possible_abandonment")) for r in rows):
                 abandoned.add(cid)
 
@@ -93,51 +117,81 @@ class PatyLearningAnalyzer:
             str(e.get("intent") or "sin_intencion")
             for e in turns
         )
+
         signals = Counter(
             str(e.get("sales_signal") or "ninguna")
             for e in turns
         )
+
         next_steps = Counter(
             str(e.get("sales_next_step") or "ninguno")
             for e in turns
         )
+
         origins = Counter(
             str(e.get("origin") or "sin_origen")
             for e in turns
         )
 
         by_origin: dict[str, dict[str, int]] = defaultdict(
-            lambda: {"conversaciones": 0, "convertidas": 0, "asignadas": 0}
+            lambda: {
+                "conversaciones": 0,
+                "convertidas": 0,
+                "asignadas": 0,
+            }
         )
 
         for cid, rows in conversations.items():
+
             turn = next(
-                (r for r in rows if r.get("event_type", r.get("event")) == "conversation_turn"),
+                (
+                    r
+                    for r in rows
+                    if r.get(
+                        "event_type",
+                        r.get("event")
+                    ) == "conversation_turn"
+                ),
                 {},
             )
+
             origin = str(turn.get("origin") or "sin_origen")
+
             by_origin[origin]["conversaciones"] += 1
+
             if cid in converted:
                 by_origin[origin]["convertidas"] += 1
+
             if cid in assigned:
                 by_origin[origin]["asignadas"] += 1
 
         conversion_rate = (
             len(converted) / total_conversations
-            if total_conversations else 0.0
+            if total_conversations
+            else 0.0
         )
+
         assignment_rate = (
             len(assigned) / total_conversations
-            if total_conversations else 0.0
+            if total_conversations
+            else 0.0
         )
 
         return {
             "periodo_desde": min(
-                (str(e.get("timestamp")) for e in events if e.get("timestamp")),
+                (
+                    str(e.get("timestamp"))
+                    for e in events
+                    if e.get("timestamp")
+                ),
                 default=None,
             ),
             "periodo_hasta": max(
-                (str(e.get("timestamp")) for e in events if e.get("timestamp")),
+                (
+                    str(e.get("timestamp"))
+                    for e in events
+                    if e.get("timestamp")
+                ),
                 default=None,
             ),
             "eventos": len(events),
@@ -161,7 +215,9 @@ class PatyLearningAnalyzer:
         limit: int = 1000,
         include_ai: bool = True,
     ) -> dict[str, Any]:
+
         events = await self.fetch_events(limit=limit)
+
         summary = self.summarize(events)
 
         result: dict[str, Any] = {
@@ -177,8 +233,10 @@ class PatyLearningAnalyzer:
         if not include_ai or not events:
             return result
 
-        # Solo enviamos al modelo métricas agregadas, no mensajes completos.
-        prompt_data = json.dumps(summary, ensure_ascii=False)
+        prompt_data = json.dumps(
+            summary,
+            ensure_ascii=False,
+        )
 
         messages = [
             {
@@ -189,11 +247,7 @@ class PatyLearningAnalyzer:
                     "conversacionales basadas únicamente en los datos. "
                     "No inventes causas. Distingue hechos de hipótesis. "
                     "No cambies reglas, no programes nada y no recomiendes "
-                    "un cuestionario rígido. Busca oportunidades para que "
-                    "Paty sea más natural, preserve contexto y convierta "
-                    "mejor sin presionar al usuario. "
-                    "Devuelve JSON con: hallazgos (lista), hipótesis (lista), "
-                    "recomendaciones (lista), datos_faltantes (lista)."
+                    "un cuestionario rígido."
                 ),
             },
             {
@@ -203,18 +257,26 @@ class PatyLearningAnalyzer:
         ]
 
         try:
+
             raw = await self.router.completion(
                 messages,
                 temperature=0.1,
                 max_tokens=1200,
             )
+
             cleaned = self.router._clean_json(raw)
+
             ai_report = json.loads(cleaned)
+
             if isinstance(ai_report, dict):
                 result["ai_analysis"] = ai_report
+
         except Exception as exc:
+
             result["ai_analysis_error"] = (
-                type(exc).__name__ + ": " + str(exc)[:240]
+                type(exc).__name__
+                + ": "
+                + str(exc)[:240]
             )
 
         return result
