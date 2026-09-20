@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -105,10 +104,6 @@ INTERVALO_ACTUALIZACION_SHEETS = timedelta(
 INTERVALO_ACTUALIZACION_WASI = timedelta(
     hours=int(os.getenv("INTERVALO_ACTUALIZACION_WASI_HORAS", "12"))
 )
-
-# Marcador interno usado cuando el webhook recibe un mensaje multimedia
-# (imagen, audio, documento) sin texto asociado.
-MARCADOR_MULTIMEDIA = "[multimedia_sin_texto]"
 
 # ============================================================
 # MODELOS ESTRUCTURADOS PARA LA IA
@@ -301,112 +296,6 @@ def normalizar_nombre(valor: Any) -> str:
     )
 
 
-def extraer_url_imagen_payload(payload: Any) -> Optional[str]:
-    """Busca URL, data URI o base64 de imagen en el payload del autoresponder."""
-    claves_imagen = {
-        "media_url", "mediaurl", "image", "images", "image_url",
-        "imageurl", "photo", "photos", "picture", "pictures",
-        "attachment", "attachments", "file", "files", "document",
-        "media", "media_object", "media_data",
-    }
-    claves_base64 = {
-        "base64", "base64data", "base64_data", "data_base64",
-        "image_base64", "content_base64", "data",
-    }
-
-    def convertir_base64(valor: str, tipo: str) -> Optional[str]:
-        texto = str(valor or "").strip()
-        mime = str(tipo or "").lower().split(";")[0].strip()
-
-        if texto.startswith("data:image/"):
-            return texto
-
-        if not (mime.startswith("image/") or mime in {"image", "photo", "picture"}):
-            return None
-
-        if len(texto) < 100:
-            return None
-
-        limpio = re.sub(r"\s+", "", texto)
-        if not re.fullmatch(r"[A-Za-z0-9+/=]+", limpio):
-            return None
-
-        try:
-            base64.b64decode(limpio, validate=True)
-        except Exception:
-            return None
-
-        tipo_final = mime if mime.startswith("image/") else "image/jpeg"
-        return f"data:{tipo_final};base64,{limpio}"
-
-    def recorrer(valor: Any, es_imagen: bool = False, tipo_imagen: str = "") -> Optional[str]:
-        if isinstance(valor, dict):
-            tipo = str(
-                valor.get("type")
-                or valor.get("mime_type")
-                or valor.get("mime")
-                or valor.get("content_type")
-                or tipo_imagen
-                or ""
-            ).lower()
-
-            contexto_imagen = (
-                es_imagen
-                or "image/" in tipo
-                or tipo in {"image", "photo", "picture"}
-            )
-
-            for clave, contenido in valor.items():
-                clave_norm = str(clave).lower()
-                siguiente_imagen = (
-                    contexto_imagen
-                    or clave_norm in claves_imagen
-                    or clave_norm in claves_base64
-                )
-
-                if isinstance(contenido, str):
-                    texto = contenido.strip()
-
-                    if texto.startswith("data:image/"):
-                        return texto
-
-                    if siguiente_imagen and texto.startswith(
-                        ("http://", "https://")
-                    ):
-                        return texto
-
-                    if contexto_imagen and clave_norm in claves_base64:
-                        convertido = convertir_base64(texto, tipo)
-                        if convertido:
-                            return convertido
-
-                encontrado = recorrer(
-                    contenido,
-                    siguiente_imagen,
-                    tipo if contexto_imagen else tipo_imagen,
-                )
-                if encontrado:
-                    return encontrado
-
-        elif isinstance(valor, list):
-            for item in valor:
-                encontrado = recorrer(item, es_imagen, tipo_imagen)
-                if encontrado:
-                    return encontrado
-
-        elif isinstance(valor, str) and es_imagen:
-            texto = valor.strip()
-            if texto.startswith("data:image/") or texto.startswith(
-                ("http://", "https://")
-            ):
-                return texto
-            convertido = convertir_base64(texto, tipo_imagen)
-            if convertido:
-                return convertido
-
-        return None
-
-    return recorrer(payload)
 
 
 def convertir_float(valor: Any) -> float:
@@ -5623,7 +5512,6 @@ ACCIONES_QUE_REQUIEREN_ROL = {
 async def procesar_mensaje(
     sender: str,
     mensaje: str,
-    image_source: Optional[str] = None,
 ) -> str:
     estado = obtener_sesion(sender)
     texto = str(mensaje or "").strip()
@@ -5633,7 +5521,6 @@ async def procesar_mensaje(
     # captadores, agentes, leads, visitas y notificaciones siguen en main.py.
     if (
         AGENTE_VIRTUAL_ACTIVO
-        and (texto != MARCADOR_MULTIMEDIA or image_source)
         and texto_norm != "/reiniciar"
     ):
         global agente_virtual_engine
@@ -5646,7 +5533,6 @@ async def procesar_mensaje(
             return await agente_virtual_engine.process(
                 sender,
                 texto,
-                image_source=image_source,
             )
         except Exception as exc:
             logger.exception(
@@ -5663,17 +5549,6 @@ async def procesar_mensaje(
             agregar_historial(estado, "assistant", respuesta)
         guardar_sesion(sender, estado)
         return respuesta
-
-    # --------------------------------------------------------
-    # FIX #11: mensaje multimedia sin texto (imagen, audio, etc.)
-    # --------------------------------------------------------
-    if texto == MARCADOR_MULTIMEDIA:
-        return await finalizar(
-            "Recibí una imagen o archivo, pero no puedo leer su "
-            "contenido automáticamente todavía. ¿Puedes escribirme "
-            "el código del inmueble, el enlace del anuncio, o "
-            "contarme qué necesitas?"
-        )
 
     # --------------------------------------------------------
     # REINICIO DE BÚSQUEDA
@@ -6275,22 +6150,14 @@ async def webhook_agente_virtual(
 
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
-    image_source = extraer_url_imagen_payload(payload)
-
-    if not mensaje and not image_source:
-        return {"replies": []}
 
     if not mensaje:
-        mensaje = MARCADOR_MULTIMEDIA
-
+        return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
             return {"replies": []}
-    elif mensaje_sin_id_es_duplicado(
-        sender,
-        mensaje + ("|imagen:" + image_source[:120] if image_source else ""),
-    ):
+    elif mensaje_sin_id_es_duplicado(sender, mensaje):
         logger.info(
             "Mensaje duplicado sin message_id ignorado sender=%s",
             sender[-4:],
@@ -6371,23 +6238,8 @@ async def webhook(
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
 
-    # FIX #11: cuando llega un mensaje multimedia (imagen, audio,
-    # documento) sin texto, en vez de ignorarlo silenciosamente se
-    # convierte en un marcador interno para que el bot responda
-    # pidiendo el código o el detalle por escrito.
     if not mensaje:
-        claves_adjunto = [
-            "media_url", "mediaUrl", "image", "images", "attachment",
-            "attachments", "file", "document", "video", "audio", "sticker",
-        ]
-        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
-
-        if not tiene_adjunto:
-            return {"replies": []}
-
-        mensaje = MARCADOR_MULTIMEDIA
-
-    image_source = extraer_url_imagen_payload(payload)
+        return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
@@ -6426,7 +6278,6 @@ async def webhook(
             respuesta = await procesar_mensaje(
                 sender,
                 mensaje,
-                image_source=image_source,
             )
 
         if not respuesta:
