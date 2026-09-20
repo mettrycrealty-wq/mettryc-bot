@@ -6217,8 +6217,14 @@ async def webhook_agente_virtual(
 
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
-    if not mensaje:
+    image_source = extraer_url_imagen_payload(payload)
+
+    if not mensaje and not image_source:
         return {"replies": []}
+
+    if not mensaje:
+        mensaje = MARCADOR_MULTIMEDIA
+
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
