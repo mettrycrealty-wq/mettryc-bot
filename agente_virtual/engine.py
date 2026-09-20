@@ -188,6 +188,70 @@ class AgenteVirtualEngine:
             }
             and not state.get("lead_confirmacion_pendiente")
         ):
+            respuesta = (
+                "¡Con gusto! Quedo atento por si deseas consultar algo más "
+                "sobre la propiedad."
+                if state.get("propiedad_interes") or state.get("ultimo_lote")
+                else "¡Con gusto! Quedo atento por si necesitas algo más."
+            )
+            return await self._finalize(sender, state, text, respuesta)
+
+        # Propuestas comerciales o empresariales no deben caer en el flujo
+        # inmobiliario de propiedades ni pedir confirmación de rol.
+        if self._is_business_proposal(text):
+            state["pregunta_pendiente"] = None
+            state["esperando_codigo"] = False
+
+            notified = await self.bridge.notify_admins(
+                sender=sender,
+                state=state,
+                reason="Propuesta comercial o empresarial recibida",
+                original_message=text,
+            )
+
+            if notified:
+                respuesta = (
+                    "Gracias por escribirnos y por compartir la propuesta. "
+                    "Recibí la información y ya la canalicé con el equipo "
+                    "responsable de Mettryc Realty."
+                )
+            else:
+                respuesta = (
+                    "Gracias por escribirnos y por compartir la propuesta. "
+                    "Recibí la información y puedes continuar conversando "
+                    "conmigo sobre Mettryc Realty."
+                )
+
+            return await self._finalize(sender, state, text, respuesta)
+
+        # Un cambio claro de tema libera preguntas inmobiliarias pendientes,
+        # pero conserva la propiedad para poder retomarla después.
+        if self._is_explicit_topic_switch(text):
+            if state.get("pregunta_pendiente") in {
+                "codigo_para_detalle",
+                "esperando_codigo_propiedad",
+                "confirmar_rol",
+                "confirmar_ciudad_zona",
+            }:
+                state["pregunta_pendiente"] = None
+            state["esperando_codigo"] = False
+
+        # Cierres sociales no deben ejecutar búsquedas nuevas.
+        if (
+            self._is_social_closure(text)
+            and state.get("pregunta_pendiente")
+            not in {
+                "confirmar_rol",
+                "confirmar_ciudad_zona",
+                "confirmar_agente_para_captador",
+                "codigo_para_detalle",
+                "ofrecer_asesor",
+                "visita_o_pregunta_propiedad",
+                "datos_contacto_colega",
+                "asunto_contacto_colega",
+            }
+            and not state.get("lead_confirmacion_pendiente")
+        ):
             if state.get("propiedad_interes") or state.get("ultimo_lote"):
                 respuesta = "¡Con gusto! Quedo atento por si deseas consultar algo más sobre la propiedad."
             else:
@@ -1240,6 +1304,137 @@ class AgenteVirtualEngine:
             "buenas tardes", "buenas noches", "hola buenas",
             "hola buenas tardes", "hola buenas noches",
         }
+
+    @staticmethod
+    def _is_explicit_topic_switch(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        markers = (
+            "cómo se llama la empresa",
+            "como se llama la empresa",
+            "qué empresa es",
+            "que empresa es",
+            "quiénes son",
+            "quienes son",
+            "qué hace mettryc",
+            "que hace mettryc",
+            "tienen atención automática",
+            "tienen atencion automatica",
+            "atención automática",
+            "atencion automatica",
+            "con quien me comuniqué",
+            "con quien me comunique",
+            "quien me atendió",
+            "quien me atendio",
+            "soy founder",
+            "soy ceo",
+            "founder & ceo",
+            "agentia",
+            "presentarles una solución",
+            "presentarles una solucion",
+            "persona responsable",
+            "responsable de mettryc",
+            "hablar con la persona responsable",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _is_media_reference_text(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "está en la foto",
+            "esta en la foto",
+            "está en la imagen",
+            "esta en la imagen",
+            "es la de la foto",
+            "es la de la imagen",
+            "la que está en la foto",
+            "la que esta en la foto",
+            "la que está en la imagen",
+            "la que esta en la imagen",
+            "la que te mandé",
+            "la que te mande",
+            "la que envié",
+            "la que envie",
+            "la que te envié",
+            "la que te envie",
+        }
+
+    @staticmethod
+    def _is_social_closure(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+
+        exact = {
+            "gracias",
+            "muchas gracias",
+            "excelente",
+            "perfecto",
+            "excelente gracias",
+            "perfecto gracias",
+            "cuenta con eso",
+            "de acuerdo",
+            "entendido",
+            "bien gracias",
+            "listo gracias",
+            "ya le pase tu contacto",
+            "ya le pasé tu contacto",
+            "ya comparti tu contacto",
+            "ya compartí tu contacto",
+            "ya le envie tu contacto",
+            "ya le envié tu contacto",
+        }
+        if normalized in exact:
+            return True
+
+        closing_markers = (
+            "gracias",
+            "cuenta con eso",
+            "ya le pase tu contacto",
+            "ya le pasé tu contacto",
+            "ya le envie tu contacto",
+            "ya le envié tu contacto",
+            "ya comparti tu contacto",
+            "ya compartí tu contacto",
+        )
+        action_markers = (
+            "busco",
+            "quiero comprar",
+            "quiero alquilar",
+            "quiero visitar",
+            "agendar",
+            "muestrame",
+            "muéstrame",
+            "precio",
+            "disponible",
+            "captador",
+            "asesor",
+            "codigo",
+            "código",
+        )
+        return any(marker in normalized for marker in closing_markers) and not any(
+            marker in normalized for marker in action_markers
+        )
+
+    @staticmethod
+    def _is_business_proposal(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        markers = (
+            "founder & ceo",
+            "founder y ceo",
+            "agentia",
+            "empleados digitales",
+            "solucion que puede tener un impacto",
+            "solución que puede tener un impacto",
+            "presentarles una solucion",
+            "presentarles una solución",
+            "plataforma",
+            "crm y gestion de oportunidades",
+            "crm y gestión de oportunidades",
+            "no buscamos reemplazar al asesor",
+            "me gustaría conversar 15 minutos",
+            "me gustaria conversar 15 minutos",
+            "persona responsable",
+        )
+        return any(marker in normalized for marker in markers)
 
     @staticmethod
     def _is_explicit_topic_switch(text: str) -> bool:
