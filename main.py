@@ -300,6 +300,57 @@ def normalizar_nombre(valor: Any) -> str:
     )
 
 
+def extraer_url_imagen_payload(payload: Any) -> Optional[str]:
+    """Busca una URL/data URI de imagen en el payload del autoresponder."""
+    claves_imagen = {
+        "media_url", "mediaurl", "image", "images", "image_url",
+        "imageurl", "photo", "photos", "picture", "pictures",
+        "attachment", "attachments", "file", "files", "document",
+    }
+
+    def recorrer(valor: Any, es_imagen: bool = False) -> Optional[str]:
+        if isinstance(valor, dict):
+            tipo = str(
+                valor.get("type")
+                or valor.get("mime_type")
+                or valor.get("mime")
+                or ""
+            ).lower()
+
+            contexto_imagen = (
+                es_imagen
+                or "image/" in tipo
+                or tipo in {"image", "photo", "picture"}
+            )
+
+            for clave, contenido in valor.items():
+                clave_norm = str(clave).lower()
+                siguiente_imagen = contexto_imagen or clave_norm in claves_imagen
+
+                if isinstance(contenido, str):
+                    texto = contenido.strip()
+                    if texto.startswith("data:image/"):
+                        return texto
+                    if siguiente_imagen and texto.startswith(
+                        ("http://", "https://")
+                    ):
+                        return texto
+
+                encontrado = recorrer(contenido, siguiente_imagen)
+                if encontrado:
+                    return encontrado
+
+        elif isinstance(valor, list):
+            for item in valor:
+                encontrado = recorrer(item, es_imagen)
+                if encontrado:
+                    return encontrado
+
+        return None
+
+    return recorrer(payload)
+
+
 def convertir_float(valor: Any) -> float:
     try:
         if valor in (None, "", "N/D"):
@@ -5511,7 +5562,11 @@ ACCIONES_QUE_REQUIEREN_ROL = {
 }
 
 
-async def procesar_mensaje(sender: str, mensaje: str) -> str:
+async def procesar_mensaje(
+    sender: str,
+    mensaje: str,
+    image_source: Optional[str] = None,
+) -> str:
     estado = obtener_sesion(sender)
     texto = str(mensaje or "").strip()
     texto_norm = normalizar_texto(texto)
@@ -5520,7 +5575,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     # captadores, agentes, leads, visitas y notificaciones siguen en main.py.
     if (
         AGENTE_VIRTUAL_ACTIVO
-        and texto != MARCADOR_MULTIMEDIA
+        and (texto != MARCADOR_MULTIMEDIA or image_source)
         and texto_norm != "/reiniciar"
     ):
         global agente_virtual_engine
@@ -5530,7 +5585,11 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             agente_virtual_engine = AgenteVirtualEngine()
 
         try:
-            return await agente_virtual_engine.process(sender, texto)
+            return await agente_virtual_engine.process(
+                sender,
+                texto,
+                image_source=image_source,
+            )
         except Exception as exc:
             logger.exception(
                 "Agente Virtual falló; se activa fallback legacy sender=%s tipo=%s",
@@ -6174,6 +6233,8 @@ async def webhook_agente_virtual(
     if sender not in locks_usuarios:
         locks_usuarios[sender] = asyncio.Lock()
 
+    image_source = extraer_url_imagen_payload(payload)
+
     try:
         if not inventory_cache.get("inventario"):
             await actualizar_inventario(force=True)
@@ -6189,7 +6250,11 @@ async def webhook_agente_virtual(
             agente_virtual_engine = AgenteVirtualEngine()
 
         async with locks_usuarios[sender]:
-            respuesta = await agente_virtual_engine.process(sender, mensaje)
+            respuesta = await agente_virtual_engine.process(
+                sender,
+                mensaje,
+                image_source=image_source,
+            )
 
         return {
             "replies": [{"message": str(respuesta).replace("**", "*")}]
@@ -6257,6 +6322,8 @@ async def webhook(
 
         mensaje = MARCADOR_MULTIMEDIA
 
+    image_source = extraer_url_imagen_payload(payload)
+
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
             logger.info(
@@ -6291,7 +6358,11 @@ async def webhook(
 
     try:
         async with locks_usuarios[sender]:
-            respuesta = await procesar_mensaje(sender, mensaje)
+            respuesta = await procesar_mensaje(
+                sender,
+                mensaje,
+                image_source=image_source,
+            )
 
         if not respuesta:
             return {"replies": []}
