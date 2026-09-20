@@ -164,6 +164,38 @@ class AgenteVirtualEngine:
                 text,
                 lead_result,
             )
+        current_turn_search = self._current_turn_has_search_signal(legacy, state, text)
+
+        if state.get("pregunta_pendiente") == "sugerencia_ajuste" and not current_turn_search:
+            sugerencia = state.get("sugerencia_ajuste") or {}
+            opciones = [str(item).strip() for item in (sugerencia.get("sugerencias") or []) if str(item).strip()]
+            elegido = self._match_suggestion_option(text, opciones)
+            if elegido:
+                campo = sugerencia.get("campo")
+                if campo == "tipo_propiedad":
+                    state.setdefault("filtros", {})["tipo_propiedad"] = legacy.normalizar_tipo_propiedad(elegido)
+                elif campo in {"ciudad", "zona"}:
+                    state.setdefault("filtros", {})[campo] = elegido
+                state["sugerencia_ajuste"] = None
+                state["pregunta_pendiente"] = None
+                state["detalle_pregunta_pendiente"] = None
+                resultado = await self.bridge.search(state)
+                return await self._finalize(sender, state, text, resultado.message or "Voy a buscar con ese ajuste.")
+            if legacy.es_respuesta_afirmativa(text) and opciones:
+                opciones_texto = ", ".join(f"{i}. {op}" for i, op in enumerate(opciones, start=1))
+                return await self._finalize(sender, state, text, f"Perfecto. ¿Cuál de estas opciones prefieres: {opciones_texto}?")
+
+        if state.get("pregunta_pendiente") == "sin_resultados" and not current_turn_search:
+            if legacy.es_respuesta_afirmativa(text):
+                return await self._finalize(sender, state, text, "Perfecto. ¿Prefieres que amplíe la zona o que ajuste otro requisito de la búsqueda?")
+
+        if current_turn_search and state.get("consulta_anuncio_pendiente"):
+            state["consulta_anuncio_pendiente"] = False
+            state["origen_anuncio"] = None
+
+        pending_role_action = None
+        if state.get("pregunta_pendiente") == "confirmar_rol":
+            pending_role_action = (state.get("accion_pendiente_rol") or {}).get("tipo")
 
         # MULTIMEDIA SIN TEXTO
         if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
@@ -372,6 +404,14 @@ class AgenteVirtualEngine:
             for item in (geo.get("ciudades_posibles") or [])
             if str(item).strip()
         ]
+        if geo_city and (current_turn_search or pending_role_action in {"buscar_propiedades", "mostrar_mas_propiedades"}):
+            state.setdefault("filtros", {})["ciudad"] = geo_city
+        if geo_zone and (current_turn_search or pending_role_action in {"buscar_propiedades", "mostrar_mas_propiedades"}):
+            state.setdefault("filtros", {})["zona"] = geo_zone
+
+        proximity = self._extract_location_preference(legacy, text)
+        if proximity:
+            state["preferencia_ubicacion"] = proximity
 
         # El rol no se debe adivinar. Primero respetamos una confirmación
         # explícita del usuario y, si existe una acción pendiente de rol,
@@ -421,11 +461,11 @@ class AgenteVirtualEngine:
                 state["pregunta_pendiente"] = None
                 state["estado_conversacion"] = "conversando"
 
-        if geo_zone:
+        if geo_zone or geo_city:
             analysis = analysis.model_copy(
                 update={
-                    "zone": geo_zone,
-                    "city": geo_city if geo_city else None,
+                    "zone": geo_zone if geo_zone else analysis.zone,
+                    "city": geo_city if geo_city else analysis.city,
                 }
             )
 
@@ -638,11 +678,21 @@ class AgenteVirtualEngine:
                 business_results.append(result)
 
         elif analysis.intent == "busqueda_propiedad":
-            if self._search_signal(state):
+            should_search_now = (
+                current_turn_search
+                or pending_role_action in {"buscar_propiedades", "mostrar_mas_propiedades"}
+                or explicit_role is not None
+            )
+            if self._search_signal(state) and should_search_now:
                 business_results.append(await self.bridge.search(state))
 
         elif analysis.intent == "mas_propiedades":
-            if self._search_signal(state):
+            should_search_now = (
+                current_turn_search
+                or pending_role_action in {"buscar_propiedades", "mostrar_mas_propiedades"}
+                or explicit_role is not None
+            )
+            if self._search_signal(state) and should_search_now:
                 business_results.append(await self.bridge.search(state))
 
         elif analysis.intent in {
@@ -1299,6 +1349,32 @@ class AgenteVirtualEngine:
             filtros_antes != prueba.get("filtros", {})
             or sin_pref_antes != list(prueba.get("sin_preferencia", []))
         )
+
+    @staticmethod
+    def _match_suggestion_option(text: str, options: list[str]) -> str | None:
+        normalized = " ".join(str(text or "").lower().split())
+        match = re.fullmatch(r"(?:opcion|opción)?\s*([1-9])", normalized)
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(options):
+                return options[index]
+        for option in options:
+            if option and option.lower() in normalized:
+                return option
+        return None
+
+    @staticmethod
+    def _extract_location_preference(legacy: Any, text: str) -> dict | None:
+        normalized = legacy.normalizar_texto(text)
+        markers = ("cerca de", "cercano a", "cercana a", "alrededores de", "lo mas cerca de", "lo más cerca de")
+        if not any(marker in normalized for marker in markers):
+            return None
+        center = legacy.detectar_ciudad_canonica(text)
+        if not center:
+            return None
+        estado_geo = legacy._estado_geografico_de_ciudad(center) if hasattr(legacy, "_estado_geografico_de_ciudad") else None
+        no_gran_ciudad = any(marker in normalized for marker in ("no quiero en una gran ciudad", "no quiero una gran ciudad", "no quiero en una ciudad grande", "no quiero una ciudad grande", "sin ciudad grande"))
+        return {"modo": "cerca_de", "centro": center, "estado": estado_geo, "evitar_gran_ciudad": no_gran_ciudad}
 
     @staticmethod
     def _search_signal(state: dict) -> bool:
