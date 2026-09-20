@@ -289,6 +289,73 @@ def normalizar_para_comparar(valor: Any) -> str:
     return re.sub(r"\s+", " ", texto).strip()
 
 
+def normalizar_nombre(valor: Any) -> str:
+    palabras = re.findall(
+        r"[A-Za-zÀ-ÖØ-ÿ'’-]+",
+        str(valor or ""),
+    )
+    return " ".join(
+        palabra[:1].upper() + palabra[1:].lower()
+        for palabra in palabras
+    )
+
+
+def convertir_float(valor: Any) -> float:
+    try:
+        if valor in (None, "", "N/D"):
+            return 0.0
+        return float(valor)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def convertir_entero(valor: Any) -> int:
+    try:
+        if valor in (None, "", "N/D"):
+            return 0
+        return int(float(valor))
+    except (TypeError, ValueError):
+        return 0
+
+
+def formato_moneda(valor: Any) -> str:
+    numero = convertir_float(valor)
+    if numero <= 0:
+        return "N/D"
+    return f"${numero:,.0f}".replace(",", ".")
+
+
+def limpiar_telefono(valor: Any) -> str:
+    return re.sub(r"\D", "", str(valor or ""))
+
+
+def normalizar_telefono(valor: Any) -> Optional[str]:
+    telefono = limpiar_telefono(valor)
+
+    if telefono.startswith("00"):
+        telefono = telefono[2:]
+
+    if telefono.startswith("0") and len(telefono) == 11:
+        telefono = "58" + telefono[1:]
+
+    if len(telefono) == 10 and telefono.startswith("4"):
+        telefono = "58" + telefono
+
+    if 10 <= len(telefono) <= 15:
+        return telefono
+
+    return None
+
+
+def extraer_telefono(texto: str) -> Optional[str]:
+    coincidencia = re.search(
+        r"(\+?\d[\d\s\-()]{7,}\d)",
+        texto or "",
+    )
+    if not coincidencia:
+        return None
+    return normalizar_telefono(coincidencia.group(1))
+
 def normalizar_mensaje_multimedia(mensaje: Any, payload: Optional[dict] = None) -> str:
     """Normaliza placeholders de imagen/audio/archivo enviados por WhatsApp."""
     texto = str(mensaje or "").strip()
