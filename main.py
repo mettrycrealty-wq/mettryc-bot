@@ -6294,8 +6294,10 @@ async def webhook_agente_virtual(
         locks_usuarios[sender] = asyncio.Lock()
 
     try:
+        # Las actualizaciones de servicios externos nunca deben bloquear
+        # la respuesta del usuario.
         if not inventory_cache.get("inventario"):
-            await actualizar_inventario(force=True)
+            asyncio.create_task(actualizar_inventario(force=True))
         elif inventario_necesita_actualizacion():
             asyncio.create_task(actualizar_inventario())
 
@@ -6384,8 +6386,10 @@ async def webhook(
         locks_usuarios[sender] = asyncio.Lock()
 
     try:
+        # Las actualizaciones de servicios externos nunca deben bloquear
+        # la respuesta del usuario.
         if not inventory_cache.get("inventario"):
-            await actualizar_inventario(force=True)
+            asyncio.create_task(actualizar_inventario(force=True))
         elif inventario_necesita_actualizacion():
             asyncio.create_task(actualizar_inventario())
 
