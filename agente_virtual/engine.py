@@ -166,9 +166,8 @@ class AgenteVirtualEngine:
                     "Soy Paty, el Asistente Virtual de Mettryc Realty. "
                     "Por ahora solo puedo entender mensajes escritos; no puedo "
                     "interpretar imágenes, audios ni notas de voz. "
-                    "Escríbeme el código o ID de la propiedad que aparece "
-                    "normalmente al final del título del anuncio y te ayudo con "
-                    "la información."
+                    "Por favor, escribe tu solicitud por mensaje de texto y "
+                    "continuamos desde donde quedamos."
                 ),
             )
 
