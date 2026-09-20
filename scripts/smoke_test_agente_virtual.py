@@ -217,7 +217,8 @@ class FakeLegacy:
             state["rol"] = "cliente"
             state["rol_confirmado"] = True
             state["pregunta_pendiente"] = None
-            return "cliente"        if text in {"para un cliente", "para mi cliente"}:
+            return "cliente"
+        if text in {"para un cliente", "para mi cliente"}:
             state["rol"] = "colega_inmobiliario"
             state["rol_confirmado"] = True
             state["pregunta_pendiente"] = None
