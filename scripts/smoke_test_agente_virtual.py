@@ -515,3 +515,10 @@ async def main():
     print("Cambio de tema casual: OK")
     print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
+    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
+    print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
+    print("Información no disponible + aviso administrativo: OK")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
