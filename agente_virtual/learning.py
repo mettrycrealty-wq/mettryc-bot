@@ -23,7 +23,7 @@ class PatyLearningRecorder:
     """
 
     def __init__(self) -> None:
-        default_path = "/var/data/paty_learning.jsonl"
+        default_path = "./data/paty_learning.jsonl"
         self.path = Path(
             os.getenv("PATY_LEARNING_PATH", default_path)
         )
