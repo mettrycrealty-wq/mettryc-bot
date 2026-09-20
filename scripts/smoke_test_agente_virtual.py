@@ -217,8 +217,7 @@ class FakeLegacy:
             state["rol"] = "cliente"
             state["rol_confirmado"] = True
             state["pregunta_pendiente"] = None
-            return "cliente"
-        if text in {"para un cliente", "para mi cliente"}:
+            return "cliente"        if text in {"para un cliente", "para mi cliente"}:
             state["rol"] = "colega_inmobiliario"
             state["rol_confirmado"] = True
             state["pregunta_pendiente"] = None
@@ -433,6 +432,23 @@ async def main():
     assert "enviame el código" not in response.lower()
     assert legacy.states[pending_sender]["pregunta_pendiente"] is None
 
+    # Regresión: aunque el clasificador de IA interprete la pregunta de forma
+    # demasiado amplia, una consulta corporativa explícita debe liberar el
+    # estado de código pendiente.
+    legacy.states[pending_sender]["pregunta_pendiente"] = "codigo_para_detalle"
+    legacy.states[pending_sender]["esperando_codigo"] = True
+    response = await engine.process(pending_sender, "¿Qué servicios ofrecen?")
+    assert "enviame el código" not in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
+
+    # Regresión: pedir atención humana tampoco debe quedar atrapado por el
+    # código pendiente.
+    legacy.states[pending_sender]["pregunta_pendiente"] = "codigo_para_detalle"
+    legacy.states[pending_sender]["esperando_codigo"] = True
+    response = await engine.process(pending_sender, "Quiero hablar con un asesor.")
+    assert "enviame el código" not in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
+
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(
         colleague_sender,
@@ -498,10 +514,3 @@ async def main():
     print("Cambio de tema casual: OK")
     print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
-    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
-    print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
-    print("Información no disponible + aviso administrativo: OK")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
