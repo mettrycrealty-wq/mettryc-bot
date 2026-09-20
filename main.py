@@ -4825,7 +4825,11 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
 async def iniciar_visita(
     estado: dict, posicion: Optional[int], codigo: Optional[str] = None,
 ) -> str:
-    propiedad = resolver_propiedad_contexto(estado, posicion=posicion, codigo=codigo)
+    propiedad = resolver_propiedad_contexto(
+        estado,
+        posicion=posicion,
+        codigo=codigo,
+    )
 
     if not propiedad:
         if len(estado.get("ultimo_lote", [])) > 1:
@@ -4846,39 +4850,38 @@ async def iniciar_visita(
 
     if not rol_esta_confirmado(estado):
         return solicitar_rol_para_accion(
-            estado, "agendar_visita", propiedad_id=property_id, posicion=posicion,
+            estado,
+            "agendar_visita",
+            propiedad_id=property_id,
+            posicion=posicion,
         )
 
     if estado.get("rol") == "colega_inmobiliario":
-        await sincronizar_google_sheet()
-        cruce = cruzar_captador_con_sheet(propiedad.get("captador_wasi", ""))
+        detalle = await consultar_detalle_propiedad_wasi(property_id)
+        if detalle:
+            propiedad = detalle
+            estado["propiedad_interes"] = detalle
+
+        datos_captador = obtener_datos_captador(propiedad)
 
         estado["accion_pendiente_rol"] = None
         estado["pregunta_pendiente"] = None
         estado["estado_conversacion"] = "visita_colega"
 
-        if cruce.get("telefono"):
+        if datos_captador["telefono"]:
             return (
                 "Perfecto, colega. El captador de esta propiedad es "
-                f"{cruce.get('nombre')}. Puedes coordinar la visita "
+                f"{datos_captador['nombre']}. Puedes coordinar la visita "
                 "directamente por WhatsApp aquí: "
-                f"https://wa.me/{cruce['telefono']}"
+                f"https://wa.me/{datos_captador['telefono']}"
             )
 
         return (
             "Identifiqué la propiedad, pero el teléfono del captador "
-            "no aparece actualmente en el directorio. Si quieres, "
-            "puedo notificar al equipo administrativo para que "
-            "te ayude a coordinar la visita."
+            "no aparece actualmente en la información de la propiedad. "
+            "Si quieres, puedo notificar al equipo administrativo para "
+            "que te ayude a coordinar la visita."
         )
-
-    estado["accion_pendiente_rol"] = None
-    estado["pregunta_pendiente"] = None
-    estado["objetivo"] = "captura_lead"
-    estado["estado_conversacion"] = "captura_lead"
-    estado["motivo_contacto"] = "Agendar visita"
-
-    return mensaje_solicitud_datos_lead(estado, saludo=True)
 
 
 async def iniciar_atencion_humana(estado: dict, mensaje: str) -> str:
