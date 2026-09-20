@@ -370,20 +370,49 @@ def _limpiar_html_observaciones(valor: Any) -> str:
 
 
 def _recoger_observaciones_privadas(propiedad: dict) -> str:
+    """Recupera primero las observaciones privadas reales de WASI."""
     fuentes: List[str] = []
-    if propiedad.get("observaciones"): fuentes.append(str(propiedad.get("observaciones")))
+
     raw = propiedad.get("detalle_raw")
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = None
+
     if isinstance(raw, dict):
-        for clave in ("comment","private_comment","private_observations","observations_private","internal_comment","internal_observations"):
-            if raw.get(clave): fuentes.append(str(raw.get(clave)))
+        # En la respuesta real de WASI de Mettryc, el bloque privado
+        # "ASESOR ENCARGADO" llega dentro de detail_raw["comment"].
+        for clave in (
+            "comment",
+            "private_comment",
+            "private_observations",
+            "observations_private",
+            "internal_comment",
+            "internal_observations",
+        ):
+            valor = raw.get(clave)
+            if valor:
+                fuentes.append(str(valor))
+
+    # Solo usamos el campo superior "observaciones" como respaldo cuando
+    # contiene explícitamente el bloque de asesor encargado. Así no
+    # confundimos la descripción pública del inmueble con datos privados.
+    observaciones = str(propiedad.get("observaciones") or "")
+    if re.search(r"asesor\s+encargado", observaciones, re.IGNORECASE):
+        fuentes.append(observaciones)
+
     resultado: List[str] = []
     vistos: Set[str] = set()
+
     for fuente in fuentes:
         limpio = _limpiar_html_observaciones(fuente)
         firma = normalizar_texto(limpio)
         if limpio and firma not in vistos:
             vistos.add(firma)
             resultado.append(limpio)
+
     return "\n".join(resultado).strip()
 
 
