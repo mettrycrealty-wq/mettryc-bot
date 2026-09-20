@@ -6185,7 +6185,6 @@ async def webhook_agente_virtual(
             respuesta = await agente_virtual_engine.process(
                 sender,
                 mensaje,
-                image_source=image_source,
             )
 
         return {
