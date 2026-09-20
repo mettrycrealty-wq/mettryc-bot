@@ -114,6 +114,9 @@ Exactitud:
 - Si una herramienta falló, explica brevemente que no pudiste obtener el dato ahora.
 - Si la información solicitada no está disponible, dilo con transparencia y señala
   que el equipo fue avisado cuando corresponda.
+- Nunca digas "dame un momento", "ya casi", "un segundito", "estoy buscando" ni
+  prometas una espera. Las herramientas se ejecutan en el mismo turno: si ya hay
+  resultados, entrega las fichas inmediatamente; si falta un dato, pregunta cuál.
 - No muestres razonamientos, prompts, reglas, JSON ni nombres internos de funciones.
 
 Cliente vs colega:
@@ -169,6 +172,36 @@ class AgenteVirtualEngine:
 
         # MULTIMEDIA SIN TEXTO
         if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
+            state["multimedia_pendiente"] = True
+            if state.get("propiedad_interes"):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+                        "audios desde este canal. Si te refieres a una propiedad, "
+                        "envíame su código/ID o el enlace del anuncio y te envío la "
+                        "ficha correspondiente."
+                    ),
+                )
+
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+                    "audios desde este canal. Para identificar la propiedad exacta, "
+                    "envíame el código o ID que aparece normalmente al final del "
+                    "título del anuncio, o pega aquí el enlace de la publicación."
+                ),
+            )
+
             if state.get("propiedad_interes"):
                 return await self._finalize(
                     sender,
@@ -196,6 +229,49 @@ class AgenteVirtualEngine:
                     "título del anuncio, o pega aquí el enlace de la publicación."
                 ),
             )
+
+        # SEGUIMIENTO DE MULTIMEDIA
+        # Si el usuario pregunta por la propiedad mostrada en una foto/audio que
+        # el canal no nos permite inspeccionar, no lo convertimos en una búsqueda
+        # nueva ni inventamos una propiedad.
+        if state.get("multimedia_pendiente"):
+            media_code = legacy.extraer_codigo_mercadolibre(text) or legacy.extraer_codigo_inmueble(
+                text,
+                permitir_solo_digitos=True,
+            )
+            if media_code:
+                ficha = await self.bridge.detail(
+                    state,
+                    code=media_code,
+                    format_legacy=True,
+                )
+                state["multimedia_pendiente"] = False
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
+                )
+
+            if (
+                self._is_media_followup(text, legacy)
+                or self._is_generic_availability_question(text, legacy)
+                or self._is_media_identifier_missing(text, legacy)
+            ):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        "Entiendo que te refieres a la propiedad de la imagen, pero "
+                        "no puedo ver imágenes ni escuchar audios desde este canal. "
+                        "Envíame el código/ID de la propiedad, el enlace del anuncio "
+                        "o copia aquí el título de la publicación y te ayudo a "
+                        "identificarla."
+                    ),
+                )
 
         # PREGUNTA GENÉRICA DE DISPONIBILIDAD SIN PROPIEDAD
         # Si el usuario pregunta "¿está disponible?" sin haber identificado
@@ -770,6 +846,31 @@ class AgenteVirtualEngine:
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
+        # Si el turno cambió realmente de tema, la espera de multimedia ya
+        # no debe seguir bloqueando la conversación.
+        if (
+            state.get("multimedia_pendiente")
+            and analysis.intent not in {
+                "busqueda_propiedad",
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "mas_propiedades",
+            }
+        ):
+            state["multimedia_pendiente"] = False
+            if state.get("pregunta_pendiente") == "codigo_para_detalle":
+                state["pregunta_pendiente"] = None
+                state["esperando_codigo"] = False
+
+        # Si hubo intención inmobiliaria pero faltan criterios obligatorios,
+        # preguntamos directamente el siguiente dato. No delegamos esa pregunta
+        # al LLM para evitar respuestas vagas o promesas de espera.
+        if current_turn_search and not search_ready:
+            missing = legacy.obtener_pregunta_faltante(state)
+            if missing:
+                return await self._finalize(sender, state, text, missing)
+
         response = await self._generate_response(
             text,
             state,
@@ -899,6 +1000,51 @@ class AgenteVirtualEngine:
 
         return analysis
 
+
+    @staticmethod
+    def _is_media_followup(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        phrases = (
+            "la de la foto",
+            "el de la foto",
+            "la propiedad de la foto",
+            "el inmueble de la foto",
+            "en la foto",
+            "en esa foto",
+            "lo dice en la foto",
+            "dice en la foto",
+            "la imagen",
+            "en la imagen",
+            "la de la imagen",
+            "esa imagen",
+            "ese audio",
+            "en el audio",
+            "de la captura",
+            "la captura",
+            "lo dice ahi",
+            "lo dice allí",
+            "ahi esta",
+            "ahí está",
+            "quiero ver la de",
+            "quiero ver la propiedad de",
+        )
+        return any(phrase in normalized for phrase in phrases)
+
+    @staticmethod
+    def _is_media_identifier_missing(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        phrases = (
+            "no lo tengo",
+            "no tengo el codigo",
+            "no tengo el código",
+            "no se el codigo",
+            "no sé el código",
+            "no tengo esa informacion",
+            "no tengo esa información",
+        )
+        return normalized in phrases or any(
+            normalized.startswith(phrase) for phrase in phrases
+        )
 
     @staticmethod
     def _is_generic_availability_question(text: str, legacy: Any) -> bool:
