@@ -95,6 +95,7 @@ Comportamiento conversacional:
   lo que ya sabe el estado.
 - No hagas preguntas innecesarias. Solo pregunta lo que realmente haga falta para
   avanzar.
+- Si el estado ya confirma un dato, no vuelvas a preguntarlo ni lo reformules como pregunta. En particular, una vez confirmado cliente o colega, nunca vuelvas a preguntar si la propiedad es para sí o para un cliente, salvo que la persona cambie explícitamente esa condición.
 - Puedes hacer una observación breve y amistosa antes de volver al tema inmobiliario
   cuando encaje de forma natural.
 - No menciones que estás clasificando la intención ni que tienes memoria interna.
@@ -483,6 +484,23 @@ class AgenteVirtualEngine:
                     )
                 state["accion_pendiente_rol"] = None
                 state["pregunta_pendiente"] = None
+
+            # La respuesta "para mí" / "para mi cliente" ya resolvió la
+            # pregunta de rol. No enviamos esa misma respuesta nuevamente al
+            # LLM para que la reformule como otra pregunta. Ejecutamos de
+            # inmediato la acción que estaba pendiente.
+            pending_action_result = await self._execute_pending_role_action(
+                state,
+                pending_role_action,
+                analysis,
+            )
+            if pending_action_result is not None:
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    pending_action_result,
+                )
         elif legacy.rol_esta_confirmado(state):
             # Una vez confirmado el rol, el modelo no puede cambiarlo
             # por inferencia en turnos posteriores. Solo una declaración
@@ -759,6 +777,70 @@ class AgenteVirtualEngine:
             legacy.construir_contexto_conocimiento(),
         )
         return await self._finalize(sender, state, text, response)
+
+
+    async def _execute_pending_role_action(
+        self,
+        state: dict,
+        pending_action: str | None,
+        analysis: TurnAnalysis,
+    ) -> str | None:
+        """Continúa directamente la acción que estaba pendiente del rol."""
+        if not pending_action:
+            return None
+
+        if pending_action in {"buscar_propiedades", "mostrar_mas_propiedades"}:
+            result = await self.bridge.search(state)
+            return result.message if result.ok else result.message
+
+        if pending_action == "seleccionar_propiedad":
+            result = await self.bridge.detail(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+                format_legacy=True,
+            )
+            return result.message if result.ok else result.message
+
+        if pending_action == "consultar_propiedad":
+            result = await self.bridge.detail(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+                format_legacy=False,
+            )
+            if result.ok and result.data:
+                response = await self._generate_response(
+                    "",
+                    state,
+                    analysis,
+                    [result],
+                    self.bridge.load().construir_contexto_conocimiento(),
+                )
+                return response
+            return result.message
+
+        if pending_action == "solicitar_captador":
+            result = await self.bridge.captador(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+            )
+            return result.message
+
+        if pending_action == "agendar_visita":
+            result = await self.bridge.visit(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+            )
+            return result.message
+
+        if pending_action == "hablar_con_humano":
+            result = await self.bridge.human(state, "")
+            return result.message
+
+        return None
 
 
     @staticmethod
