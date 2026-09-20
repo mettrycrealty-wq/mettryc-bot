@@ -255,6 +255,20 @@ class AgenteVirtualEngine:
             and state.get("propiedad_interes")
         )
 
+        if portal_context and self._is_availability_question(text):
+            active = bool(state.get("propiedad_interes", {}).get("activa", True))
+            if active:
+                response = (
+                    "Sí, la propiedad sigue disponible actualmente en nuestro inventario. "
+                    "¿Quieres conocer algún detalle específico o deseas agendar una visita?"
+                )
+            else:
+                response = (
+                    "Esa propiedad ya no aparece activa actualmente en nuestro inventario. "
+                    "Puedo ayudarte a buscar una alternativa similar."
+                )
+            return await self._finalize(sender, state, text, response)
+
         if portal_context and self._is_simple_acknowledgement(text):
             return await self._finalize(
                 sender,
@@ -301,6 +315,24 @@ class AgenteVirtualEngine:
                     text,
                     ficha.message or "",
                 )
+
+        if (
+            state.get("pregunta_pendiente") == "codigo_para_detalle"
+            and self._is_no_code_response(text)
+        ):
+            state["esperando_codigo"] = False
+            state["pregunta_pendiente"] = None
+            state["estado_conversacion"] = "conversando"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "No hay problema. También puedes enviarme el enlace del anuncio, "
+                    "el título de la propiedad o decirme la zona y el tipo de inmueble "
+                    "para intentar identificarla."
+                ),
+            )
 
         # CONSULTA DE PROPIEDAD SIN REFERENCIA
         # Si piden información de una propiedad pero no indican cuál es y no
@@ -1242,6 +1274,41 @@ class AgenteVirtualEngine:
             "hola", "buenas", "buenos dias", "buenos días",
             "buenas tardes", "buenas noches", "hola buenas",
             "hola buenas tardes", "hola buenas noches",
+        }
+
+    @staticmethod
+    def _is_availability_question(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return any(
+            phrase in normalized
+            for phrase in (
+                "aun disponible",
+                "aún disponible",
+                "sigue disponible",
+                "todavia disponible",
+                "todavía disponible",
+                "esta disponible",
+                "está disponible",
+                "continua disponible",
+                "continúa disponible",
+                "todavia esta",
+                "todavía está",
+            )
+        )
+
+    @staticmethod
+    def _is_no_code_response(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "no lo tengo",
+            "no tengo el codigo",
+            "no tengo el código",
+            "no se",
+            "no sé",
+            "no lo sé",
+            "no recuerdo",
+            "no recuerdo el codigo",
+            "no recuerdo el código",
         }
 
     @staticmethod
