@@ -1256,13 +1256,19 @@ class AgenteVirtualEngine:
         }
 
     @staticmethod
+    @staticmethod
     def _current_turn_has_search_signal(
         legacy: Any,
         state: dict,
         text: str,
     ) -> bool:
         """Indica si ESTE turno pide una búsqueda, no solo si existe contexto previo."""
-        normalized = legacy.normalizar_texto(text)
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
         explicit = (
             "busco", "estoy buscando", "quiero comprar",
             "quiero alquilar", "quiero rentar", "quisiera comprar",
