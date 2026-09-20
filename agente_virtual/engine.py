@@ -172,6 +172,67 @@ class AgenteVirtualEngine:
                 lead_result,
             )
 
+        # Cierres sociales no deben ejecutar búsquedas nuevas.
+        if (
+            self._is_social_closure(text)
+            and state.get("pregunta_pendiente")
+            not in {
+                "confirmar_rol",
+                "confirmar_ciudad_zona",
+                "confirmar_agente_para_captador",
+                "codigo_para_detalle",
+                "ofrecer_asesor",
+                "visita_o_pregunta_propiedad",
+                "datos_contacto_colega",
+                "asunto_contacto_colega",
+            }
+            and not state.get("lead_confirmacion_pendiente")
+        ):
+            if state.get("propiedad_interes") or state.get("ultimo_lote"):
+                respuesta = "¡Con gusto! Quedo atento por si deseas consultar algo más sobre la propiedad."
+            else:
+                respuesta = "¡Con gusto! Quedo atento por si necesitas algo más."
+            return await self._finalize(sender, state, text, respuesta)
+
+        # Un cambio claro de tema libera preguntas inmobiliarias pendientes.
+        # Conservamos la propiedad en contexto para poder retomarla después.
+        if self._is_explicit_topic_switch(text):
+            if state.get("pregunta_pendiente") in {
+                "codigo_para_detalle",
+                "esperando_codigo_propiedad",
+                "confirmar_rol",
+                "confirmar_ciudad_zona",
+            }:
+                state["pregunta_pendiente"] = None
+            state["esperando_codigo"] = False
+
+        # El texto posterior a un adjunto no se interpreta visualmente.
+        # Solo usamos el contexto textual que ya existe.
+        if self._is_media_reference_text(text):
+            lote = [str(pid) for pid in (state.get("ultimo_lote") or []) if str(pid).strip()]
+            if len(lote) == 1 or state.get("propiedad_interes"):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    "Sí, tomo como referencia la propiedad que estamos viendo. ¿Qué información quieres consultar?",
+                )
+            if len(lote) > 1:
+                opciones = ", ".join(f"opción {i + 1}" for i in range(min(5, len(lote))))
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    "Entiendo. No puedo identificar cuál propiedad es solo con esa referencia. Dime "
+                    + f"la opción ({opciones}) o envíame el ID.",
+                )
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "No puedo identificar la propiedad con esa referencia. Envíame el ID, el título del anuncio o el enlace.",
+            )
+
         # MULTIMEDIA SIN TEXTO
         if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
             if state.get("pregunta_pendiente") == "codigo_para_detalle":
@@ -1144,6 +1205,95 @@ class AgenteVirtualEngine:
         return False
 
 
+
+    @staticmethod
+    def _is_social_closure(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias",
+            "muchas gracias",
+            "excelente gracias",
+            "perfecto gracias",
+            "excelente",
+            "perfecto",
+            "cuenta con eso",
+            "de acuerdo",
+            "entendido",
+            "bien gracias",
+            "listo gracias",
+        }
+
+    @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "ok", "okey", "okay", "vale", "listo", "perfecto",
+            "excelente", "entendido", "bien", "gracias",
+            "muchas gracias", "de acuerdo",
+        }
+
+    @staticmethod
+    def _is_greeting_only(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "hola", "buenas", "buenos dias", "buenos días",
+            "buenas tardes", "buenas noches", "hola buenas",
+            "hola buenas tardes", "hola buenas noches",
+        }
+
+    @staticmethod
+    def _is_explicit_topic_switch(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        markers = (
+            "cómo se llama la empresa",
+            "como se llama la empresa",
+            "qué empresa es",
+            "que empresa es",
+            "quiénes son",
+            "quienes son",
+            "qué hace mettryc",
+            "que hace mettryc",
+            "tienen atención automática",
+            "tienen atencion automatica",
+            "atención automática",
+            "atencion automatica",
+            "con quien me comuniqué",
+            "con quien me comunique",
+            "quien me atendió",
+            "quien me atendio",
+            "soy founder",
+            "soy ceo",
+            "founder & ceo",
+            "agentia",
+            "presentarles una solución",
+            "presentarles una solucion",
+            "persona responsable",
+            "responsable de mettryc",
+            "hablar con la persona responsable",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _is_media_reference_text(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "está en la foto",
+            "esta en la foto",
+            "está en la imagen",
+            "esta en la imagen",
+            "es la de la foto",
+            "es la de la imagen",
+            "la que está en la foto",
+            "la que esta en la foto",
+            "la que está en la imagen",
+            "la que esta en la imagen",
+            "la que te mandé",
+            "la que te mande",
+            "la que envié",
+            "la que envie",
+            "la que te envié",
+            "la que te envie",
+        }
 
     @staticmethod
     def _is_availability_question(text: str) -> bool:
