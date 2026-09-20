@@ -442,11 +442,23 @@ class AgenteVirtualEngine:
                 "seleccion_propiedad",
                 "mas_propiedades",
             }
+
+            # El código pendiente solo bloquea conversaciones realmente
+            # relacionadas con identificar una propiedad. Si el usuario cambia
+            # de tema hacia Mettryc, soporte, la empresa o atención humana,
+            # debemos liberar el estado aunque el LLM haya clasificado el turno
+            # de forma demasiado amplia como "detalle_propiedad".
+            cambio_tema_explicito = self._is_explicit_non_property_topic(text)
+
             if (
-                analysis.intent not in property_intents
-                and not legacy.solicita_informacion_propiedad_sin_referencia(text)
-                and not legacy.extraer_codigo_mercadolibre(text)
-                and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
+                (
+                    analysis.intent not in property_intents
+                    and not legacy.solicita_informacion_propiedad_sin_referencia(text)
+                    and not legacy.extraer_codigo_mercadolibre(text)
+                    and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
+                )
+                or cambio_tema_explicito
+                or legacy.solicita_humano(text)
             ):
                 state["esperando_codigo"] = False
                 state["pregunta_pendiente"] = None
@@ -497,8 +509,7 @@ class AgenteVirtualEngine:
         # Si una búsqueda quedó pendiente por una zona ambigua, la respuesta
         # del usuario con la ciudad resuelve esa ambigüedad y recién entonces
         # se ejecuta la búsqueda. Una respuesta como "Valencia" no necesita
-        # volver a describir todos los criterios.
-        pending_geo = state.get("ambiguedad_geografica")
+        # volver a describir todos los criterios.        pending_geo = state.get("ambiguedad_geografica")
         if pending_geo:
             pending_cities = {
                 legacy.normalizar_texto(item)
@@ -997,8 +1008,7 @@ class AgenteVirtualEngine:
 
             # Una corrección de datos durante la confirmación vuelve a pasar
             # directamente por el flujo legacy, no por la IA conversacional.
-            if self._looks_like_data_turn_without_analysis(legacy, text):
-                result = await self.bridge.capture_lead(state, text)
+            if self._looks_like_data_turn_without_analysis(legacy, text):                result = await self.bridge.capture_lead(state, text)
                 return result.message
 
             return (
@@ -1295,6 +1305,47 @@ class AgenteVirtualEngine:
                 "todavía está",
             )
         )
+
+    @staticmethod
+    def _is_explicit_non_property_topic(text: str) -> bool:
+        """Detecta cambios de tema claros que nunca deben quedar atrapados
+        esperando el código de una propiedad."""
+        normalized = " ".join(str(text or "").lower().split())
+
+        phrases = (
+            "como se llama la empresa",
+            "cómo se llama la empresa",
+            "que hace mettryc",
+            "qué hace mettryc",
+            "quienes son",
+            "quiénes son",
+            "que servicios ofrecen",
+            "qué servicios ofrecen",
+            "que servicios tiene mettryc",
+            "qué servicios tiene mettryc",
+            "cual es el sitio web",
+            "cuál es el sitio web",
+            "cual es la pagina web",
+            "cuál es la página web",
+            "cual es el correo",
+            "cuál es el correo",
+            "donde estan ubicados",
+            "dónde están ubicados",
+            "donde estan",
+            "dónde están",
+            "quiero trabajar con ustedes",
+            "quiero trabajar en mettryc",
+            "quiero ser agente",
+            "quiero ser asesor",
+            "quiero unirme al equipo",
+            "informacion sobre mettryc",
+            "información sobre mettryc",
+            "informacion de mettryc",
+            "información de mettryc",
+        )
+
+        return any(phrase in normalized for phrase in phrases)
+
 
     @staticmethod
     def _is_no_code_response(text: str) -> bool:
