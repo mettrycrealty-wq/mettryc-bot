@@ -509,7 +509,8 @@ class AgenteVirtualEngine:
         # Si una búsqueda quedó pendiente por una zona ambigua, la respuesta
         # del usuario con la ciudad resuelve esa ambigüedad y recién entonces
         # se ejecuta la búsqueda. Una respuesta como "Valencia" no necesita
-        # volver a describir todos los criterios.        pending_geo = state.get("ambiguedad_geografica")
+        # volver a describir todos los criterios.
+        pending_geo = state.get("ambiguedad_geografica")
         if pending_geo:
             pending_cities = {
                 legacy.normalizar_texto(item)
@@ -1008,7 +1009,8 @@ class AgenteVirtualEngine:
 
             # Una corrección de datos durante la confirmación vuelve a pasar
             # directamente por el flujo legacy, no por la IA conversacional.
-            if self._looks_like_data_turn_without_analysis(legacy, text):                result = await self.bridge.capture_lead(state, text)
+            if self._looks_like_data_turn_without_analysis(legacy, text):
+                result = await self.bridge.capture_lead(state, text)
                 return result.message
 
             return (
