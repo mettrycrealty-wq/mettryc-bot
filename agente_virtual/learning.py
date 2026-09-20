@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,12 +21,22 @@ class PatyLearningRecorder:
     Esta capa OBSERVA y registra; no modifica la lógica comercial ni decide
     cómo conversar. Su función es crear evidencia para que posteriormente
     podamos detectar patrones de conversión y abandono.
+
+    La persistencia principal se realiza en Google Sheets mediante Apps Script.
+    El archivo JSONL local queda como respaldo de contingencia.
     """
 
     def __init__(self) -> None:
         default_path = "./data/paty_learning.jsonl"
         self.path = Path(
             os.getenv("PATY_LEARNING_PATH", default_path)
+        )
+        self.webhook_url = os.getenv(
+            "PATY_LEARNING_WEBHOOK_URL",
+            "",
+        ).strip()
+        self.webhook_timeout = int(
+            os.getenv("PATY_LEARNING_WEBHOOK_TIMEOUT", "10")
         )
         self.pause_minutes = int(
             os.getenv("PATY_LEARNING_PAUSE_MINUTES", "720")
@@ -182,6 +193,38 @@ class PatyLearningRecorder:
         self._append(events)
 
     def _append(self, events: list[dict]) -> None:
+        # Persistencia principal: Google Sheets vía Apps Script.
+        # Si falla, usamos el JSONL local como respaldo. Ninguna de las dos
+        # rutas puede interrumpir la conversación de Paty.
+        if self.webhook_url:
+            for event in events:
+                try:
+                    payload = {
+                        **event,
+                        "event_type": event.get("event", "conversation_turn"),
+                    }
+                    body = json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    request = urllib.request.Request(
+                        self.webhook_url,
+                        data=body,
+                        headers={
+                            "Content-Type": "application/json; charset=utf-8",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=self.webhook_timeout,
+                    ) as response:
+                        response.read()
+                except Exception:
+                    # Si Google Sheets no está disponible, seguimos con el
+                    # respaldo local sin afectar el flujo de Paty.
+                    pass
+
         try:
             self._ensure_parent()
             with self.path.open("a", encoding="utf-8") as handle:
