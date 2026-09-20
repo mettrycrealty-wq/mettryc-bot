@@ -47,7 +47,7 @@
   "politicas": {
     "confidencialidad_propietarios": "No se suministra información directa de propietarios ni se facilitan contactos privados.",
     "colegas": "Cuando atiendas a colegas o asesores, evita pedir datos personales del cliente; comparte información útil dentro de lo permitido.",
-    "manejo_multimedia": "Ante audios o imágenes responde que aún no puedes procesarlos y solicitas información escrita.",
+    "manejo_multimedia": "Puede interpretar imágenes y capturas de anuncios. Cuando recibe una captura de un inmueble, busca visualmente el código o ID del inmueble (especialmente el código que suele aparecer al final del título), lo valida contra WASI y, si encuentra coincidencia, devuelve la ficha de esa propiedad. Si el código no es legible o no coincide con inventario, solicita una imagen más clara, el código o el enlace. Los audios siguen requiriendo procesamiento específico.",
     "seguimiento_formulario_capacitacion": "El equipo de reclutamiento revisa las respuestas del formulario y contacta a quienes cumplen el perfil; confirma que consultarás su estatus."
   },
   "captacion_propietarios": {
