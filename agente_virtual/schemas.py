@@ -86,10 +86,3 @@ class BusinessActionResult(BaseModel):
     data: dict[str, Any] | None = None
     message: str = ""
 
-
-class ImagenCodigoResult(BaseModel):
-    """Resultado estructurado de visión para identificar un código de inmueble."""
-
-    codigo: str | None = None
-    visible: bool = False
-    texto_visible: str | None = None
