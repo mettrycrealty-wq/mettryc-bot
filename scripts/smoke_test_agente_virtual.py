@@ -432,6 +432,7 @@ async def main():
     response = await engine.process(pending_sender, "¿Cómo se llama la empresa?")
     assert "enviame el código" not in response.lower()
     assert legacy.states[pending_sender]["pregunta_pendiente"] is None
+    assert "mettryc" in response.lower()
 
 
     # Regresión: una pregunta explícita sobre la empresa debe seguir el nuevo tema.
