@@ -913,7 +913,6 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
-    @staticmethod
     def _is_corporate_topic(text: str) -> bool:
         normalized = " ".join(str(text or "").lower().split())
         phrases = (
