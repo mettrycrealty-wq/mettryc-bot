@@ -36,24 +36,46 @@ class PatyLearningAnalyzer:
             )
 
         params = {"limit": str(max(1, min(limit, 5000)))}
-
         if self.read_key:
             params["key"] = self.read_key
 
-        # FIX:
-        # Google Apps Script devuelve 302 hacia script.googleusercontent.com.
-        # httpx necesita follow_redirects=True para continuar la petición.
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(
-                self.read_url,
-                params=params,
-            )
+        # Google Apps Script suele responder con 302 hacia
+        # script.googleusercontent.com. Render puede ejecutar la app detrás
+        # de proxies, por lo que dejamos que httpx siga 301/302/303/307/308
+        # y desactivamos variables proxy del entorno para evitar saltos
+        # inesperados por la infraestructura de ejecución.
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                trust_env=False,
+            ) as client:
+                response = await client.get(self.read_url, params=params)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            location = exc.response.headers.get("location", "")
+            suffix = f" redirect={location[:180]}" if location else ""
+            raise RuntimeError(
+                f"Google Apps Script respondió HTTP {exc.response.status_code}.{suffix}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                "No se pudo conectar con Google Apps Script: "
+                f"{type(exc).__name__}: {str(exc)[:220]}"
+            ) from exc
 
-            response.raise_for_status()
+        # No asumimos que el servidor siempre entregue application/json:
+        # Apps Script/proxies pueden devolver texto aunque el cuerpo contenga
+        # JSON válido. Primero intentamos el parser nativo y luego un fallback
+        # controlado sobre el texto.
+        try:
             payload = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            body = response.text.strip()
+            raise RuntimeError(
+                "Google Apps Script no devolvió JSON válido. "
+                f"HTTP {response.status_code}; cuerpo={body[:300]!r}"
+            ) from exc
 
         if isinstance(payload, dict):
             events = payload.get("events", [])
@@ -62,14 +84,11 @@ class PatyLearningAnalyzer:
 
         if not isinstance(events, list):
             raise RuntimeError(
-                "Google Apps Script devolvió un formato inválido."
+                "Google Apps Script devolvió un formato inválido: "
+                "se esperaba una lista de eventos o un objeto con 'events'."
             )
 
-        return [
-            item
-            for item in events
-            if isinstance(item, dict)
-        ]
+        return [item for item in events if isinstance(item, dict)]
 
     @staticmethod
     def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -256,27 +275,66 @@ class PatyLearningAnalyzer:
             },
         ]
 
-        try:
+        raw = ""
 
+        try:
             raw = await self.router.completion(
                 messages,
                 temperature=0.1,
                 max_tokens=1200,
             )
 
-            cleaned = self.router._clean_json(raw)
-
-            ai_report = json.loads(cleaned)
+            ai_report = self._parse_json_with_fallback(raw)
 
             if isinstance(ai_report, dict):
                 result["ai_analysis"] = ai_report
+            else:
+                result["ai_analysis_fallback"] = raw
+                result["ai_analysis_error"] = (
+                    "La IA respondió, pero no se pudo convertir su respuesta "
+                    "a un objeto JSON."
+                )
 
         except Exception as exc:
-
             result["ai_analysis_error"] = (
                 type(exc).__name__
                 + ": "
                 + str(exc)[:240]
             )
+            if raw:
+                # Conservamos la respuesta original para diagnóstico/revisión
+                # humana. Nunca hacemos que un JSON malformado rompa el endpoint.
+                result["ai_analysis_fallback"] = raw
+
+        return result
+
+    @staticmethod
+    def _parse_json_with_fallback(content: str) -> dict[str, Any] | None:
+        """Extrae el primer objeto JSON válido de una respuesta imperfecta."""
+        text = str(content or "").strip()
+        if not text:
+            return None
+
+        candidates = [text]
+        fence = chr(96) * 3
+        if fence in text:
+            parts = text.split(fence)
+            candidates.extend(part.strip() for part in parts if part.strip())
+
+        # Busca objetos candidatos sin depender de que el modelo haya puesto
+        # JSON limpio al principio. json.JSONDecoder.raw_decode permite ignorar
+        # texto introductorio y detectar exactamente dónde termina el objeto.
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            starts = [i for i, char in enumerate(candidate) if char == "{"]
+            for start in starts:
+                try:
+                    value, _ = decoder.raw_decode(candidate[start:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    return value
+
+        return None
 
         return result
