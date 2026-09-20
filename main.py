@@ -3805,6 +3805,7 @@ async def formatear_ficha(
         f"*{titulo}*",
         f"📍 {propiedad.get('zona', 'N/D')}, {propiedad.get('ciudad', 'N/D')}",
         f"💰 {formato_moneda(precio)}",
+        "🟢 *Disponible*" if propiedad.get("activa", True) else "🔴 No disponible",
         (
             f"📐 {area_texto} | 🛏️ {propiedad.get('habitaciones', 'N/D')} | "
             f"🛁 {propiedad.get('banos', 'N/D')} | 🚗 {propiedad.get('garajes', 'N/D')}"
@@ -3841,7 +3842,7 @@ async def construir_respuesta_fichas(
     es_colega = estado.get("rol") == "colega_inmobiliario"
 
     if especifica:
-        introduccion = "Encontré la propiedad. Figura activa en nuestro inventario:"
+        introduccion = "Encontré la propiedad. Figura *Activa* en nuestro inventario:"
     else:
         introduccion = "Encontré estas opciones que pueden encajar con lo que buscas:"
 
