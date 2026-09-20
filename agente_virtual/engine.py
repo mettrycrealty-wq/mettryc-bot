@@ -167,31 +167,59 @@ class AgenteVirtualEngine:
 
         # MULTIMEDIA SIN TEXTO
         if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
-            if state.get("pregunta_pendiente") == "codigo_para_detalle":
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    (
-                        "Recibí la imagen. Para ubicar la propiedad con precisión, "
-                        "envíame el código o ID que aparece al final del título del anuncio "
-                        "o copia aquí el enlace de la publicación."
-                    ),
-                )
-
             if state.get("propiedad_interes"):
                 return await self._finalize(
                     sender,
                     state,
                     text,
-                    "Recibí la imagen. ¿Qué te gustaría consultar sobre esta propiedad?",
+                    (
+                        "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+                        "audios desde este canal. Ya tengo una propiedad en contexto; "
+                        "dime qué dato quieres consultar sobre ella."
+                    ),
                 )
+
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
 
             return await self._finalize(
                 sender,
                 state,
                 text,
-                "Recibí la imagen. ¿Qué información necesitas de la propiedad que aparece allí?",
+                (
+                    "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+                    "audios desde este canal. Para identificar la propiedad exacta, "
+                    "envíame el código o ID que aparece normalmente al final del "
+                    "título del anuncio, o pega aquí el enlace de la publicación."
+                ),
+            )
+
+        # PREGUNTA GENÉRICA DE DISPONIBILIDAD SIN PROPIEDAD
+        # Si el usuario pregunta "¿está disponible?" sin haber identificado
+        # una propiedad, no se inventa una referencia ni se vuelve a pedir
+        # la foto. Se inicia la captación de criterios de búsqueda.
+        if (
+            self._is_generic_availability_question(text, legacy)
+            and not state.get("propiedad_interes")
+            and not legacy.extraer_codigo_mercadolibre(text)
+            and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
+        ):
+            state["esperando_codigo"] = False
+            if state.get("pregunta_pendiente") == "codigo_para_detalle":
+                state["pregunta_pendiente"] = None
+            state["estado_conversacion"] = "busqueda_propiedad"
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para buscarte una propiedad disponible, dime en qué "
+                    "ciudad o zona estás buscando, qué tipo de inmueble y "
+                    "características necesitas, tu presupuesto aproximado y si "
+                    "es para comprar o alquilar."
+                ),
             )
 
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
@@ -679,34 +707,6 @@ class AgenteVirtualEngine:
                 business_results.append(
                     await self.bridge.capture_colleague_contact(state, text)
                 )
-
-        if analysis.information_not_available:
-            reason = (
-                "Información solicitada no disponible: "
-                + str(analysis.unknown_information or "dato no identificado")
-            )
-            if reason not in admin_notified:
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason=reason,
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add(reason)
-
-        for result in business_results:
-            if not result.ok:
-                reason = "Fallo en herramienta: " + result.name
-                if reason not in admin_notified:
-                    notified = await self.bridge.notify_admins(
-                        sender=sender,
-                        state=state,
-                        reason=reason,
-                        original_message=text,
-                    )
-                    if notified:
-                        admin_notified.add(reason)
 
         # La capa comercial no interviene en la selección ni entrega de propiedades.
         # Primero debe completarse la acción inmobiliaria; las técnicas de venta
@@ -1219,6 +1219,23 @@ class AgenteVirtualEngine:
 
         self.bridge.save_state(sender, state)
         return response
+
+    @staticmethod
+    def _is_generic_availability_question(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        return any(
+            phrase in normalized
+            for phrase in (
+                "esta disponible",
+                "esta aun disponible",
+                "esta disponible todavia",
+                "sigue disponible",
+                "aun disponible",
+                "todavia esta disponible",
+                "todavia disponible",
+                "disponible?",
+            )
+        )
 
     @staticmethod
     def _is_simple_acknowledgement(text: str) -> bool:
