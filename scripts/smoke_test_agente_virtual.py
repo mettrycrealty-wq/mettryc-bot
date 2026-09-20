@@ -384,6 +384,18 @@ async def main():
     assert "para ti o para un cliente" in response.lower()
     assert legacy.events.count("search") == 0
 
+    # Regresión: una vez confirmado el rol, no puede volver a aparecer
+    # la pregunta "¿para ti o para un cliente?" ni una variante equivalente.
+    role_state = legacy.states[client_sender]
+    role_state["rol"] = "cliente"
+    role_state["rol_confirmado"] = True
+    repeated_role = engine._sanitize_redundant_role_confirmation(
+        role_state,
+        "¡Genial! Entonces, ¿para ti? Me parece muy bien.\n\n¿En qué ciudad buscas?",
+    )
+    assert "¿para ti?" not in repeated_role.lower()
+    assert "¿en qué ciudad buscas?" in repeated_role.lower()
+
     response = await engine.process(client_sender, "Para mí")
     assert "valencia" in response.lower() and "cabudare" in response.lower()
     assert "en cuál de esas ciudades" in response.lower()
