@@ -157,6 +157,21 @@ class AgenteVirtualEngine:
         if not text:
             raise ValueError("El mensaje no puede estar vacío.")
 
+        if self._is_multimedia_only_message(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Soy Paty, el Asistente Virtual de Mettryc Realty. "
+                    "Por ahora solo puedo entender mensajes escritos; no puedo "
+                    "interpretar imágenes, audios ni notas de voz. "
+                    "Escríbeme el código o ID de la propiedad que aparece "
+                    "normalmente al final del título del anuncio y te ayudo con "
+                    "la información."
+                ),
+            )
+
         # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
         # decida si debe procesar los datos o no. El motor legacy es la
         # fuente de verdad para captura, confirmación, asignación y aviso.
@@ -1382,6 +1397,28 @@ class AgenteVirtualEngine:
             "bien gracias",
             "listo gracias",
         }
+
+    @staticmethod
+    def _is_multimedia_only_message(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        markers = (
+            "[multimedia_sin_texto]",
+            "<multimedia imagen>",
+            "<multimedia audio>",
+            "<multimedia documento>",
+            "<multimedia video>",
+            "[imagen]",
+            "[audio]",
+            "[nota de voz]",
+            "[documento]",
+            "mensaje multimedia",
+            "nota de voz",
+        )
+        return normalized in markers or any(
+            normalized.startswith(marker)
+            for marker in markers
+            if marker.startswith("[") or marker.startswith("<")
+        )
 
     @staticmethod
     def _is_simple_acknowledgement(text: str) -> bool:
