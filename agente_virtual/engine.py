@@ -167,6 +167,41 @@ class AgenteVirtualEngine:
             )
         current_turn_search = self._current_turn_has_search_signal(legacy, state, text)
 
+        # CIERRES SOCIALES / SALUDOS
+        # Un agradecimiento o saludo aislado nunca debe convertirse en una
+        # nueva búsqueda solo porque existen filtros anteriores en memoria.
+        if (
+            not current_turn_search
+            and not state.get("lead_confirmacion_pendiente")
+            and state.get("pregunta_pendiente") != "confirmar_rol"
+            and (
+                self._is_simple_acknowledgement(text)
+                or self._is_greeting_only(text)
+            )
+        ):
+            if state.get("propiedad_interes"):
+                respuesta_social = (
+                    "¡Con gusto! Seguimos atentos por si necesitas algo más "
+                    "sobre esta propiedad."
+                    if self._is_simple_acknowledgement(text)
+                    else
+                    "¡Buenas! Seguimos con la propiedad que estábamos viendo. "
+                    "¿Qué te gustaría consultar?"
+                )
+            else:
+                respuesta_social = (
+                    "¡Con gusto! Quedo atento por si necesitas algo más."
+                    if self._is_simple_acknowledgement(text)
+                    else
+                    "¡Buenas! ¿En qué te puedo ayudar?"
+                )
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                respuesta_social,
+            )
+
         if state.get("pregunta_pendiente") == "sugerencia_ajuste" and not current_turn_search:
             sugerencia = state.get("sugerencia_ajuste") or {}
             opciones = [str(item).strip() for item in (sugerencia.get("sugerencias") or []) if str(item).strip()]
@@ -878,6 +913,7 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
+    @staticmethod
     def _is_corporate_topic(text: str) -> bool:
         normalized = " ".join(str(text or "").lower().split())
         phrases = (
@@ -886,15 +922,27 @@ class AgenteVirtualEngine:
             "que empresa es", "qué empresa es",
             "quien me atiende", "quién me atiende",
             "con quien me comunique", "con quién me comuniqué",
-            "con quien me comunique", "con quién me comuniqué",
             "tienes atencion automatica", "tienes atención automática",
             "esto es automatico", "esto es automático",
             "eres un bot", "eres una inteligencia artificial",
             "quien eres", "quién eres",
             "que servicios ofrecen", "qué servicios ofrecen",
             "como funciona mettryc", "cómo funciona mettryc",
+            "presentarles una solucion", "presentarles una solución",
+            "empleados digitales", "empleado digital",
+            "solucion para inmobiliarias", "solución para inmobiliarias",
+            "captacion y conversion", "captación y conversión",
+            "crm y gestion de oportunidades", "crm y gestión de oportunidades",
+            "15 minutos con la persona responsable",
+            "conversar con la persona responsable",
+            "agentia", "myagentia.app",
+            "fundador", "founder", "ceo",
+            "propuesta comercial", "solucion comercial",
+            "solución comercial",
         )
         return any(phrase in normalized for phrase in phrases)
+
+
 
     @staticmethod
     def _requests_more_property_info(text: str) -> bool:
