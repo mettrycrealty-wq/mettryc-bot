@@ -1242,6 +1242,130 @@ class AgenteVirtualEngine:
 
 
 
+    async def _analyze_turn(
+        self,
+        message: str,
+        conversation_context: dict[str, Any],
+        knowledge: str,
+    ) -> TurnAnalysis:
+        payload = {
+            "conversation": conversation_context,
+            "knowledge_mettryc": knowledge,
+            "latest_user_message": message,
+        }
+
+        try:
+            result = await self.router.json_completion(
+                TurnAnalysis,
+                [
+                    {"role": "system", "content": ANALYSIS_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                temperature=0.05,
+                max_tokens=900,
+            )
+            if isinstance(result, TurnAnalysis):
+                return result
+        except (ValidationError, ValueError, RuntimeError):
+            pass
+
+        # Fallback mínimo: no inventa acciones. El motor legacy conserva las
+        # funciones comerciales si el análisis del modelo falla.
+        legacy = self.bridge.load()
+        role = legacy.detectar_rol_explicito(message)
+
+        return TurnAnalysis(
+            role=role or "desconocido",
+            intent=(
+                "atencion_humana"
+                if legacy.solicita_humano(message)
+                else "conversacion_casual"
+            ),
+            human_requested=legacy.solicita_humano(message),
+            reasoning_summary="Fallback local sin análisis del modelo.",
+        )
+
+    async def _generate_response(
+        self,
+        message: str,
+        state: dict,
+        analysis: TurnAnalysis,
+        business_results: list[BusinessActionResult],
+        knowledge: str,
+    ) -> str:
+        # Las fichas comerciales se entregan con el formato exacto del
+        # chatbot anterior. El LLM conversacional no debe reescribirlas ni
+        # convertirlas en una frase genérica, porque aquí importan sus campos,
+        # enlaces y, para colegas, los datos del captador.
+        for result in business_results:
+            if (
+                result.ok
+                and result.data
+                and result.data.get("formatted_legacy")
+            ):
+                return result.message or ""
+
+        context = {
+            "conversation_history": state.get("historial", [])[-self.max_history :],
+            "business_state": self.bridge.conversation_context(state),
+            "analysis": analysis.model_dump(mode="json"),
+            "business_results": [
+                item.model_dump(mode="json")
+                for item in business_results
+            ],
+            "knowledge_mettryc": knowledge,
+            "latest_user_message": message,
+        }
+
+        try:
+            result = await self.router.completion_with_fallback(
+                [
+                    {"role": "system", "content": RESPONSE_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            context,
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                temperature=0.55,
+                max_tokens=850,
+            )
+
+            cleaned = self._clean_response(result)
+            if cleaned:
+                return cleaned
+        except Exception:
+            pass
+
+        return self._fallback_response(
+            analysis,
+            business_results,
+            message,
+        )
+
+    async def _finalize(
+        self,
+        sender: str,
+        state: dict,
+        user_message: str,
+        response: str,
+    ) -> str:
+        self.bridge.append_history(state, "user", user_message)
+        if response:
+            self.bridge.append_history(state, "assistant", response)
+
+        self.bridge.save_state(sender, state)
+        return response
+
+
     @staticmethod
     def _is_social_closure(text: str) -> bool:
         normalized = " ".join(str(text or "").lower().split())
