@@ -4149,16 +4149,15 @@ async def atender_solicitud_captador(
             f"{nombre_captador}.\n📲 WhatsApp: https://wa.me/{telefono_captador}"
         )
 
-    if captador_wasi:
+    if datos_captador.get("fuente") == "campos_wasi":
         return (
             f"El captador registrado en Wasi es {nombre_captador}, "
-            "pero no pude localizar su WhatsApp en la información de la "
-            "propiedad. Si quieres, puedo notificar al equipo administrativo."
+            "pero no tiene un WhatsApp disponible en la información de la propiedad."
         )
 
     return (
         "No pude identificar al captador de esta propiedad en la información "
-        "disponible de Wasi. Si quieres, puedo notificar al equipo administrativo."
+        "disponible de Wasi."
     )
 
 def detalle_propiedad_para_ia(propiedad: dict) -> dict:
