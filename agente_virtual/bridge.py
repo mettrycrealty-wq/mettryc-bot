@@ -345,7 +345,7 @@ class LegacyMettrycBridge:
         return BusinessActionResult(
             ok=True,
             name="visita",
-            message=response,
+            message=str(response or ""),
         )
 
     async def human(
