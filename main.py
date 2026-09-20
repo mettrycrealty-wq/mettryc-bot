@@ -700,7 +700,10 @@ PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA = (
     "dame informacion del inmueble","dame información del inmueble",
     "quiero informacion de la propiedad","quiero información de la propiedad",
     "quiero informacion del inmueble","quiero información del inmueble",
-    "detalle de la propiedad","detalles de la propiedad","ficha de la propiedad","ficha del inmueble",
+    "detalle de la propiedad","detalles de la propiedad",
+    "ficha de la propiedad","ficha del inmueble",
+    "fotos de la propiedad","fotos del inmueble",
+    "fotos de la casa","fotos del apartamento",
 )
 
 # FIX #10: se amplía la lista de frases para detectar solicitud de
@@ -863,12 +866,24 @@ def extraer_codigo_inmueble(
 
 
 def solicita_informacion_propiedad_sin_referencia(texto: str) -> bool:
+    """Detecta una petición directa de información sobre un inmueble concreto."""
     normalizado = normalizar_texto(texto)
-    if any(frase in normalizado for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA):
+
+    if any(
+        frase in normalizado
+        for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA
+    ):
         return True
-    pide_info = any(x in normalizado for x in ("informacion","información","info","detalles","ficha"))
-    menciona = any(x in normalizado for x in ("propiedad","inmueble","casa","apartamento","townhouse","oficina","local","terreno","galpon"))
-    return pide_info and menciona
+
+    patrones_directos = (
+        r"\b(?:quiero|necesito|dame|env[ií]ame|m[aá]ndame|p[aá]same|mu[eé]strame|informame|inf[oó]rmame)\s+"
+        r"(?:la\s+)?(?:informaci[oó]n|info|ficha|detalles?|fotos?)\s+"
+        r"(?:de|del|sobre)\s+(?:la|el|esta|ese|esa)?\s*"
+        r"(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+        r"\b(?:informaci[oó]n|info|detalles?|ficha|fotos?)\s+(?:de|del|sobre)\s+"
+        r"(?:la|el|esta|ese|esa)?\s*(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+    )
+    return any(re.search(patron, normalizado, re.IGNORECASE) for patron in patrones_directos)
 
 
 def detectar_posicion(texto: str) -> Optional[int]:
