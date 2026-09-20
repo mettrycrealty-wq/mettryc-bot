@@ -396,6 +396,19 @@ async def main():
     assert legacy.states[client_sender]["filtros"]["zona"] == "El Trigal"
     assert legacy.events.count("search") == 1
 
+    multimedia_sender = "whatsapp:+584120000005"
+    response = await engine.process(
+        multimedia_sender,
+        "[multimedia_sin_texto]",
+    )
+    assert "no puedo ver imágenes ni escuchar audios" in response.lower()
+    assert legacy.states[multimedia_sender]["pregunta_pendiente"] == "codigo_para_detalle"
+
+    response = await engine.process(multimedia_sender, "¿Está disponible?")
+    assert "ciudad o zona" in response.lower()
+    assert "presupuesto" in response.lower()
+    assert legacy.states[multimedia_sender]["pregunta_pendiente"] is None
+
     portal_sender = "whatsapp:+584120000003"
     response = await engine.process(
         portal_sender,
@@ -481,15 +494,16 @@ async def main():
         "Ahora sí, quiero hablar con un asesor.",
     )
     assert "human" in legacy.events
-    # La solicitud humana inicia captura; no debe generar una alerta Telegram
-    # antes de completar y asignar el lead.
-    assert legacy.enviar_telegram_calls == 0
+    # Una solicitud explícita de atención humana sí genera un aviso
+    # administrativo. Los fallos/consultas no disponibles no lo generan.
+    assert legacy.enviar_telegram_calls == 1
 
+    alertas_antes = legacy.enviar_telegram_calls
     response = await engine.process(
         client_sender,
         "Necesito un dato que no tienes a mano.",
     )
-    assert legacy.enviar_telegram_calls == 1
+    assert legacy.enviar_telegram_calls == alertas_antes
     assert "dato" in response.lower()
 
     print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
@@ -500,7 +514,9 @@ async def main():
     print("Cambio de tema casual: OK")
     print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
-    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
+    print("Multimedia sin visión/audio + solicitud de código: OK")
+    print("Disponibilidad sin referencia + inicio de búsqueda: OK")
+    print("Sin alertas Telegram por fallos o información faltante: OK")    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
     print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
     print("Información no disponible + aviso administrativo: OK")
 
