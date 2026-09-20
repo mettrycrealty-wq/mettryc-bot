@@ -25,7 +25,7 @@ class FakeRouter:
         if isinstance(messages[-1].get("content"), list):
             assert schema is ImagenCodigoResult
             return ImagenCodigoResult(
-                codigo="MF-9979795",
+                codigo="9979795",
                 visible=True,
             )
 
@@ -426,7 +426,7 @@ async def main():
         image_source="data:image/jpeg;base64,ZmFrZQ==",
     )
     assert "*Casa en Mañongo*" in response
-    assert legacy.states[image_sender]["propiedad_interes"]["id"] == "MF-9979795"
+    assert legacy.states[image_sender]["propiedad_interes"]["id"] == "9979795"
 
     # Regresión: un agradecimiento no puede disparar una nueva búsqueda
     # solo porque quedaron filtros de propiedad en el estado.
