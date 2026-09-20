@@ -82,6 +82,8 @@ API_KEYS_AGENTES = {
     if clave.strip()
 }
 
+MARCADOR_MULTIMEDIA = "[multimedia_sin_texto]"
+
 TELEGRAM_ADMIN_IDS = [
     valor.strip()
     for valor in os.getenv(
@@ -6170,6 +6172,15 @@ app = FastAPI(
 )
 
 
+def payload_tiene_multimedia(payload: dict) -> bool:
+    claves = (
+        "media_url", "mediaUrl", "image", "images", "audio",
+        "document", "documents", "video", "sticker",
+        "attachment", "attachments", "file",
+    )
+    return any(payload.get(clave) for clave in claves)
+
+
 def validar_api_key(api_key: Optional[str]) -> None:
     if not API_KEYS_AGENTES:
         raise HTTPException(status_code=503, detail="API_KEYS_AGENTES no está configurado.")
@@ -6278,7 +6289,10 @@ async def webhook_agente_virtual(
         raise HTTPException(status_code=422, detail="Falta sender.")
 
     if not mensaje:
-        return {"replies": []}
+        if payload_tiene_multimedia(payload):
+            mensaje = MARCADOR_MULTIMEDIA
+        else:
+            return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
