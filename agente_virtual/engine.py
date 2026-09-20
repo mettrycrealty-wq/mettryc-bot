@@ -164,29 +164,6 @@ class AgenteVirtualEngine:
                 lead_result,
             )
 
-        # CÓDIGO PENDIENTE
-        # Solo consumimos automáticamente este estado cuando realmente llega
-        # un código. Si el usuario cambia de tema, la conversación continúa.
-        if state.get("pregunta_pendiente") == "codigo_para_detalle":
-            codigo_pendiente = legacy.extraer_codigo_mercadolibre(text) or legacy.extraer_codigo_inmueble(
-                text,
-                permitir_solo_digitos=True,
-            )
-            if codigo_pendiente:
-                ficha = await self.bridge.detail(
-                    state,
-                    code=codigo_pendiente,
-                    format_legacy=True,
-                )
-                state["esperando_codigo"] = False
-                state["pregunta_pendiente"] = None
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
-                )
-
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
         # resolverse antes de la conversación normal: no corresponde pedir rol,
@@ -306,35 +283,19 @@ class AgenteVirtualEngine:
             permitir_solo_digitos=False,
         )
 
-        if state.get("pregunta_pendiente") == "codigo_para_detalle":
-            codigo_pendiente = codigo_explicito or legacy.extraer_codigo_inmueble(
-                text,
-                permitir_solo_digitos=True,
+        if state.get("pregunta_pendiente") == "codigo_para_detalle" and codigo_explicito:
+            ficha = await self.bridge.detail(
+                state,
+                code=codigo_explicito,
+                format_legacy=True,
             )
-            if codigo_pendiente:
-                ficha = await self.bridge.detail(
-                    state,
-                    code=codigo_pendiente,
-                    format_legacy=True,
-                )
-                state["esperando_codigo"] = False
-                state["pregunta_pendiente"] = None
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
-                )
-
+            state["esperando_codigo"] = False
+            state["pregunta_pendiente"] = None
             return await self._finalize(
                 sender,
                 state,
                 text,
-                (
-                    "Claro. Para darte la información exacta necesito identificar "
-                    "la propiedad. Envíame el código o ID que aparece normalmente "
-                    "al final del título del anuncio."
-                ),
+                ficha.message or "No pude recuperar la ficha de esa propiedad.",
             )
 
         if (
