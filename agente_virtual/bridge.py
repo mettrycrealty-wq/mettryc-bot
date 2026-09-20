@@ -434,12 +434,16 @@ class LegacyMettrycBridge:
 
         property_interest = state.get("propiedad_interes") or {}
         agent = state.get("agente_asignado")
+        lead = state.get("lead") or {}
 
         message = (
-            "🚨 AVISO AGENTE VIRTUAL METTRYC\n\n"
+            "🚨 SOLICITUD DE ATENCIÓN HUMANA METTRYC\n\n"
             + "Motivo: " + reason + "\n"
             + "Sender: " + sender + "\n"
             + "Rol: " + str(state.get("rol") or "no confirmado") + "\n"
+            + "Nombre: " + str(lead.get("nombre") or "N/D") + "\n"
+            + "Correo: " + str(lead.get("correo") or "N/D") + "\n"
+            + "WhatsApp: " + str(lead.get("whatsapp") or sender or "N/D") + "\n"
             + "Mensaje: " + str(original_message)[:700] + "\n\n"
             + "Intención: " + str(state.get("ultima_intencion") or "N/D") + "\n"
             + "Propiedad: "
