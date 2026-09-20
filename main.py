@@ -3511,7 +3511,24 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int) -> Tuple[List[dict],
         if not coincide_tipo(original, filtros.get("tipo_propiedad")):
             continue
 
-        if not ciudad_coincide(original, filtros.get("ciudad")):
+        preferencia_ubicacion = estado.get("preferencia_ubicacion") or {}
+        if (
+            not filtros.get("ciudad")
+            and preferencia_ubicacion.get("modo") == "cerca_de"
+            and preferencia_ubicacion.get("estado")
+        ):
+            estado_propiedad = _estado_geografico_de_ciudad(
+                inferir_ciudad_propiedad(original)
+            )
+            if estado_propiedad != preferencia_ubicacion.get("estado"):
+                continue
+            if (
+                preferencia_ubicacion.get("evitar_gran_ciudad")
+                and normalizar_texto(inferir_ciudad_propiedad(original))
+                == normalizar_texto(preferencia_ubicacion.get("centro"))
+            ):
+                continue
+        elif not ciudad_coincide(original, filtros.get("ciudad")):
             continue
 
         zona_buscada = filtros.get("zona")
@@ -4764,6 +4781,32 @@ async def mostrar_propiedades(estado: dict) -> str:
     firma_actual = firma_filtros(filtros)
 
     propiedades, motivo = buscar_mejores_propiedades(estado, cantidad)
+
+    # Preferencia "cerca de X": si no hubo coincidencias exactas en X,
+    # ampliamos de forma controlada al mismo estado geográfico. No afirmamos
+    # distancias que el inventario no contiene.
+    preferencia_ubicacion = estado.get("preferencia_ubicacion") or {}
+    if (
+        not propiedades
+        and preferencia_ubicacion.get("modo") == "cerca_de"
+        and filtros.get("ciudad")
+    ):
+        estado_relajado = deepcopy(estado)
+        filtros_relajados = deepcopy(filtros)
+        filtros_relajados["ciudad"] = None
+        filtros_relajados["zona"] = None
+        estado_relajado["filtros"] = filtros_relajados
+        propiedades, motivo = buscar_mejores_propiedades(
+            estado_relajado,
+            cantidad,
+        )
+        if propiedades:
+            for propiedad in propiedades:
+                diferencias = propiedad.setdefault("_diferencias", [])
+                diferencias.insert(
+                    0,
+                    "Alternativa ampliada dentro del mismo estado según la proximidad solicitada",
+                )
 
     if (
         rol != "colega_inmobiliario"
