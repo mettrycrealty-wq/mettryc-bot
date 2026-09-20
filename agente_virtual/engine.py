@@ -152,6 +152,9 @@ class AgenteVirtualEngine:
             raise ValueError("El mensaje no puede estar vacío.")
 
         legacy = self.bridge.load()
+        normalizar_media = getattr(legacy, "normalizar_mensaje_multimedia", None)
+        if callable(normalizar_media):
+            text = normalizar_media(text)
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
 
@@ -202,33 +205,6 @@ class AgenteVirtualEngine:
                 ),
             )
 
-            if state.get("propiedad_interes"):
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    (
-                        "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
-                        "audios desde este canal. Ya tengo una propiedad en contexto; "
-                        "dime qué dato quieres consultar sobre ella."
-                    ),
-                )
-
-            state["esperando_codigo"] = True
-            state["pregunta_pendiente"] = "codigo_para_detalle"
-            state["estado_conversacion"] = "esperando_codigo_propiedad"
-
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                (
-                    "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
-                    "audios desde este canal. Para identificar la propiedad exacta, "
-                    "envíame el código o ID que aparece normalmente al final del "
-                    "título del anuncio, o pega aquí el enlace de la publicación."
-                ),
-            )
 
         # SEGUIMIENTO DE MULTIMEDIA
         # Si el usuario pregunta por la propiedad mostrada en una foto/audio que
