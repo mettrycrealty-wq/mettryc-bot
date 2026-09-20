@@ -92,3 +92,4 @@ class ImagenCodigoResult(BaseModel):
 
     codigo: str | None = None
     visible: bool = False
+    texto_visible: str | None = None
