@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Any
-
-import httpx
 
 from pydantic import ValidationError
 
@@ -63,8 +60,6 @@ Contexto de ANUNCIOS DE PORTALES:
 - Si la persona dice que tiene preguntas sobre la publicación pero no formula todavía una pregunta concreta, basta con confirmar disponibilidad y preguntarle qué dato desea conocer.
 - Si pide más información, detalles o datos de la propiedad, debe mostrarse la ficha de esa propiedad.
 - Los turnos posteriores deben conservar esa propiedad en contexto.
-- Un saludo, agradecimiento o comentario social NO inicia una nueva búsqueda y no debe hacer que olvides la propiedad del anuncio.
-- Si el usuario cambia claramente de tema hacia Mettryc, una persona, atención, empresa, servicios u otro asunto, responde al nuevo tema y no exijas el código de la propiedad.
 
 Señales comerciales para CLIENTES:
 - sales_signal="interesado" cuando expresa interés claro pero todavía está explorando.
@@ -89,7 +84,6 @@ Tu respuesta será enviada directamente al usuario.
 
 Comportamiento conversacional:
 - Habla con naturalidad, sin menús y sin frases de robot.
-- Un simple "gracias", "excelente", "perfecto", "cuenta con eso" u otro cierre social no debe disparar búsquedas nuevas ni diagnósticos de inventario.
 - Lee la conversación completa y conserva el contexto.
 - Puedes responder una pregunta casual aunque exista una búsqueda en curso.
 - Si el usuario cambia de tema, responde al nuevo tema sin perder el contexto anterior.
@@ -143,174 +137,14 @@ class AgenteVirtualEngine:
         self.bridge = bridge or LegacyMettrycBridge()
         self.max_history = max(6, max_history)
 
-    async def process(
-        self,
-        sender: str,
-        message: str,
-    ) -> str:
+    async def process(self, sender: str, message: str) -> str:
         text = str(message or "").strip()
+        if not text:
+            raise ValueError("El mensaje no puede estar vacío.")
 
         legacy = self.bridge.load()
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
-
-        if not text:
-            raise ValueError("El mensaje no puede estar vacío.")
-
-        if self._is_multimedia_only_message(text):
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                (
-                    "Soy Paty, el Asistente Virtual de Mettryc Realty. "
-                    "Por ahora solo puedo entender mensajes escritos; no puedo "
-                    "interpretar imágenes, audios ni notas de voz. "
-                    "Por favor, escribe tu solicitud por mensaje de texto y "
-                    "continuamos desde donde quedamos."
-                ),
-            )
-
-        # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
-        # decida si debe procesar los datos o no. El motor legacy es la
-        # fuente de verdad para captura, confirmación, asignación y aviso.
-        lead_result = await self._process_lead_flow_deterministic(
-            text,
-            state,
-        )
-        if lead_result is not None:
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                lead_result,
-            )
-
-        # Cierres sociales no deben ejecutar búsquedas nuevas.
-        if (
-            self._is_social_closure(text)
-            and state.get("pregunta_pendiente")
-            not in {
-                "confirmar_rol",
-                "confirmar_ciudad_zona",
-                "confirmar_agente_para_captador",
-                "codigo_para_detalle",
-                "ofrecer_asesor",
-                "visita_o_pregunta_propiedad",
-                "datos_contacto_colega",
-                "asunto_contacto_colega",
-            }
-            and not state.get("lead_confirmacion_pendiente")
-        ):
-            respuesta = (
-                "¡Con gusto! Quedo atento por si deseas consultar algo más "
-                "sobre la propiedad."
-                if state.get("propiedad_interes") or state.get("ultimo_lote")
-                else "¡Con gusto! Quedo atento por si necesitas algo más."
-            )
-            return await self._finalize(sender, state, text, respuesta)
-
-        # Propuestas comerciales o empresariales no deben caer en el flujo
-        # inmobiliario de propiedades ni pedir confirmación de rol.
-        if self._is_business_proposal(text):
-            state["pregunta_pendiente"] = None
-            state["esperando_codigo"] = False
-
-            notified = await self.bridge.notify_admins(
-                sender=sender,
-                state=state,
-                reason="Propuesta comercial o empresarial recibida",
-                original_message=text,
-            )
-
-            if notified:
-                respuesta = (
-                    "Gracias por escribirnos y por compartir la propuesta. "
-                    "Recibí la información y ya la canalicé con el equipo "
-                    "responsable de Mettryc Realty."
-                )
-            else:
-                respuesta = (
-                    "Gracias por escribirnos y por compartir la propuesta. "
-                    "Recibí la información y puedes continuar conversando "
-                    "conmigo sobre Mettryc Realty."
-                )
-
-            return await self._finalize(sender, state, text, respuesta)
-
-        # Un cambio claro de tema libera preguntas inmobiliarias pendientes,
-        # pero conserva la propiedad para poder retomarla después.
-        if self._is_explicit_topic_switch(text):
-            if state.get("pregunta_pendiente") in {
-                "codigo_para_detalle",
-                "esperando_codigo_propiedad",
-                "confirmar_rol",
-                "confirmar_ciudad_zona",
-            }:
-                state["pregunta_pendiente"] = None
-            state["esperando_codigo"] = False
-
-        # Cierres sociales no deben ejecutar búsquedas nuevas.
-        if (
-            self._is_social_closure(text)
-            and state.get("pregunta_pendiente")
-            not in {
-                "confirmar_rol",
-                "confirmar_ciudad_zona",
-                "confirmar_agente_para_captador",
-                "codigo_para_detalle",
-                "ofrecer_asesor",
-                "visita_o_pregunta_propiedad",
-                "datos_contacto_colega",
-                "asunto_contacto_colega",
-            }
-            and not state.get("lead_confirmacion_pendiente")
-        ):
-            if state.get("propiedad_interes") or state.get("ultimo_lote"):
-                respuesta = "¡Con gusto! Quedo atento por si deseas consultar algo más sobre la propiedad."
-            else:
-                respuesta = "¡Con gusto! Quedo atento por si necesitas algo más."
-            return await self._finalize(sender, state, text, respuesta)
-
-        # Un cambio claro de tema libera preguntas inmobiliarias pendientes.
-        # Conservamos la propiedad en contexto para poder retomarla después.
-        if self._is_explicit_topic_switch(text):
-            if state.get("pregunta_pendiente") in {
-                "codigo_para_detalle",
-                "esperando_codigo_propiedad",
-                "confirmar_rol",
-                "confirmar_ciudad_zona",
-            }:
-                state["pregunta_pendiente"] = None
-            state["esperando_codigo"] = False
-
-        # El texto posterior a un adjunto no se interpreta visualmente.
-        # Solo usamos el contexto textual que ya existe.
-        if self._is_media_reference_text(text):
-            lote = [str(pid) for pid in (state.get("ultimo_lote") or []) if str(pid).strip()]
-            if len(lote) == 1 or state.get("propiedad_interes"):
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    "Sí, tomo como referencia la propiedad que estamos viendo. ¿Qué información quieres consultar?",
-                )
-            if len(lote) > 1:
-                opciones = ", ".join(f"opción {i + 1}" for i in range(min(5, len(lote))))
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    "Entiendo. No puedo identificar cuál propiedad es solo con esa referencia. Dime "
-                    + f"la opción ({opciones}) o envíame el ID.",
-                )
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                "No puedo identificar la propiedad con esa referencia. Envíame el ID, el título del anuncio o el enlace.",
-            )
-
 
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
@@ -374,34 +208,13 @@ class AgenteVirtualEngine:
             and state.get("propiedad_interes")
         )
 
-        if portal_context and self._is_availability_question(text):
-            active = bool(state.get("propiedad_interes", {}).get("activa", True))
-            if active:
-                response = (
-                    "Sí, la propiedad sigue disponible actualmente en nuestro inventario. "
-                    "¿Quieres conocer algún detalle específico o deseas agendar una visita?"
-                )
-            else:
-                response = (
-                    "Esa propiedad ya no aparece activa actualmente en nuestro inventario. "
-                    "Puedo ayudarte a buscar una alternativa similar."
-                )
-            return await self._finalize(sender, state, text, response)
-
+        # Respuestas sociales no deben iniciar búsquedas ni romper el contexto del anuncio.
         if portal_context and self._is_simple_acknowledgement(text):
             return await self._finalize(
                 sender,
                 state,
                 text,
                 "¡Con gusto! Quedo atento por si necesitas algo más sobre esta propiedad.",
-            )
-
-        if portal_context and self._is_greeting_only(text):
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                "¡Buenas! Seguimos con la propiedad de Mercado Libre. ¿Qué te gustaría saber de ella?",
             )
 
         if portal_context and self._is_vague_property_followup(text):
@@ -435,54 +248,8 @@ class AgenteVirtualEngine:
                     ficha.message or "",
                 )
 
-        if (
-            state.get("pregunta_pendiente") == "codigo_para_detalle"
-            and self._is_no_code_response(text)
-        ):
-            state["esperando_codigo"] = False
-            state["pregunta_pendiente"] = None
-            state["estado_conversacion"] = "conversando"
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                (
-                    "No hay problema. También puedes enviarme el enlace del anuncio, "
-                    "el título de la propiedad o decirme la zona y el tipo de inmueble "
-                    "para intentar identificarla."
-                ),
-            )
-
-        # CONSULTA DE PROPIEDAD SIN REFERENCIA
-        # Si piden información de una propiedad pero no indican cuál es y no
-        # existe una propiedad activa en contexto, no permitimos que el LLM
-        # adivine. Pedimos el ID/código y el siguiente turno lo resolvemos
-        # directamente contra WASI.
-        codigo_explicito = legacy.extraer_codigo_inmueble(
-            text,
-            permitir_solo_digitos=False,
-        )
-
-        if state.get("pregunta_pendiente") == "codigo_para_detalle" and codigo_explicito:
-            ficha = await self.bridge.detail(
-                state,
-                code=codigo_explicito,
-                format_legacy=True,
-            )
-            state["esperando_codigo"] = False
-            state["pregunta_pendiente"] = None
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                ficha.message or "No pude recuperar la ficha de esa propiedad.",
-            )
-
-        if (
-            legacy.solicita_informacion_propiedad_sin_referencia(text)
-            and not codigo_explicito
-            and not legacy.resolver_propiedad_contexto(state)
-        ):
+        # REFERENCIA DIRECTA / SOLICITUD SIN ID
+        if text == "[multimedia_sin_texto]":
             state["esperando_codigo"] = True
             state["pregunta_pendiente"] = "codigo_para_detalle"
             state["estado_conversacion"] = "esperando_codigo_propiedad"
@@ -491,11 +258,16 @@ class AgenteVirtualEngine:
                 state,
                 text,
                 (
-                    "Claro. Para darte la información exacta necesito identificar "
-                    "la propiedad. Envíame el código o ID que aparece normalmente "
-                    "al final del título del anuncio."
+                    "Recibí la imagen. Para identificar exactamente la propiedad "
+                    "necesito el código o ID que aparece al final del título del "
+                    "anuncio, o el enlace de la publicación."
                 ),
             )
+
+        codigo_explicito = legacy.extraer_codigo_inmueble(
+            text,
+            permitir_solo_digitos=False,
+        )
 
         if codigo_explicito:
             ficha = await self.bridge.detail(
@@ -508,6 +280,24 @@ class AgenteVirtualEngine:
                 state,
                 text,
                 ficha.message or "No pude recuperar la ficha de esa propiedad.",
+            )
+
+        if (
+            legacy.solicita_informacion_propiedad_sin_referencia(text)
+            and not legacy.resolver_propiedad_contexto(state)
+        ):
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para darte la información exacta necesito identificar "
+                    "la propiedad. Envíame el código o ID que aparece normalmente "
+                    "al final del título del anuncio, o el enlace de la publicación."
+                ),
             )
 
         # La geografía se resuelve de forma determinista usando el catálogo
@@ -552,24 +342,6 @@ class AgenteVirtualEngine:
             text,
             analysis,
         )
-
-        if state.get("pregunta_pendiente") == "codigo_para_detalle":
-            property_intents = {
-                "busqueda_propiedad",
-                "detalle_propiedad",
-                "pregunta_propiedad",
-                "seleccion_propiedad",
-                "mas_propiedades",
-            }
-            if (
-                analysis.intent not in property_intents
-                and not legacy.solicita_informacion_propiedad_sin_referencia(text)
-                and not legacy.extraer_codigo_mercadolibre(text)
-                and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
-            ):
-                state["esperando_codigo"] = False
-                state["pregunta_pendiente"] = None
-                state["estado_conversacion"] = "conversando"
 
         if geo_zone:
             analysis = analysis.model_copy(
@@ -762,21 +534,9 @@ class AgenteVirtualEngine:
         self.bridge.apply_analysis(state, analysis, text)
 
         business_results: list[BusinessActionResult] = []
-        admin_notified: set[str] = set()
-
         if analysis.human_requested or analysis.intent == "atencion_humana":
             # Para clientes avisamos al administrador de inmediato. Para colegas,
             # la propia rutina legacy conserva el proceso especial que ya funciona.
-            if state.get("rol") != "colega_inmobiliario":
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason="Solicitud explícita de atención humana",
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add("atencion_humana")
-
             result = await self.bridge.human(state, text)
             business_results.append(result)
 
@@ -837,34 +597,6 @@ class AgenteVirtualEngine:
                     await self.bridge.capture_colleague_contact(state, text)
                 )
 
-        if analysis.information_not_available:
-            reason = (
-                "Información solicitada no disponible: "
-                + str(analysis.unknown_information or "dato no identificado")
-            )
-            if reason not in admin_notified:
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason=reason,
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add(reason)
-
-        for result in business_results:
-            if not result.ok:
-                reason = "Fallo en herramienta: " + result.name
-                if reason not in admin_notified:
-                    notified = await self.bridge.notify_admins(
-                        sender=sender,
-                        state=state,
-                        reason=reason,
-                        original_message=text,
-                    )
-                    if notified:
-                        admin_notified.add(reason)
-
         # La capa comercial no interviene en la selección ni entrega de propiedades.
         # Primero debe completarse la acción inmobiliaria; las técnicas de venta
         # se incorporarán después como una capa independiente.
@@ -886,20 +618,7 @@ class AgenteVirtualEngine:
             result.ok and result.name == "buscar_propiedades"
             for result in business_results
         )
-        current_turn_search = self._current_turn_has_search_signal(
-            legacy,
-            state,
-            text,
-        )
-        if (
-            search_ready
-            and not already_searched
-            and analysis.intent not in special_intents
-            and (
-                analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
-                or current_turn_search
-            )
-        ):
+        if search_ready and not already_searched and analysis.intent not in special_intents:
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
@@ -944,11 +663,18 @@ class AgenteVirtualEngine:
         # existe intención de búsqueda. Así la clasificación comercial del LLM
         # nunca puede apagar una búsqueda inequívoca.
         try:
-            legacy_search_intent = self._current_turn_has_search_signal(
-                legacy,
-                state,
-                text,
-            )
+            legacy_search_intent = False
+            if hasattr(legacy, "tiene_intencion_busqueda"):
+                estado_prueba = deepcopy(state)
+                if hasattr(legacy, "aplicar_extracciones_tecnicas"):
+                    legacy.aplicar_extracciones_tecnicas(estado_prueba, text)
+                legacy_search_intent = bool(
+                    legacy.tiene_intencion_busqueda(
+                        estado_prueba,
+                        None,
+                        text,
+                    )
+                )
         except Exception:
             legacy_search_intent = False
 
@@ -970,8 +696,26 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias", "muchas gracias", "excelente", "perfecto",
+            "ok", "okey", "okay", "listo", "cuenta con eso",
+            "de acuerdo", "entendido", "bien",
+        }
+
+    @staticmethod
+    def _is_vague_property_followup(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "esto", "eso", "en esto", "en eso", "sobre esto", "sobre eso",
+            "esa", "ese", "esta", "este", "esa propiedad", "ese inmueble",
+            "esta propiedad", "este inmueble", "esa casa", "esta casa",
+        }
+
+    @staticmethod
     def _requests_more_property_info(text: str) -> bool:
-        """Detecta una solicitud directa de información/fotos de un anuncio."""
+        """Detecta cuando un mensaje de anuncio pide información inmediata."""
         normalized = str(text or "").lower()
         return any(
             phrase in normalized
@@ -980,9 +724,6 @@ class AgenteVirtualEngine:
                 "más información",
                 "mas info",
                 "más info",
-                "tengo algunas preguntas",
-                "tengo preguntas sobre",
-                "algunas preguntas sobre tu publicación",
                 "informacion de la propiedad",
                 "información de la propiedad",
                 "detalles de la propiedad",
@@ -1014,8 +755,6 @@ class AgenteVirtualEngine:
                 "fotografías",
             )
         )
-
-
 
     def _update_sales_state(
         self,
@@ -1091,79 +830,6 @@ class AgenteVirtualEngine:
         if offer.lower() in clean.lower():
             return clean
         return f"{clean}\\n\\n{offer}" if clean else offer
-
-    async def _process_lead_flow_deterministic(
-        self,
-        text: str,
-        state: dict,
-    ) -> str | None:
-        """Ejecuta el flujo de lead sin depender de la clasificación del LLM."""
-        legacy = self.bridge.load()
-
-        if state.get("lead_confirmacion_pendiente"):
-            if legacy.es_respuesta_afirmativa(text):
-                result = await self.bridge.complete_lead(state)
-                return result.message
-
-            if legacy.es_respuesta_negativa(text):
-                state["lead_confirmacion_pendiente"] = False
-                state["lead_confirmado"] = False
-                legacy.actualizar_lead_desde_mensaje(state, text)
-                return (
-                    "Entendido. No enviaré esos datos todavía. "
-                    "Indícame qué dato deseas corregir y lo actualizamos."
-                )
-
-            # Una corrección de datos durante la confirmación vuelve a pasar
-            # directamente por el flujo legacy, no por la IA conversacional.
-            if self._looks_like_data_turn_without_analysis(legacy, text):
-                result = await self.bridge.capture_lead(state, text)
-                return result.message
-
-            return (
-                "Estoy revisando los datos que registré. "
-                "¿Están correctos o deseas corregir alguno?"
-            )
-
-        if state.get("objetivo") == "captura_lead":
-            if self._looks_like_data_turn_without_analysis(legacy, text):
-                result = await self.bridge.capture_lead(state, text)
-                return result.message
-
-        return None
-
-
-    @staticmethod
-    def _looks_like_data_turn_without_analysis(
-        legacy: Any,
-        text: str,
-    ) -> bool:
-        """Detecta datos de lead sin depender de la clasificación del modelo."""
-        if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
-            return True
-
-        normalizar = getattr(
-            legacy,
-            "normalizar_texto",
-            lambda value: " ".join(str(value or "").lower().split()),
-        )
-        normalized = normalizar(text)
-        return any(
-            marker in normalized
-            for marker in (
-                "me llamo",
-                "mi nombre es",
-                "soy ",
-                "mi whatsapp",
-                "mi telefono",
-                "mi teléfono",
-                "mismo numero",
-                "numero del chat",
-                "numero actual",
-                "este numero",
-            )
-        )
-
 
     async def _process_pending_transaction(
         self,
@@ -1253,8 +919,6 @@ class AgenteVirtualEngine:
             return True
 
         return False
-
-
 
     async def _analyze_turn(
         self,
@@ -1379,339 +1043,6 @@ class AgenteVirtualEngine:
         self.bridge.save_state(sender, state)
         return response
 
-
-    @staticmethod
-    def _is_social_closure(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "gracias",
-            "muchas gracias",
-            "excelente gracias",
-            "perfecto gracias",
-            "excelente",
-            "perfecto",
-            "cuenta con eso",
-            "de acuerdo",
-            "entendido",
-            "bien gracias",
-            "listo gracias",
-        }
-
-    @staticmethod
-    def _is_multimedia_only_message(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        markers = (
-            "[multimedia_sin_texto]",
-            "<multimedia imagen>",
-            "<multimedia audio>",
-            "<multimedia documento>",
-            "<multimedia video>",
-            "[imagen]",
-            "[audio]",
-            "[nota de voz]",
-            "[documento]",
-            "mensaje multimedia",
-            "nota de voz",
-        )
-        return normalized in markers or any(
-            normalized.startswith(marker)
-            for marker in markers
-            if marker.startswith("[") or marker.startswith("<")
-        )
-
-    @staticmethod
-    def _is_simple_acknowledgement(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "ok", "okey", "okay", "vale", "listo", "perfecto",
-            "excelente", "entendido", "bien", "gracias",
-            "muchas gracias", "de acuerdo",
-        }
-
-    @staticmethod
-    def _is_greeting_only(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "hola", "buenas", "buenos dias", "buenos días",
-            "buenas tardes", "buenas noches", "hola buenas",
-            "hola buenas tardes", "hola buenas noches",
-        }
-
-    @staticmethod
-    def _is_explicit_topic_switch(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        markers = (
-            "cómo se llama la empresa",
-            "como se llama la empresa",
-            "qué empresa es",
-            "que empresa es",
-            "quiénes son",
-            "quienes son",
-            "qué hace mettryc",
-            "que hace mettryc",
-            "tienen atención automática",
-            "tienen atencion automatica",
-            "atención automática",
-            "atencion automatica",
-            "con quien me comuniqué",
-            "con quien me comunique",
-            "quien me atendió",
-            "quien me atendio",
-            "soy founder",
-            "soy ceo",
-            "founder & ceo",
-            "agentia",
-            "presentarles una solución",
-            "presentarles una solucion",
-            "persona responsable",
-            "responsable de mettryc",
-            "hablar con la persona responsable",
-        )
-        return any(marker in normalized for marker in markers)
-
-    @staticmethod
-    def _is_media_reference_text(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "está en la foto",
-            "esta en la foto",
-            "está en la imagen",
-            "esta en la imagen",
-            "es la de la foto",
-            "es la de la imagen",
-            "la que está en la foto",
-            "la que esta en la foto",
-            "la que está en la imagen",
-            "la que esta en la imagen",
-            "la que te mandé",
-            "la que te mande",
-            "la que envié",
-            "la que envie",
-            "la que te envié",
-            "la que te envie",
-        }
-
-    @staticmethod
-    def _is_social_closure(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-
-        exact = {
-            "gracias",
-            "muchas gracias",
-            "excelente",
-            "perfecto",
-            "excelente gracias",
-            "perfecto gracias",
-            "cuenta con eso",
-            "de acuerdo",
-            "entendido",
-            "bien gracias",
-            "listo gracias",
-            "ya le pase tu contacto",
-            "ya le pasé tu contacto",
-            "ya comparti tu contacto",
-            "ya compartí tu contacto",
-            "ya le envie tu contacto",
-            "ya le envié tu contacto",
-        }
-        if normalized in exact:
-            return True
-
-        closing_markers = (
-            "gracias",
-            "cuenta con eso",
-            "ya le pase tu contacto",
-            "ya le pasé tu contacto",
-            "ya le envie tu contacto",
-            "ya le envié tu contacto",
-            "ya comparti tu contacto",
-            "ya compartí tu contacto",
-        )
-        action_markers = (
-            "busco",
-            "quiero comprar",
-            "quiero alquilar",
-            "quiero visitar",
-            "agendar",
-            "muestrame",
-            "muéstrame",
-            "precio",
-            "disponible",
-            "captador",
-            "asesor",
-            "codigo",
-            "código",
-        )
-        return any(marker in normalized for marker in closing_markers) and not any(
-            marker in normalized for marker in action_markers
-        )
-
-    @staticmethod
-    def _is_business_proposal(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        markers = (
-            "founder & ceo",
-            "founder y ceo",
-            "agentia",
-            "empleados digitales",
-            "solucion que puede tener un impacto",
-            "solución que puede tener un impacto",
-            "presentarles una solucion",
-            "presentarles una solución",
-            "plataforma",
-            "crm y gestion de oportunidades",
-            "crm y gestión de oportunidades",
-            "no buscamos reemplazar al asesor",
-            "me gustaría conversar 15 minutos",
-            "me gustaria conversar 15 minutos",
-            "persona responsable",
-        )
-        return any(marker in normalized for marker in markers)
-
-    @staticmethod
-    def _is_explicit_topic_switch(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        markers = (
-            "cómo se llama la empresa",
-            "como se llama la empresa",
-            "qué empresa es",
-            "que empresa es",
-            "quiénes son",
-            "quienes son",
-            "qué hace mettryc",
-            "que hace mettryc",
-            "tienen atención automática",
-            "tienen atencion automatica",
-            "atención automática",
-            "atencion automatica",
-            "con quien me comuniqué",
-            "con quien me comunique",
-            "quien me atendió",
-            "quien me atendio",
-            "soy founder",
-            "soy ceo",
-            "founder & ceo",
-            "agentia",
-            "presentarles una solución",
-            "presentarles una solucion",
-            "persona responsable",
-            "responsable de mettryc",
-            "hablar con la persona responsable",
-        )
-        return any(marker in normalized for marker in markers)
-
-    @staticmethod
-    def _is_media_reference_text(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "está en la foto",
-            "esta en la foto",
-            "está en la imagen",
-            "esta en la imagen",
-            "es la de la foto",
-            "es la de la imagen",
-            "la que está en la foto",
-            "la que esta en la foto",
-            "la que está en la imagen",
-            "la que esta en la imagen",
-            "la que te mandé",
-            "la que te mande",
-            "la que envié",
-            "la que envie",
-            "la que te envié",
-            "la que te envie",
-        }
-
-    @staticmethod
-    def _is_availability_question(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return any(
-            phrase in normalized
-            for phrase in (
-                "aun disponible",
-                "aún disponible",
-                "sigue disponible",
-                "todavia disponible",
-                "todavía disponible",
-                "esta disponible",
-                "está disponible",
-                "continua disponible",
-                "continúa disponible",
-                "todavia esta",
-                "todavía está",
-            )
-        )
-
-    @staticmethod
-    def _is_no_code_response(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "no lo tengo",
-            "no tengo el codigo",
-            "no tengo el código",
-            "no se",
-            "no sé",
-            "no lo sé",
-            "no recuerdo",
-            "no recuerdo el codigo",
-            "no recuerdo el código",
-        }
-
-    @staticmethod
-    def _is_vague_property_followup(text: str) -> bool:
-        normalized = " ".join(str(text or "").lower().split())
-        return normalized in {
-            "esto", "eso", "en esto", "en eso",
-            "sobre esto", "sobre eso", "esa", "ese",
-            "esta", "este", "esa propiedad", "ese inmueble",
-            "esta propiedad", "este inmueble", "esa casa",
-            "esta casa", "eso mismo",
-        }
-
-    @staticmethod
-    def _current_turn_has_search_signal(
-        legacy: Any,
-        state: dict,
-        text: str,
-    ) -> bool:
-        """Indica si ESTE turno pide una búsqueda, no solo si existe contexto previo."""
-        normalizar = getattr(
-            legacy,
-            "normalizar_texto",
-            lambda value: " ".join(str(value or "").lower().split()),
-        )
-        normalized = normalizar(text)
-        explicit = (
-            "busco", "estoy buscando", "quiero comprar",
-            "quiero alquilar", "quiero rentar", "quisiera comprar",
-            "quisiera alquilar", "necesito un apartamento",
-            "necesito una casa", "necesito un terreno",
-            "quiero una propiedad", "busco una propiedad",
-            "busco un apartamento", "busco una casa",
-            "busco un terreno", "busco local", "busco oficina",
-            "otras opciones", "mas opciones", "más opciones",
-            "muestrame otras", "muéstrame otras",
-        )
-        if any(frase in normalized for frase in explicit):
-            return True
-
-        prueba = deepcopy(state)
-        filtros_antes = deepcopy(prueba.get("filtros", {}))
-        sin_pref_antes = list(prueba.get("sin_preferencia", []))
-
-        try:
-            if hasattr(legacy, "aplicar_extracciones_tecnicas"):
-                legacy.aplicar_extracciones_tecnicas(prueba, text)
-            if hasattr(legacy, "aplicar_sin_preferencia_desde_texto"):
-                legacy.aplicar_sin_preferencia_desde_texto(prueba, text)
-        except Exception:
-            return False
-
-        return (
-            filtros_antes != prueba.get("filtros", {})
-            or sin_pref_antes != list(prueba.get("sin_preferencia", []))
-        )
-
     @staticmethod
     def _search_signal(state: dict) -> bool:
         filtros = state.get("filtros", {})
@@ -1780,8 +1111,8 @@ class AgenteVirtualEngine:
 
         if analysis.intent == "informacion_no_disponible":
             return (
-                "No quiero darte un dato incorrecto. Esa información no la tengo "
-                "disponible ahora mismo y ya dejé el aviso al equipo para que la confirme."
+                "No quiero darte un dato incorrecto. Esa información no está "
+                "especificada en la ficha disponible ahora mismo."
             )
 
         if analysis.intent == "busqueda_propiedad":
