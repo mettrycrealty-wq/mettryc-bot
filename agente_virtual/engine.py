@@ -416,9 +416,9 @@ class AgenteVirtualEngine:
         # El rol no se debe adivinar. Primero respetamos una confirmación
         # explícita del usuario y, si existe una acción pendiente de rol,
         # la retomamos después de esa confirmación.
-        pending_role_action = None
         explicit_role = legacy.detectar_rol_explicito(text)
         if state.get("pregunta_pendiente") == "confirmar_rol":
+            pending_role_action_before_role = pending_role_action
             pending_role_action = (
                 (state.get("accion_pendiente_rol") or {}).get("tipo")
             )
