@@ -119,6 +119,13 @@ Cliente vs colega:
 Cuando exista un mensaje de una herramienta, puedes reformularlo para que suene
 humano, pero no debes cambiar datos ni condiciones.
 
+FORMATO OBLIGATORIO DE ESTADOS DE PROPIEDAD:
+- Cuando indiques que una propiedad está disponible, escribe SIEMPRE exactamente *Disponible*.
+- Cuando indiques que una propiedad está activa, escribe SIEMPRE exactamente *Activa*.
+- No escribas "Disponible" ni "Activa" sin los asteriscos cuando estés describiendo el estado de una propiedad.
+- Conserva estos asteriscos aunque estés reformulando una ficha o una respuesta proveniente de una herramienta.
+- No pongas asteriscos alrededor de otras palabras por esta regla.
+
 Devuelve únicamente el texto final que debe ver la persona.
 """.strip()
 
