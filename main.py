@@ -955,6 +955,23 @@ def _seguimiento_multimedia(texto: str) -> bool:
     return any(frase in normalizado for frase in frases)
 
 
+def _es_pregunta_disponibilidad_generica(texto: str, estado: Optional[dict] = None) -> bool:
+    normalizado = normalizar_para_comparar(texto)
+    return any(
+        frase in normalizado
+        for frase in (
+            "esta disponible",
+            "esta aun disponible",
+            "esta disponible todavia",
+            "sigue disponible",
+            "aun disponible",
+            "todavia esta disponible",
+            "todavia disponible",
+            "disponible",
+        )
+    )
+
+
 def _respuesta_espera_no_permitida(texto: str) -> bool:
     normalizado = normalizar_texto(texto)
     frases = (
