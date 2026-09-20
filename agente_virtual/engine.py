@@ -47,6 +47,8 @@ Reglas:
 Nunca inventes propiedades, precios, disponibilidad, agentes, captadores,
 teléfonos, horarios ni características.
 
+Una solicitud genérica como “quiero una casa” NO es suficiente para mostrar opciones. Primero recopila los criterios de búsqueda y la información de calificación necesaria.
+
 Para criterios inmobiliarios, devuelve solamente datos presentes o inferencias muy
 directas. Si el usuario cambia un criterio, el nuevo valor reemplaza al anterior.
 No borres otros criterios que siguen siendo válidos.
@@ -157,6 +159,28 @@ class AgenteVirtualEngine:
             text = normalizar_media(text)
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
+
+        # Una nueva petición genérica comienza una búsqueda limpia; no heredamos
+        # filtros ni propiedades de una búsqueda anterior.
+        if self._is_generic_property_request(text, legacy):
+            filtros = state.setdefault("filtros", {})
+            for key in (
+                "tipo_operacion", "tipo_propiedad", "ciudad", "zona",
+                "presupuesto_max", "habitaciones_min", "banos_min",
+                "garajes_min", "m2_min", "m2_max",
+            ):
+                filtros[key] = None
+            filtros["caracteristicas"] = []
+            state["sin_preferencia"] = []
+            state["presupuesto_abierto"] = False
+            state["caracteristicas_abiertas"] = False
+            state["ultimo_lote"] = []
+            state["propiedades_enviadas"] = []
+            state["propiedad_interes"] = None
+            state["propiedad_activa_id"] = None
+            state["ultima_propiedad_consultada_id"] = None
+            state["sugerencia_ajuste"] = None
+            state["ambiguedad_geografica"] = None
 
         # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
         # decida si debe procesar los datos o no. El motor legacy es la
@@ -843,7 +867,7 @@ class AgenteVirtualEngine:
         # preguntamos directamente el siguiente dato. No delegamos esa pregunta
         # al LLM para evitar respuestas vagas o promesas de espera.
         if current_turn_search and not search_ready:
-            missing = legacy.obtener_pregunta_faltante(state)
+            missing = self._next_search_question(legacy, state)
             if missing:
                 return await self._finalize(sender, state, text, missing)
 
@@ -863,11 +887,19 @@ class AgenteVirtualEngine:
         pending_action: str | None,
         analysis: TurnAnalysis,
     ) -> str | None:
-        """Continúa directamente la acción que estaba pendiente del rol."""
+        """Continúa una acción pendiente solo cuando sus datos ya están completos."""
         if not pending_action:
             return None
 
         if pending_action in {"buscar_propiedades", "mostrar_mas_propiedades"}:
+            legacy = self.bridge.load()
+
+            if not self._search_signal(state):
+                missing = self._next_search_question(legacy, state)
+                if missing:
+                    return missing
+                return None
+
             result = await self.bridge.search(state)
             return result.message if result.ok else result.message
 
@@ -1612,25 +1644,101 @@ class AgenteVirtualEngine:
 
     @staticmethod
     def _search_signal(state: dict) -> bool:
+        """La búsqueda solo se ejecuta con una ficha mínima ya calificada."""
         filtros = state.get("filtros", {})
-        if not filtros.get("tipo_operacion"):
-            return False
+        sin_preferencia = {
+            str(item).strip()
+            for item in (state.get("sin_preferencia") or [])
+        }
 
-        señales = (
-            "tipo_propiedad",
-            "ciudad",
-            "zona",
-            "presupuesto_max",
-            "habitaciones_min",
-            "banos_min",
-            "garajes_min",
-            "m2_min",
-            "m2_max",
+        for field in ("tipo_operacion", "tipo_propiedad", "ciudad", "zona"):
+            if not filtros.get(field):
+                return False
+
+        presupuesto_ok = bool(
+            filtros.get("presupuesto_max")
+            or "presupuesto_max" in sin_preferencia
+            or state.get("presupuesto_abierto")
+        )
+        caracteristicas_ok = bool(
+            filtros.get("habitaciones_min")
+            or filtros.get("banos_min")
+            or filtros.get("garajes_min")
+            or filtros.get("caracteristicas")
+            or "caracteristicas" in sin_preferencia
+            or state.get("caracteristicas_abiertas")
         )
 
-        return any(filtros.get(field) not in (None, "", []) for field in señales) or bool(
-            filtros.get("caracteristicas")
+        return presupuesto_ok and caracteristicas_ok
+
+
+    @staticmethod
+    def _next_search_question(legacy: Any, state: dict) -> str:
+        """Obtiene la siguiente pregunta de calificación antes de mostrar opciones."""
+        filtros = state.get("filtros", {})
+        sin_preferencia = {
+            str(item).strip()
+            for item in (state.get("sin_preferencia") or [])
+        }
+
+        base_question = legacy.obtener_pregunta_faltante(state)
+        if base_question:
+            return base_question
+
+        if (
+            not filtros.get("presupuesto_max")
+            and "presupuesto_max" not in sin_preferencia
+            and not state.get("presupuesto_abierto")
+        ):
+            state["pregunta_pendiente"] = "presupuesto_max"
+            return (
+                "Perfecto. ¿Cuál es tu presupuesto aproximado? "
+                "También puedes decirme “sin límite” si prefieres que revise "
+                "todas las opciones disponibles."
+            )
+
+        if not (
+            filtros.get("habitaciones_min")
+            or filtros.get("banos_min")
+            or filtros.get("garajes_min")
+            or filtros.get("caracteristicas")
+            or "caracteristicas" in sin_preferencia
+            or state.get("caracteristicas_abiertas")
+        ):
+            state["pregunta_pendiente"] = "caracteristicas_busqueda"
+            return (
+                "¿Cuántas habitaciones necesitas y hay alguna característica "
+                "especial que sea importante para ti? Por ejemplo: baños, "
+                "puestos de estacionamiento, planta eléctrica, pozo, patio u otra. "
+                "Si no tienes preferencia, también puedes indicármelo."
+            )
+
+        return ""
+
+
+    @staticmethod
+    def _is_generic_property_request(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        return any(
+            phrase in normalized
+            for phrase in (
+                "quiero una casa",
+                "quiero un apartamento",
+                "quiero una oficina",
+                "quiero un local",
+                "quiero un terreno",
+                "quiero un townhouse",
+                "busco una casa",
+                "busco un apartamento",
+                "busco una oficina",
+                "busco un local",
+                "busco un terreno",
+                "busco un townhouse",
+                "necesito una casa",
+                "necesito un apartamento",
+            )
         )
+
 
     @staticmethod
     def _clean_response(value: str) -> str:
