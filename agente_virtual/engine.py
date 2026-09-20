@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import base64
 import json
 from copy import deepcopy
 from typing import Any
+
+import httpx
 
 from pydantic import ValidationError
 
 from .bridge import LegacyMettrycBridge
 from .router import AgentModelRouter
-from .schemas import BusinessActionResult, TurnAnalysis
+from .schemas import BusinessActionResult, ImagenCodigoResult, TurnAnalysis
 
 
 ANALYSIS_PROMPT = """
@@ -141,14 +144,30 @@ class AgenteVirtualEngine:
         self.bridge = bridge or LegacyMettrycBridge()
         self.max_history = max(6, max_history)
 
-    async def process(self, sender: str, message: str) -> str:
+    async def process(
+        self,
+        sender: str,
+        message: str,
+        image_source: str | None = None,
+    ) -> str:
         text = str(message or "").strip()
-        if not text:
-            raise ValueError("El mensaje no puede estar vacío.")
 
         legacy = self.bridge.load()
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
+
+        if image_source:
+            image_result = await self._process_image_source(
+                sender,
+                state,
+                text,
+                image_source,
+            )
+            if image_result is not None:
+                return image_result
+
+        if not text:
+            raise ValueError("El mensaje no puede estar vacío.")
 
         # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
         # decida si debe procesar los datos o no. El motor legacy es la
@@ -1135,6 +1154,136 @@ class AgenteVirtualEngine:
             return True
 
         return False
+
+
+    async def _process_image_source(
+        self,
+        sender: str,
+        state: dict,
+        text: str,
+        image_source: str,
+    ) -> str | None:
+        """Lee una captura de anuncio y busca el ID visible del inmueble."""
+        legacy = self.bridge.load()
+
+        data_url = await self._image_source_to_data_url(image_source)
+        if not data_url:
+            return await self._finalize(
+                sender,
+                state,
+                text or "[imagen]",
+                (
+                    "Recibí la imagen, pero no pude abrirla para identificar el anuncio. "
+                    "Envíame el código o ID que aparece normalmente al final del título, "
+                    "o comparte el enlace del anuncio."
+                ),
+            )
+
+        prompt = (
+            "Analiza esta captura de pantalla de un anuncio inmobiliario. "
+            "Identifica únicamente el código o ID del inmueble que sea visible en la imagen. "
+            "Busca especialmente el código que suele aparecer al final del título del anuncio, "
+            "por ejemplo MF-9979795, BS-9398123, LAC-10390892 o FH-10293826. "
+            "Si también aparece un número general del anuncio de Mercado Libre (MLV-...), "
+            "NO lo devuelvas: queremos el código del inmueble publicado por la inmobiliaria. "
+            "No inventes ni deduzcas. Si el código no es legible, devuelve codigo=null y visible=false."
+        )
+
+        try:
+            result = await self.router.json_completion(
+                ImagenCodigoResult,
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": data_url},
+                            },
+                        ],
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            )
+        except Exception:
+            result = None
+
+        codigo = None
+        if isinstance(result, ImagenCodigoResult) and result.visible:
+            candidato = str(result.codigo or "").strip()
+            if candidato:
+                codigo = (
+                    legacy.extraer_codigo_inmueble(
+                        candidato,
+                        permitir_solo_digitos=True,
+                    )
+                    or legacy.extraer_codigo_mercadolibre(candidato)
+                )
+
+        if codigo:
+            ficha = await self.bridge.detail(
+                state,
+                code=codigo,
+                format_legacy=True,
+            )
+            if ficha.ok and ficha.message:
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                return await self._finalize(
+                    sender,
+                    state,
+                    text or "[imagen]",
+                    ficha.message,
+                )
+
+        return await self._finalize(
+            sender,
+            state,
+            text or "[imagen]",
+            (
+                "Recibí la captura. No pude leer con suficiente claridad el código "
+                "del inmueble. Envíame una imagen donde se vea completo el título "
+                "del anuncio o escríbeme el código/ID que aparece al final del título."
+            ),
+        )
+
+    @staticmethod
+    async def _image_source_to_data_url(source: str) -> str | None:
+        """Convierte una URL/data URI en una entrada compatible con visión."""
+        value = str(source or "").strip()
+        if not value:
+            return None
+
+        if value.startswith("data:image/"):
+            return value
+
+        if not value.startswith(("http://", "https://")):
+            return None
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=20,
+                follow_redirects=True,
+                trust_env=False,
+            ) as client:
+                response = await client.get(value)
+                response.raise_for_status()
+                content_type = (
+                    response.headers.get("content-type", "").split(";")[0].strip().lower()
+                )
+                if not content_type.startswith("image/"):
+                    return None
+                content = response.content
+        except Exception:
+            return None
+
+        if not content or len(content) > 8 * 1024 * 1024:
+            return None
+
+        encoded = base64.b64encode(content).decode("ascii")
+        return "data:" + content_type + ";base64," + encoded
 
     async def _analyze_turn(
         self,
