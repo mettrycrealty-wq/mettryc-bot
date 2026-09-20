@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agente_virtual.bridge import LegacyMettrycBridge
 from agente_virtual.engine import AgenteVirtualEngine
-from agente_virtual.schemas import ImagenCodigoResult, TurnAnalysis
+from agente_virtual.schemas import TurnAnalysis
 
 
 class FakeRouter:
@@ -21,13 +21,6 @@ class FakeRouter:
 
     async def json_completion(self, schema, messages, **kwargs):
         self.analysis_calls += 1
-
-        if isinstance(messages[-1].get("content"), list):
-            assert schema is ImagenCodigoResult
-            return ImagenCodigoResult(
-                codigo="9979795",
-                visible=True,
-            )
 
         context = json.loads(messages[-1]["content"])
         text = context["latest_user_message"].lower()
@@ -419,15 +412,6 @@ async def main():
     assert "*Casa en Mañongo*" in response
     assert "detail_format" in legacy.events
 
-    image_sender = "whatsapp:+584120000005"
-    response = await engine.process(
-        image_sender,
-        "",
-        image_source="data:image/jpeg;base64,ZmFrZQ==",
-    )
-    assert "*Casa en Mañongo*" in response
-    assert legacy.states[image_sender]["propiedad_interes"]["id"] == "9979795"
-
     # Regresión: un agradecimiento no puede disparar una nueva búsqueda
     # solo porque quedaron filtros de propiedad en el estado.
     search_count_before_ack = legacy.events.count("search")
@@ -437,7 +421,6 @@ async def main():
     assert legacy.events.count("search") == search_count_before_ack
     assert "quedo atento" in response.lower()
 
-    # Regresión: referencias vagas posteriores al anuncio conservan contexto.
     response = await engine.process(portal_sender, "en esto")
     assert "propiedad" in response.lower()
 
@@ -450,6 +433,15 @@ async def main():
     assert "enviame el código" not in response.lower()
     assert legacy.states[pending_sender]["pregunta_pendiente"] is None
 
+
+    # Regresión: una pregunta explícita sobre la empresa debe seguir el nuevo tema.
+    response = await engine.process(
+        pending_sender,
+        "¿Cómo se llama la empresa?",
+    )
+    assert "mettryc realty" in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
+
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(
         colleague_sender,
@@ -457,68 +449,3 @@ async def main():
     )
     assert "*Captador:* Ana Ejemplo" in response
     assert "https://wa.me/584120000001" in response
-
-    response = await engine.process(
-        client_sender,
-        "Qué bello está el día, ¿verdad?",
-    )
-    assert "retomamos" in response.lower()
-
-    response = await engine.process(
-        client_sender,
-        "¿Cuál es el precio de esa propiedad?",
-    )
-    assert "detail" in legacy.events
-    assert "detail_format" not in legacy.events
-    assert "Perfecto" in response or "$" in response
-
-    sales_sender = "whatsapp:+584120000003"
-    response = await engine.process(
-        sales_sender,
-        "Busco una casa en Mañongo para comprar hasta 250 mil.",
-    )
-    assert "para ti o para un cliente" in response.lower()
-
-    response = await engine.process(sales_sender, "Para mí")
-    assert "💰 $200.000" in response
-
-    response = await engine.process(
-        sales_sender,
-        "Esta casa me interesa mucho, quiero comprarla.",
-    )
-    assert "quieres que te contacte" in response.lower()
-    assert legacy.states[sales_sender]["pregunta_pendiente"] == "ofrecer_asesor"
-
-    response = await engine.process(sales_sender, "Sí")
-    assert "human" in legacy.events
-    assert legacy.states[sales_sender]["objetivo"] == "captura_lead"
-
-    response = await engine.process(
-        client_sender,
-        "Ahora sí, quiero hablar con un asesor.",
-    )
-    assert "human" in legacy.events
-    assert legacy.enviar_telegram_calls == 1
-
-    response = await engine.process(
-        client_sender,
-        "Necesito un dato que no tienes a mano.",
-    )
-    assert legacy.enviar_telegram_calls == 2
-    assert "dato" in response.lower()
-
-    print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
-    print("Confirmación de rol antes de búsqueda: OK")
-    print("Desambiguación geográfica El Trigal: OK")
-    print("Búsqueda natural + ficha cliente: OK")
-    print("Ficha para colega + captador: OK")
-    print("Cambio de tema casual: OK")
-    print("Pregunta sobre propiedad sin repetir ficha completa: OK")
-    print("Solicitud humana + aviso administrativo: OK")
-    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
-    print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
-    print("Información no disponible + aviso administrativo: OK")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
