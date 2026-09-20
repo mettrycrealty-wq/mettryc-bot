@@ -249,6 +249,34 @@ class AgenteVirtualEngine:
                     ficha.message or "",
                 )
 
+        if (
+            not legacy.resolver_propiedad_contexto(state)
+            and any(
+                frase in legacy.normalizar_texto(text)
+                for frase in (
+                    "esta disponible",
+                    "está disponible",
+                    "sigue disponible",
+                    "aun disponible",
+                    "aún disponible",
+                    "disponibilidad",
+                )
+            )
+        ):
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para confirmar la disponibilidad necesito identificar "
+                    "la propiedad. Envíame el código o ID que aparece normalmente "
+                    "al final del título del anuncio, o el enlace de la publicación."
+                ),
+            )
+
         # REFERENCIA DIRECTA / SOLICITUD SIN ID
         if text == "[multimedia_sin_texto]":
             state["esperando_codigo"] = True
@@ -286,6 +314,31 @@ class AgenteVirtualEngine:
                     text,
                     ficha.message or "No pude recuperar la ficha de esa propiedad.",
                 )
+
+        if (
+            state.get("pregunta_pendiente") == "codigo_para_detalle"
+            and any(
+                frase in legacy.normalizar_texto(text)
+                for frase in (
+                    "esta disponible",
+                    "está disponible",
+                    "sigue disponible",
+                    "aun disponible",
+                    "aún disponible",
+                    "disponibilidad",
+                )
+            )
+        ):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Para confirmar la disponibilidad de la propiedad necesito "
+                    "identificarla primero. Envíame el código o ID que aparece "
+                    "al final del título del anuncio o el enlace de la publicación."
+                ),
+            )
 
         codigo_explicito = legacy.extraer_codigo_inmueble(
             text,
@@ -384,6 +437,26 @@ class AgenteVirtualEngine:
             text,
             analysis,
         )
+
+        if state.get("pregunta_pendiente") == "codigo_para_detalle":
+            property_intents = {
+                "busqueda_propiedad",
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "mas_propiedades",
+            }
+            if (
+                analysis.intent not in property_intents
+                and not legacy.solicita_informacion_propiedad_sin_referencia(text)
+                and not legacy.extraer_codigo_mercadolibre(text)
+                and not legacy.extraer_codigo_inmueble(
+                    text,
+                    permitir_solo_digitos=True,
+                )
+            ):
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
 
         if geo_zone:
             analysis = analysis.model_copy(
