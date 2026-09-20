@@ -481,13 +481,15 @@ async def main():
         "Ahora sí, quiero hablar con un asesor.",
     )
     assert "human" in legacy.events
-    assert legacy.enviar_telegram_calls == 1
+    # La solicitud humana inicia captura; no debe generar una alerta Telegram
+    # antes de completar y asignar el lead.
+    assert legacy.enviar_telegram_calls == 0
 
     response = await engine.process(
         client_sender,
         "Necesito un dato que no tienes a mano.",
     )
-    assert legacy.enviar_telegram_calls == 2
+    assert legacy.enviar_telegram_calls == 1
     assert "dato" in response.lower()
 
     print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
