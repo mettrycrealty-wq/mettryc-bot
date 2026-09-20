@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from .bridge import LegacyMettrycBridge
 from .router import AgentModelRouter
 from .schemas import BusinessActionResult, TurnAnalysis
+from .learning import PatyLearningRecorder
 
 
 ANALYSIS_PROMPT = """
@@ -150,6 +151,7 @@ class AgenteVirtualEngine:
         self.router = router or AgentModelRouter()
         self.bridge = bridge or LegacyMettrycBridge()
         self.max_history = max(6, max_history)
+        self.learning = PatyLearningRecorder()
 
     async def process(self, sender: str, message: str) -> str:
         text = str(message or "").strip()
@@ -1159,6 +1161,16 @@ class AgenteVirtualEngine:
         self.bridge.append_history(state, "user", user_message)
         if response:
             self.bridge.append_history(state, "assistant", response)
+
+        # La capa de aprendizaje se ejecuta DESPUÉS de preparar la respuesta y
+        # ANTES de guardar la sesión. Nunca decide la respuesta ni puede bloquear
+        # el flujo comercial.
+        self.learning.record_turn(
+            sender=sender,
+            state=state,
+            user_message=user_message,
+            assistant_response=response,
+        )
 
         self.bridge.save_state(sender, state)
         return response
