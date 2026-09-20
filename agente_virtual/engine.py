@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
@@ -264,6 +265,28 @@ class AgenteVirtualEngine:
                 ),
             )
 
+        # Si ya se solicitó el código, únicamente consumimos este turno
+        # cuando realmente llega un código. Otro tema queda libre para la conversación.
+        if state.get("pregunta_pendiente") == "codigo_para_detalle":
+            codigo_pendiente = legacy.extraer_codigo_inmueble(
+                text,
+                permitir_solo_digitos=True,
+            )
+            if codigo_pendiente:
+                ficha = await self.bridge.detail(
+                    state,
+                    code=codigo_pendiente,
+                    format_legacy=True,
+                )
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
+                )
+
         codigo_explicito = legacy.extraer_codigo_inmueble(
             text,
             permitir_solo_digitos=False,
@@ -299,6 +322,25 @@ class AgenteVirtualEngine:
                     "al final del título del anuncio, o el enlace de la publicación."
                 ),
             )
+
+        # Si ya hay una propiedad concreta en contexto y piden fotos,
+        # devolvemos la ficha real con su URL en lugar de inventar imágenes.
+        if self._requests_photos(text):
+            propiedad_actual = legacy.resolver_propiedad_contexto(state)
+            if propiedad_actual:
+                property_id = str(propiedad_actual.get("id") or "")
+                if property_id:
+                    ficha = await self.bridge.detail(
+                        state,
+                        code=property_id,
+                        format_legacy=True,
+                    )
+                    return await self._finalize(
+                        sender,
+                        state,
+                        text,
+                        ficha.message or "",
+                    )
 
         # La geografía se resuelve de forma determinista usando el catálogo
         # oficial + las variantes del inventario. Nunca dejamos que el modelo
@@ -618,7 +660,20 @@ class AgenteVirtualEngine:
             result.ok and result.name == "buscar_propiedades"
             for result in business_results
         )
-        if search_ready and not already_searched and analysis.intent not in special_intents:
+        current_turn_search = self._current_turn_has_search_signal(
+            legacy,
+            state,
+            text,
+        )
+        if (
+            search_ready
+            and not already_searched
+            and analysis.intent not in special_intents
+            and (
+                analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
+                or current_turn_search
+            )
+        ):
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
@@ -714,8 +769,76 @@ class AgenteVirtualEngine:
         }
 
     @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias", "muchas gracias", "excelente", "perfecto",
+            "ok", "okey", "okay", "listo", "cuenta con eso",
+            "de acuerdo", "entendido", "bien",
+        }
+
+    @staticmethod
+    def _is_vague_property_followup(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "esto", "eso", "en esto", "en eso", "sobre esto", "sobre eso",
+            "esa", "ese", "esta", "este", "esa propiedad", "ese inmueble",
+            "esta propiedad", "este inmueble", "esa casa", "esta casa",
+        }
+
+    @staticmethod
+    def _requests_photos(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return any(
+            phrase in normalized
+            for phrase in (
+                "foto", "fotos", "fotografia", "fotografias",
+                "fotografía", "fotografías", "imagen", "imagenes", "imágenes",
+                "mándame las fotos", "mandame las fotos",
+                "envíame las fotos", "enviame las fotos",
+                "pásame las fotos", "pasame las fotos",
+            )
+        )
+
+    @staticmethod
+    def _current_turn_has_search_signal(
+        legacy: Any,
+        state: dict,
+        text: str,
+    ) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        explicit = (
+            "busco", "estoy buscando", "quiero comprar",
+            "quiero alquilar", "quiero rentar", "quisiera comprar",
+            "quisiera alquilar", "necesito un apartamento",
+            "necesito una casa", "necesito un terreno",
+            "quiero una propiedad", "busco una propiedad",
+            "busco un apartamento", "busco una casa",
+            "busco un terreno", "busco local", "busco oficina",
+            "otras opciones", "más opciones", "mas opciones",
+            "muéstrame otras", "muestrame otras",
+        )
+        if any(frase in normalized for frase in explicit):
+            return True
+
+        prueba = deepcopy(state)
+        filtros_antes = deepcopy(prueba.get("filtros", {}))
+        sin_pref_antes = list(prueba.get("sin_preferencia", []))
+        try:
+            if hasattr(legacy, "aplicar_extracciones_tecnicas"):
+                legacy.aplicar_extracciones_tecnicas(prueba, text)
+            if hasattr(legacy, "aplicar_sin_preferencia_desde_texto"):
+                legacy.aplicar_sin_preferencia_desde_texto(prueba, text)
+        except Exception:
+            return False
+
+        return (
+            filtros_antes != prueba.get("filtros", {})
+            or sin_pref_antes != list(prueba.get("sin_preferencia", []))
+        )
+
+    @staticmethod
     def _requests_more_property_info(text: str) -> bool:
-        """Detecta cuando un mensaje de anuncio pide información inmediata."""
         normalized = str(text or "").lower()
         return any(
             phrase in normalized
@@ -750,11 +873,14 @@ class AgenteVirtualEngine:
                 "más información sobre la propiedad",
                 "informame sobre la propiedad",
                 "infórmame sobre la propiedad",
-                "fotos",
-                "fotografias",
-                "fotografías",
+                "tengo algunas preguntas",
+                "tengo preguntas sobre",
+                "algunas preguntas sobre tu publicación",
+                "fotos", "foto", "fotografias", "fotografías",
             )
         )
+
+
 
     def _update_sales_state(
         self,
