@@ -201,6 +201,15 @@ class FakeLegacy:
             "fotos de la casa",
         ))
 
+    def solicita_informacion_propiedad_sin_referencia(self, message):
+        text = message.strip().lower()
+        return any(marker in text for marker in (
+            "informacion de la propiedad",
+            "información de la propiedad",
+            "ficha de la propiedad",
+            "detalles de la propiedad",
+            "fotos de la casa",
+        ))
     def detectar_rol_explicito(self, message):
         text = message.strip().lower()
         if "soy corredor" in text or "para mi cliente" in text:
@@ -411,6 +420,15 @@ async def main():
     assert "*Casa en Mañongo*" in response
     assert "detail_format" in legacy.events
 
+    # Un agradecimiento no debe disparar otra búsqueda.
+    search_count = legacy.events.count("search")
+    response = await engine.process(portal_sender, "Gracias")
+    assert legacy.events.count("search") == search_count
+    assert "quedo atento" in response.lower()
+
+    # Un pronombre/vaga referencia mantiene el inmueble de portal en contexto.
+    response = await engine.process(portal_sender, "en esto")
+    assert "propiedad" in response.lower()
     # Regresión: un agradecimiento no puede disparar una nueva búsqueda
     # solo porque quedaron filtros de propiedad en el estado.
     search_count_before_ack = legacy.events.count("search")
