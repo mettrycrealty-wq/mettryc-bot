@@ -5479,7 +5479,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     # captadores, agentes, leads, visitas y notificaciones siguen en main.py.
     if (
         AGENTE_VIRTUAL_ACTIVO
-        and texto != MARCADOR_MULTIMEDIA
         and texto_norm != "/reiniciar"
     ):
         global agente_virtual_engine
