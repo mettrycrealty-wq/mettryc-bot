@@ -13,6 +13,8 @@ class LegacyMettrycBridge:
 
     def __init__(self, legacy: Any | None = None) -> None:
         self.legacy = legacy
+        self._inventory_refresh_task: Any = None
+        self._sheets_refresh_task: Any = None
 
     def load(self) -> Any:
         if self.legacy is None:
@@ -34,18 +36,74 @@ class LegacyMettrycBridge:
 
         return legacy
 
+    async def _refresh_inventory_background(self, force: bool = False) -> None:
+        legacy = self.load()
+        try:
+            await legacy.actualizar_inventario(force=force)
+        except Exception as exc:
+            logger = getattr(legacy, "logger", None)
+            if logger:
+                logger.warning(
+                    "Actualización WASI en segundo plano falló tipo=%s",
+                    type(exc).__name__,
+                )
+
+    async def _refresh_sheets_background(self) -> None:
+        legacy = self.load()
+        try:
+            await legacy.sincronizar_google_sheet()
+        except Exception as exc:
+            logger = getattr(legacy, "logger", None)
+            if logger:
+                logger.warning(
+                    "Actualización Sheets en segundo plano falló tipo=%s",
+                    type(exc).__name__,
+                )
+
+    def _schedule_inventory_refresh(self, force: bool = False) -> None:
+        if (
+            self._inventory_refresh_task is not None
+            and not self._inventory_refresh_task.done()
+        ):
+            return
+
+        import asyncio
+
+        self._inventory_refresh_task = asyncio.create_task(
+            self._refresh_inventory_background(force=force)
+        )
+
+    def _schedule_sheets_refresh(self) -> None:
+        if (
+            self._sheets_refresh_task is not None
+            and not self._sheets_refresh_task.done()
+        ):
+            return
+
+        import asyncio
+
+        self._sheets_refresh_task = asyncio.create_task(
+            self._refresh_sheets_background()
+        )
+
     async def prepare_data(self) -> None:
+        """Prepara datos sin bloquear la conversación por servicios externos."""
         legacy = self.load()
 
+        # El inventario existente se usa inmediatamente. Una actualización
+        # pendiente se ejecuta en segundo plano para que WASI lento/no disponible
+        # no deje al usuario sin respuesta.
         if not legacy.inventory_cache.get("inventario"):
-            await legacy.actualizar_inventario(force=True)
+            self._schedule_inventory_refresh(force=True)
         elif legacy.inventario_necesita_actualizacion():
-            await legacy.actualizar_inventario()
+            self._schedule_inventory_refresh()
 
+        # Lo mismo aplica a Sheets. Esto mantiene los turnos actualizables sin
+        # poner a esperar cada mensaje del público.
         if legacy.sheets_necesita_actualizacion():
-            await legacy.sincronizar_google_sheet()
+            self._schedule_sheets_refresh()
 
-        # La geografía oficial se reconstruye también sin depender de WASI.
+        # La geografía oficial se reconstruye de forma local y no depende de WASI.
         if hasattr(legacy, "reconstruir_catalogo_geografico"):
             legacy.reconstruir_catalogo_geografico()
 
