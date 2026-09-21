@@ -182,6 +182,34 @@ class FakeLegacy:
         match = re.search(r"https?://\\S+?(\\d+)-+_JM\\b", message or "", re.IGNORECASE)
         return match.group(1) if match else None
 
+    def extraer_codigo_inmueble(self, message, permitir_solo_digitos=False):
+        text = str(message or "").strip()
+        match = re.search(r"(?:codigo|código|id|inmueble)\\s*[:#-]?\\s*(\\d{4,})", text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        if permitir_solo_digitos and re.fullmatch(r"\\d{4,10}", re.sub(r"[\\s.,-]", "", text)):
+            return re.sub(r"[\\s.,-]", "", text)
+        return None
+
+    def solicita_informacion_propiedad_sin_referencia(self, message):
+        text = message.strip().lower()
+        return any(marker in text for marker in (
+            "informacion de la propiedad",
+            "información de la propiedad",
+            "ficha de la propiedad",
+            "detalles de la propiedad",
+            "fotos de la casa",
+        ))
+
+    def solicita_informacion_propiedad_sin_referencia(self, message):
+        text = message.strip().lower()
+        return any(marker in text for marker in (
+            "informacion de la propiedad",
+            "información de la propiedad",
+            "ficha de la propiedad",
+            "detalles de la propiedad",
+            "fotos de la casa",
+        ))
     def detectar_rol_explicito(self, message):
         text = message.strip().lower()
         if "soy corredor" in text or "para mi cliente" in text:
@@ -391,6 +419,37 @@ async def main():
     response = await engine.process(portal_sender, "Sí, quiero más información.")
     assert "*Casa en Mañongo*" in response
     assert "detail_format" in legacy.events
+
+    # Un agradecimiento no debe disparar otra búsqueda.
+    search_count = legacy.events.count("search")
+    response = await engine.process(portal_sender, "Gracias")
+    assert legacy.events.count("search") == search_count
+    assert "quedo atento" in response.lower()
+
+    # Un pronombre/vaga referencia mantiene el inmueble de portal en contexto.
+    response = await engine.process(portal_sender, "en esto")
+    assert "propiedad" in response.lower()
+    # Regresión: un agradecimiento no puede disparar una nueva búsqueda
+    # solo porque quedaron filtros de propiedad en el estado.
+    search_count_before_ack = legacy.events.count("search")
+    legacy.states[portal_sender]["filtros"]["tipo_operacion"] = "alquiler"
+    legacy.states[portal_sender]["filtros"]["tipo_propiedad"] = "apartamento"
+    response = await engine.process(portal_sender, "Gracias")
+    assert legacy.events.count("search") == search_count_before_ack
+    assert "quedo atento" in response.lower()
+
+    # Regresión: referencias vagas posteriores al anuncio conservan contexto.
+    response = await engine.process(portal_sender, "en esto")
+    assert "propiedad" in response.lower()
+
+    # Regresión: un estado pendiente de código no puede secuestrar un cambio de tema.
+    pending_sender = "whatsapp:+584120000004"
+    legacy.states[pending_sender] = deepcopy(legacy.obtener_sesion(portal_sender))
+    legacy.states[pending_sender]["pregunta_pendiente"] = "codigo_para_detalle"
+    legacy.states[pending_sender]["esperando_codigo"] = True
+    response = await engine.process(pending_sender, "¿Cómo se llama la empresa?")
+    assert "enviame el código" not in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
 
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(

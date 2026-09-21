@@ -701,7 +701,10 @@ PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA = (
     "dame informacion del inmueble","dame información del inmueble",
     "quiero informacion de la propiedad","quiero información de la propiedad",
     "quiero informacion del inmueble","quiero información del inmueble",
-    "detalle de la propiedad","detalles de la propiedad","ficha de la propiedad","ficha del inmueble",
+    "detalle de la propiedad","detalles de la propiedad",
+    "ficha de la propiedad","ficha del inmueble",
+    "fotos de la propiedad","fotos del inmueble",
+    "fotos de la casa","fotos del apartamento",
 )
 
 # FIX #10: se amplía la lista de frases para detectar solicitud de
@@ -864,12 +867,24 @@ def extraer_codigo_inmueble(
 
 
 def solicita_informacion_propiedad_sin_referencia(texto: str) -> bool:
+    """Detecta una petición directa de información sobre un inmueble concreto."""
     normalizado = normalizar_texto(texto)
-    if any(frase in normalizado for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA):
+
+    if any(
+        frase in normalizado
+        for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA
+    ):
         return True
-    pide_info = any(x in normalizado for x in ("informacion","información","info","detalles","ficha"))
-    menciona = any(x in normalizado for x in ("propiedad","inmueble","casa","apartamento","townhouse","oficina","local","terreno","galpon"))
-    return pide_info and menciona
+
+    patrones_directos = (
+        r"\b(?:quiero|necesito|dame|env[ií]ame|m[aá]ndame|p[aá]same|mu[eé]strame|informame|inf[oó]rmame)\s+"
+        r"(?:la\s+)?(?:informaci[oó]n|info|ficha|detalles?|fotos?)\s+"
+        r"(?:de|del|sobre)\s+(?:la|el|esta|ese|esa)?\s*"
+        r"(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+        r"\b(?:informaci[oó]n|info|detalles?|ficha|fotos?)\s+(?:de|del|sobre)\s+"
+        r"(?:la|el|esta|ese|esa)?\s*(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+    )
+    return any(re.search(patron, normalizado, re.IGNORECASE) for patron in patrones_directos)
 
 
 def detectar_posicion(texto: str) -> Optional[int]:
@@ -3497,7 +3512,24 @@ def buscar_mejores_propiedades(estado: dict, cantidad: int) -> Tuple[List[dict],
         if not coincide_tipo(original, filtros.get("tipo_propiedad")):
             continue
 
-        if not ciudad_coincide(original, filtros.get("ciudad")):
+        preferencia_ubicacion = estado.get("preferencia_ubicacion") or {}
+        if (
+            not filtros.get("ciudad")
+            and preferencia_ubicacion.get("modo") == "cerca_de"
+            and preferencia_ubicacion.get("estado")
+        ):
+            estado_propiedad = _estado_geografico_de_ciudad(
+                inferir_ciudad_propiedad(original)
+            )
+            if estado_propiedad != preferencia_ubicacion.get("estado"):
+                continue
+            if (
+                preferencia_ubicacion.get("evitar_gran_ciudad")
+                and normalizar_texto(inferir_ciudad_propiedad(original))
+                == normalizar_texto(preferencia_ubicacion.get("centro"))
+            ):
+                continue
+        elif not ciudad_coincide(original, filtros.get("ciudad")):
             continue
 
         zona_buscada = filtros.get("zona")
@@ -3647,42 +3679,96 @@ def _aplicar_filtro_individual(
     return inventario
 
 
+def _estado_geografico_de_ciudad(ciudad: Any) -> Optional[str]:
+    objetivo = normalizar_texto(ciudad)
+    if not objetivo:
+        return None
+
+    for estado, ciudades in DICCIONARIO_GEOGRAFICO.items():
+        if not isinstance(ciudades, dict):
+            continue
+        for nombre_ciudad in ciudades.keys():
+            if normalizar_texto(nombre_ciudad) == objetivo:
+                return str(estado)
+    return None
+
+
 def _construir_sugerencia(
-    campo: str, subconjunto_previo: List[dict], operacion: Optional[str],
+    campo: str,
+    subconjunto_previo: List[dict],
+    operacion: Optional[str],
+    valor_objetivo: Any = None,
 ) -> dict:
     etiqueta = ETIQUETAS_CAMPOS_DIAGNOSTICO.get(campo, campo)
 
     if campo == "ciudad":
+        objetivo_estado = _estado_geografico_de_ciudad(valor_objetivo)
+        candidatos = subconjunto_previo
+
+        if objetivo_estado:
+            candidatos_estado = [
+                p for p in candidatos
+                if _estado_geografico_de_ciudad(inferir_ciudad_propiedad(p)) == objetivo_estado
+            ]
+            if candidatos_estado:
+                candidatos = candidatos_estado
+
         ciudades = sorted({
             inferir_ciudad_propiedad(p)
-            for p in subconjunto_previo
+            for p in candidatos
             if inferir_ciudad_propiedad(p)
+            and normalizar_texto(inferir_ciudad_propiedad(p)) not in {"n/d", "nd"}
         })
-        return {"campo": campo, "etiqueta": etiqueta, "sugerencias": ciudades[:5], "tipo_sugerencia": "lista"}
+        return {
+            "campo": campo,
+            "etiqueta": etiqueta,
+            "sugerencias": ciudades[:5],
+            "tipo_sugerencia": "lista",
+        }
 
     if campo == "tipo_propiedad":
-        tipos = sorted({
-            normalizar_tipo_propiedad(p.get("tipo_propiedad_wasi"))
-            for p in subconjunto_previo
-            if p.get("tipo_propiedad_wasi")
-        })
-        return {"campo": campo, "etiqueta": etiqueta, "sugerencias": tipos[:5], "tipo_sugerencia": "lista"}
+        tipos = set()
+        for p in subconjunto_previo:
+            tipo = normalizar_tipo_propiedad(p.get("tipo_propiedad_wasi"))
+            if tipo and normalizar_texto(tipo) not in {"n/d", "nd"}:
+                tipos.add(tipo)
+
+            if not tipo:
+                tipo = normalizar_tipo_propiedad(p.get("titulo"))
+                if tipo and normalizar_texto(tipo) not in {"n/d", "nd"}:
+                    tipos.add(tipo)
+
+        return {
+            "campo": campo,
+            "etiqueta": etiqueta,
+            "sugerencias": sorted(tipos)[:5],
+            "tipo_sugerencia": "lista",
+        }
 
     if campo == "zona":
         zonas = sorted({
-            p.get("zona") for p in subconjunto_previo
-            if p.get("zona") and p.get("zona") != "N/D"
+            str(p.get("zona")).strip()
+            for p in subconjunto_previo
+            if p.get("zona")
+            and normalizar_texto(p.get("zona")) not in {"n/d", "nd"}
         })
-        return {"campo": campo, "etiqueta": etiqueta, "sugerencias": zonas[:5], "tipo_sugerencia": "lista"}
+        return {
+            "campo": campo,
+            "etiqueta": etiqueta,
+            "sugerencias": zonas[:5],
+            "tipo_sugerencia": "lista",
+        }
 
     if campo == "presupuesto_max":
         precios = sorted(
-            obtener_precio(p, operacion) for p in subconjunto_previo
+            obtener_precio(p, operacion)
+            for p in subconjunto_previo
             if obtener_precio(p, operacion) > 0
         )
         sugerido = precios[0] if precios else None
         return {
-            "campo": campo, "etiqueta": etiqueta,
+            "campo": campo,
+            "etiqueta": etiqueta,
             "sugerencias": [sugerido] if sugerido else [],
             "tipo_sugerencia": "valor_minimo",
         }
@@ -3694,17 +3780,28 @@ def _construir_sugerencia(
             "garajes_min": "garajes",
         }[campo]
         valores = sorted(
-            {convertir_entero(p.get(clave_datos)) for p in subconjunto_previo},
+            {
+                convertir_entero(p.get(clave_datos))
+                for p in subconjunto_previo
+                if convertir_entero(p.get(clave_datos)) > 0
+            },
             reverse=True,
         )
         sugerido = valores[0] if valores else None
         return {
-            "campo": campo, "etiqueta": etiqueta,
+            "campo": campo,
+            "etiqueta": etiqueta,
             "sugerencias": [sugerido] if sugerido is not None else [],
             "tipo_sugerencia": "valor_maximo_disponible",
         }
 
-    return {"campo": campo, "etiqueta": etiqueta, "sugerencias": [], "tipo_sugerencia": "ninguna"}
+    return {
+        "campo": campo,
+        "etiqueta": etiqueta,
+        "sugerencias": [],
+        "tipo_sugerencia": "ninguna",
+    }
+
 
 
 def diagnosticar_busqueda_sin_resultados(filtros: dict, sin_preferencia: List[str]) -> Optional[dict]:
@@ -3734,7 +3831,12 @@ def diagnosticar_busqueda_sin_resultados(filtros: dict, sin_preferencia: List[st
         siguiente = _aplicar_filtro_individual(subconjunto, campo, valor, operacion)
 
         if not siguiente:
-            return _construir_sugerencia(campo, subconjunto, operacion)
+            return _construir_sugerencia(
+                campo,
+                subconjunto,
+                operacion,
+                valor_objetivo=valor,
+            )
 
         subconjunto = siguiente
 
@@ -4681,6 +4783,32 @@ async def mostrar_propiedades(estado: dict) -> str:
     firma_actual = firma_filtros(filtros)
 
     propiedades, motivo = buscar_mejores_propiedades(estado, cantidad)
+
+    # Preferencia "cerca de X": si no hubo coincidencias exactas en X,
+    # ampliamos de forma controlada al mismo estado geográfico. No afirmamos
+    # distancias que el inventario no contiene.
+    preferencia_ubicacion = estado.get("preferencia_ubicacion") or {}
+    if (
+        not propiedades
+        and preferencia_ubicacion.get("modo") == "cerca_de"
+        and filtros.get("ciudad")
+    ):
+        estado_relajado = deepcopy(estado)
+        filtros_relajados = deepcopy(filtros)
+        filtros_relajados["ciudad"] = None
+        filtros_relajados["zona"] = None
+        estado_relajado["filtros"] = filtros_relajados
+        propiedades, motivo = buscar_mejores_propiedades(
+            estado_relajado,
+            cantidad,
+        )
+        if propiedades:
+            for propiedad in propiedades:
+                diferencias = propiedad.setdefault("_diferencias", [])
+                diferencias.insert(
+                    0,
+                    "Alternativa ampliada dentro del mismo estado según la proximidad solicitada",
+                )
 
     if (
         rol != "colega_inmobiliario"
