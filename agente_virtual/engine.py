@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
@@ -47,6 +48,8 @@ Reglas:
 Nunca inventes propiedades, precios, disponibilidad, agentes, captadores,
 teléfonos, horarios ni características.
 
+Una solicitud genérica como “quiero una casa” NO es suficiente para mostrar opciones. Primero recopila los criterios de búsqueda y la información de calificación necesaria.
+
 Para criterios inmobiliarios, devuelve solamente datos presentes o inferencias muy
 directas. Si el usuario cambia un criterio, el nuevo valor reemplaza al anterior.
 No borres otros criterios que siguen siendo válidos.
@@ -61,6 +64,8 @@ Contexto de ANUNCIOS DE PORTALES:
 - Si la persona dice que tiene preguntas sobre la publicación pero no formula todavía una pregunta concreta, basta con confirmar disponibilidad y preguntarle qué dato desea conocer.
 - Si pide más información, detalles o datos de la propiedad, debe mostrarse la ficha de esa propiedad.
 - Los turnos posteriores deben conservar esa propiedad en contexto.
+- Un saludo, agradecimiento o comentario social NO inicia una nueva búsqueda y no debe hacer que olvides la propiedad del anuncio.
+- Si el usuario cambia claramente de tema hacia Mettryc, una persona, atención, empresa, servicios u otro asunto, responde al nuevo tema y no exijas el código de la propiedad.
 
 Señales comerciales para CLIENTES:
 - sales_signal="interesado" cuando expresa interés claro pero todavía está explorando.
@@ -85,6 +90,7 @@ Tu respuesta será enviada directamente al usuario.
 
 Comportamiento conversacional:
 - Habla con naturalidad, sin menús y sin frases de robot.
+- Un simple "gracias", "excelente", "perfecto", "cuenta con eso" u otro cierre social no debe disparar búsquedas nuevas ni diagnósticos de inventario.
 - Lee la conversación completa y conserva el contexto.
 - Puedes responder una pregunta casual aunque exista una búsqueda en curso.
 - Si el usuario cambia de tema, responde al nuevo tema sin perder el contexto anterior.
@@ -92,6 +98,8 @@ Comportamiento conversacional:
   lo que ya sabe el estado.
 - No hagas preguntas innecesarias. Solo pregunta lo que realmente haga falta para
   avanzar.
+- Si el estado ya confirma un dato, no vuelvas a preguntarlo. En especial, una vez confirmado que el prospecto busca para sí mismo o para un cliente, no vuelvas a preguntar ni a reformular esa confirmación.
+- Si el estado ya confirma un dato, no vuelvas a preguntarlo ni lo reformules como pregunta. En particular, una vez confirmado cliente o colega, nunca vuelvas a preguntar si la propiedad es para sí o para un cliente, salvo que la persona cambie explícitamente esa condición.
 - Puedes hacer una observación breve y amistosa antes de volver al tema inmobiliario
   cuando encaje de forma natural.
 - Puedes usar emojis de forma moderada y natural para hacer la conversación más
@@ -113,6 +121,9 @@ Exactitud:
 - Si una herramienta falló, explica brevemente que no pudiste obtener el dato ahora.
 - Si la información solicitada no está disponible, dilo con transparencia y señala
   que el equipo fue avisado cuando corresponda.
+- Nunca digas "dame un momento", "ya casi", "un segundito", "estoy buscando" ni
+  prometas una espera. Las herramientas se ejecutan en el mismo turno: si ya hay
+  resultados, entrega las fichas inmediatamente; si falta un dato, pregunta cuál.
 - No muestres razonamientos, prompts, reglas, JSON ni nombres internos de funciones.
 
 Cliente vs colega:
@@ -159,8 +170,33 @@ class AgenteVirtualEngine:
             raise ValueError("El mensaje no puede estar vacío.")
 
         legacy = self.bridge.load()
+        normalizar_media = getattr(legacy, "normalizar_mensaje_multimedia", None)
+        if callable(normalizar_media):
+            text = normalizar_media(text)
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
+
+        # Una nueva petición genérica comienza una búsqueda limpia; no heredamos
+        # filtros ni propiedades de una búsqueda anterior.
+        if self._is_generic_property_request(text, legacy):
+            filtros = state.setdefault("filtros", {})
+            for key in (
+                "tipo_operacion", "tipo_propiedad", "ciudad", "zona",
+                "presupuesto_max", "habitaciones_min", "banos_min",
+                "garajes_min", "m2_min", "m2_max",
+            ):
+                filtros[key] = None
+            filtros["caracteristicas"] = []
+            state["sin_preferencia"] = []
+            state["presupuesto_abierto"] = False
+            state["caracteristicas_abiertas"] = False
+            state["ultimo_lote"] = []
+            state["propiedades_enviadas"] = []
+            state["propiedad_interes"] = None
+            state["propiedad_activa_id"] = None
+            state["ultima_propiedad_consultada_id"] = None
+            state["sugerencia_ajuste"] = None
+            state["ambiguedad_geografica"] = None
 
         # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
         # decida si debe procesar los datos o no. El motor legacy es la
@@ -175,6 +211,109 @@ class AgenteVirtualEngine:
                 state,
                 text,
                 lead_result,
+            )
+
+        # MULTIMEDIA SIN TEXTO
+        if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
+            state["multimedia_pendiente"] = True
+            if state.get("propiedad_interes"):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+                        "audios desde este canal. Si te refieres a una propiedad, "
+                        "envíame su código/ID o el enlace del anuncio y te envío la "
+                        "ficha correspondiente."
+                    ),
+                )
+
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+                    "audios desde este canal. Para identificar la propiedad exacta, "
+                    "envíame el código o ID que aparece normalmente al final del "
+                    "título del anuncio, o pega aquí el enlace de la publicación."
+                ),
+            )
+
+
+        # SEGUIMIENTO DE MULTIMEDIA
+        # Si el usuario pregunta por la propiedad mostrada en una foto/audio que
+        # el canal no nos permite inspeccionar, no lo convertimos en una búsqueda
+        # nueva ni inventamos una propiedad.
+        if state.get("multimedia_pendiente"):
+            media_code = legacy.extraer_codigo_mercadolibre(text) or legacy.extraer_codigo_inmueble(
+                text,
+                permitir_solo_digitos=True,
+            )
+            if media_code:
+                ficha = await self.bridge.detail(
+                    state,
+                    code=media_code,
+                    format_legacy=True,
+                )
+                state["multimedia_pendiente"] = False
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
+                )
+
+            if (
+                self._is_media_followup(text, legacy)
+                or self._is_generic_availability_question(text, legacy)
+                or self._is_media_identifier_missing(text, legacy)
+            ):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        "Entiendo que te refieres a la propiedad de la imagen, pero "
+                        "no puedo ver imágenes ni escuchar audios desde este canal. "
+                        "Envíame el código/ID de la propiedad, el enlace del anuncio "
+                        "o copia aquí el título de la publicación y te ayudo a "
+                        "identificarla."
+                    ),
+                )
+
+        # PREGUNTA GENÉRICA DE DISPONIBILIDAD SIN PROPIEDAD
+        # Si el usuario pregunta "¿está disponible?" sin haber identificado
+        # una propiedad, no se inventa una referencia ni se vuelve a pedir
+        # la foto. Se inicia la captación de criterios de búsqueda.
+        if (
+            self._is_generic_availability_question(text, legacy)
+            and not state.get("propiedad_interes")
+            and not legacy.extraer_codigo_mercadolibre(text)
+            and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
+        ):
+            state["esperando_codigo"] = False
+            if state.get("pregunta_pendiente") == "codigo_para_detalle":
+                state["pregunta_pendiente"] = None
+            state["estado_conversacion"] = "busqueda_propiedad"
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para buscarte una propiedad disponible, dime en qué "
+                    "ciudad o zona estás buscando, qué tipo de inmueble y "
+                    "características necesitas, tu presupuesto aproximado y si "
+                    "es para comprar o alquilar."
+                ),
             )
 
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
@@ -239,6 +378,30 @@ class AgenteVirtualEngine:
             and state.get("propiedad_interes")
         )
 
+        if portal_context and self._is_simple_acknowledgement(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "¡Con gusto! Quedo atento por si necesitas algo más sobre esta propiedad.",
+            )
+
+        if portal_context and self._is_greeting_only(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "¡Buenas! Seguimos con la propiedad de Mercado Libre. ¿Qué te gustaría saber de ella?",
+            )
+
+        if portal_context and self._is_vague_property_followup(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "Claro, sobre esa propiedad. ¿Qué dato quieres consultar?",
+            )
+
         if (
             portal_context
             and self._requests_more_property_info(text)
@@ -272,35 +435,19 @@ class AgenteVirtualEngine:
             permitir_solo_digitos=False,
         )
 
-        if state.get("pregunta_pendiente") == "codigo_para_detalle":
-            codigo_pendiente = codigo_explicito or legacy.extraer_codigo_inmueble(
-                text,
-                permitir_solo_digitos=True,
+        if state.get("pregunta_pendiente") == "codigo_para_detalle" and codigo_explicito:
+            ficha = await self.bridge.detail(
+                state,
+                code=codigo_explicito,
+                format_legacy=True,
             )
-            if codigo_pendiente:
-                ficha = await self.bridge.detail(
-                    state,
-                    code=codigo_pendiente,
-                    format_legacy=True,
-                )
-                state["esperando_codigo"] = False
-                state["pregunta_pendiente"] = None
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
-                )
-
+            state["esperando_codigo"] = False
+            state["pregunta_pendiente"] = None
             return await self._finalize(
                 sender,
                 state,
                 text,
-                (
-                    "Claro. Para darte la información exacta necesito identificar "
-                    "la propiedad. Envíame el código o ID que aparece normalmente "
-                    "al final del título del anuncio."
-                ),
+                ficha.message or "No pude recuperar la ficha de esa propiedad.",
             )
 
         if (
@@ -378,6 +525,24 @@ class AgenteVirtualEngine:
             analysis,
         )
 
+        if state.get("pregunta_pendiente") == "codigo_para_detalle":
+            property_intents = {
+                "busqueda_propiedad",
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "mas_propiedades",
+            }
+            if (
+                analysis.intent not in property_intents
+                and not legacy.solicita_informacion_propiedad_sin_referencia(text)
+                and not legacy.extraer_codigo_mercadolibre(text)
+                and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
+            ):
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                state["estado_conversacion"] = "conversando"
+
         if geo_zone:
             analysis = analysis.model_copy(
                 update={
@@ -412,6 +577,23 @@ class AgenteVirtualEngine:
                     )
                 state["accion_pendiente_rol"] = None
                 state["pregunta_pendiente"] = None
+
+            # La respuesta "para mí" / "para mi cliente" ya resolvió la
+            # pregunta de rol. No enviamos esa misma respuesta nuevamente al
+            # LLM para que la reformule como otra pregunta. Ejecutamos de
+            # inmediato la acción que estaba pendiente.
+            pending_action_result = await self._execute_pending_role_action(
+                state,
+                pending_role_action,
+                analysis,
+            )
+            if pending_action_result is not None:
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    pending_action_result,
+                )
         elif legacy.rol_esta_confirmado(state):
             # Una vez confirmado el rol, el modelo no puede cambiarlo
             # por inferencia en turnos posteriores. Solo una declaración
@@ -572,17 +754,15 @@ class AgenteVirtualEngine:
         admin_notified: set[str] = set()
 
         if analysis.human_requested or analysis.intent == "atencion_humana":
-            # Para clientes avisamos al administrador de inmediato. Para colegas,
-            # la propia rutina legacy conserva el proceso especial que ya funciona.
+            # Una solicitud explícita de atención humana sí genera aviso
+            # administrativo. Los avisos de fallos/información faltante no.
             if state.get("rol") != "colega_inmobiliario":
-                notified = await self.bridge.notify_admins(
+                await self.bridge.notify_admins(
                     sender=sender,
                     state=state,
                     reason="Solicitud explícita de atención humana",
                     original_message=text,
                 )
-                if notified:
-                    admin_notified.add("atencion_humana")
 
             result = await self.bridge.human(state, text)
             business_results.append(result)
@@ -644,34 +824,6 @@ class AgenteVirtualEngine:
                     await self.bridge.capture_colleague_contact(state, text)
                 )
 
-        if analysis.information_not_available:
-            reason = (
-                "Información solicitada no disponible: "
-                + str(analysis.unknown_information or "dato no identificado")
-            )
-            if reason not in admin_notified:
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason=reason,
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add(reason)
-
-        for result in business_results:
-            if not result.ok:
-                reason = "Fallo en herramienta: " + result.name
-                if reason not in admin_notified:
-                    notified = await self.bridge.notify_admins(
-                        sender=sender,
-                        state=state,
-                        reason=reason,
-                        original_message=text,
-                    )
-                    if notified:
-                        admin_notified.add(reason)
-
         # La capa comercial no interviene en la selección ni entrega de propiedades.
         # Primero debe completarse la acción inmobiliaria; las técnicas de venta
         # se incorporarán después como una capa independiente.
@@ -693,9 +845,47 @@ class AgenteVirtualEngine:
             result.ok and result.name == "buscar_propiedades"
             for result in business_results
         )
-        if search_ready and not already_searched and analysis.intent not in special_intents:
+        current_turn_search = self._current_turn_has_search_signal(
+            legacy,
+            state,
+            text,
+        )
+        if (
+            search_ready
+            and not already_searched
+            and analysis.intent not in special_intents
+            and (
+                analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
+                or current_turn_search
+            )
+        ):
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
+
+        # Si el turno cambió realmente de tema, la espera de multimedia ya
+        # no debe seguir bloqueando la conversación.
+        if (
+            state.get("multimedia_pendiente")
+            and analysis.intent not in {
+                "busqueda_propiedad",
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "mas_propiedades",
+            }
+        ):
+            state["multimedia_pendiente"] = False
+            if state.get("pregunta_pendiente") == "codigo_para_detalle":
+                state["pregunta_pendiente"] = None
+                state["esperando_codigo"] = False
+
+        # Si hubo intención inmobiliaria pero faltan criterios obligatorios,
+        # preguntamos directamente el siguiente dato. No delegamos esa pregunta
+        # al LLM para evitar respuestas vagas o promesas de espera.
+        if current_turn_search and not search_ready:
+            missing = self._next_search_question(legacy, state)
+            if missing:
+                return await self._finalize(sender, state, text, missing)
 
         response = await self._generate_response(
             text,
@@ -705,6 +895,78 @@ class AgenteVirtualEngine:
             legacy.construir_contexto_conocimiento(),
         )
         return await self._finalize(sender, state, text, response)
+
+
+    async def _execute_pending_role_action(
+        self,
+        state: dict,
+        pending_action: str | None,
+        analysis: TurnAnalysis,
+    ) -> str | None:
+        """Continúa una acción pendiente solo cuando sus datos ya están completos."""
+        if not pending_action:
+            return None
+
+        if pending_action in {"buscar_propiedades", "mostrar_mas_propiedades"}:
+            legacy = self.bridge.load()
+
+            if not self._search_signal(state):
+                missing = self._next_search_question(legacy, state)
+                if missing:
+                    return missing
+                return None
+
+            result = await self.bridge.search(state)
+            return result.message if result.ok else result.message
+
+        if pending_action == "seleccionar_propiedad":
+            result = await self.bridge.detail(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+                format_legacy=True,
+            )
+            return result.message if result.ok else result.message
+
+        if pending_action == "consultar_propiedad":
+            result = await self.bridge.detail(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+                format_legacy=False,
+            )
+            if result.ok and result.data:
+                response = await self._generate_response(
+                    "",
+                    state,
+                    analysis,
+                    [result],
+                    self.bridge.load().construir_contexto_conocimiento(),
+                )
+                return response
+            return result.message
+
+        if pending_action == "solicitar_captador":
+            result = await self.bridge.captador(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+            )
+            return result.message
+
+        if pending_action == "agendar_visita":
+            result = await self.bridge.visit(
+                state,
+                code=analysis.property_code,
+                position=analysis.property_position,
+            )
+            return result.message
+
+        if pending_action == "hablar_con_humano":
+            result = await self.bridge.human(state, "")
+            return result.message
+
+        return None
 
 
     @staticmethod
@@ -738,18 +1000,11 @@ class AgenteVirtualEngine:
         # existe intención de búsqueda. Así la clasificación comercial del LLM
         # nunca puede apagar una búsqueda inequívoca.
         try:
-            legacy_search_intent = False
-            if hasattr(legacy, "tiene_intencion_busqueda"):
-                estado_prueba = deepcopy(state)
-                if hasattr(legacy, "aplicar_extracciones_tecnicas"):
-                    legacy.aplicar_extracciones_tecnicas(estado_prueba, text)
-                legacy_search_intent = bool(
-                    legacy.tiene_intencion_busqueda(
-                        estado_prueba,
-                        None,
-                        text,
-                    )
-                )
+            legacy_search_intent = self._current_turn_has_search_signal(
+                legacy,
+                state,
+                text,
+            )
         except Exception:
             legacy_search_intent = False
 
@@ -771,8 +1026,77 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
+    def _is_media_followup(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        phrases = (
+            "la de la foto",
+            "el de la foto",
+            "la propiedad de la foto",
+            "el inmueble de la foto",
+            "en la foto",
+            "en esa foto",
+            "lo dice en la foto",
+            "dice en la foto",
+            "la imagen",
+            "en la imagen",
+            "la de la imagen",
+            "esa imagen",
+            "ese audio",
+            "en el audio",
+            "de la captura",
+            "la captura",
+            "lo dice ahi",
+            "lo dice allí",
+            "ahi esta",
+            "ahí está",
+            "quiero ver la de",
+            "quiero ver la propiedad de",
+        )
+        return any(phrase in normalized for phrase in phrases)
+
+    @staticmethod
+    def _is_media_identifier_missing(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        phrases = (
+            "no lo tengo",
+            "no tengo el codigo",
+            "no tengo el código",
+            "no se el codigo",
+            "no sé el código",
+            "no tengo esa informacion",
+            "no tengo esa información",
+        )
+        return normalized in phrases or any(
+            normalized.startswith(phrase) for phrase in phrases
+        )
+
+    @staticmethod
+    def _is_generic_availability_question(text: str, legacy: Any) -> bool:
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
+        return any(
+            phrase in normalized
+            for phrase in (
+                "esta disponible",
+                "esta aun disponible",
+                "esta disponible todavia",
+                "sigue disponible",
+                "aun disponible",
+                "todavia esta disponible",
+                "todavia disponible",
+                "esta aun disponible la propiedad",
+                "esta disponible la propiedad",
+            )
+        )
+
+
+    @staticmethod
     def _requests_more_property_info(text: str) -> bool:
-        """Detecta cuando un mensaje de anuncio pide información inmediata."""
+        """Detecta una solicitud directa de información/fotos de un anuncio."""
         normalized = str(text or "").lower()
         return any(
             phrase in normalized
@@ -781,6 +1105,9 @@ class AgenteVirtualEngine:
                 "más información",
                 "mas info",
                 "más info",
+                "tengo algunas preguntas",
+                "tengo preguntas sobre",
+                "algunas preguntas sobre tu publicación",
                 "informacion de la propiedad",
                 "información de la propiedad",
                 "detalles de la propiedad",
@@ -807,8 +1134,13 @@ class AgenteVirtualEngine:
                 "más información sobre la propiedad",
                 "informame sobre la propiedad",
                 "infórmame sobre la propiedad",
+                "fotos",
+                "fotografias",
+                "fotografías",
             )
         )
+
+
 
     def _update_sales_state(
         self,
@@ -935,7 +1267,12 @@ class AgenteVirtualEngine:
         if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
             return True
 
-        normalized = legacy.normalizar_texto(text)
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
         return any(
             marker in normalized
             for marker in (
@@ -1151,6 +1488,67 @@ class AgenteVirtualEngine:
             message,
         )
 
+    @staticmethod
+    def _sanitize_redundant_role_confirmation(
+        state: dict,
+        response: str,
+    ) -> str:
+        """Impide volver a preguntar el rol una vez que ya fue confirmado."""
+        if not state.get("rol_confirmado"):
+            return response
+
+        texto = str(response or "").strip()
+        if not texto:
+            return texto
+
+        salida = []
+        for bloque in texto.split("\n\n"):
+            limpio = bloque.strip()
+            if not limpio:
+                continue
+
+            lower = limpio.lower()
+            role_question = (
+                "para ti o para un cliente" in lower
+                or "¿para ti?" in limpio
+                or "¿para mí?" in limpio
+                or "¿para usted?" in limpio
+                or "entonces, ¿para ti" in lower
+                or "entonces ¿para ti" in lower
+                or "buscas la propiedad para ti?" in lower
+                or "es para ti?" in lower
+                or "es para usted?" in lower
+            )
+
+            if role_question:
+                # Si el bloque trae otra pregunta útil además de la redundante,
+                # conservamos solo el contenido que aparece después.
+                partes = re.split(
+                    r"(?<=\?)\s*",
+                    limpio,
+                )
+                partes_utiles = [
+                    parte.strip()
+                    for parte in partes
+                    if parte.strip()
+                    and not (
+                        "para ti" in parte.lower()
+                        or "para mí" in parte.lower()
+                        or "para un cliente" in parte.lower()
+                        or "para una cliente" in parte.lower()
+                        or "para usted" in parte.lower()
+                    )
+                ]
+                if partes_utiles:
+                    salida.append(" ".join(partes_utiles))
+                continue
+
+            salida.append(limpio)
+
+        resultado = "\n\n".join(salida).strip()
+        return resultado or "Perfecto, ya tengo ese dato registrado."
+
+
     async def _finalize(
         self,
         sender: str,
@@ -1158,6 +1556,11 @@ class AgenteVirtualEngine:
         user_message: str,
         response: str,
     ) -> str:
+        response = self._sanitize_redundant_role_confirmation(
+            state,
+            response,
+        )
+
         self.bridge.append_history(state, "user", user_message)
         if response:
             self.bridge.append_history(state, "assistant", response)
@@ -1176,26 +1579,192 @@ class AgenteVirtualEngine:
         return response
 
     @staticmethod
-    def _search_signal(state: dict) -> bool:
-        filtros = state.get("filtros", {})
-        if not filtros.get("tipo_operacion"):
+    def _is_generic_availability_question(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        return any(
+            phrase in normalized
+            for phrase in (
+                "esta disponible",
+                "esta aun disponible",
+                "esta disponible todavia",
+                "sigue disponible",
+                "aun disponible",
+                "todavia esta disponible",
+                "todavia disponible",
+                "disponible?",
+            )
+        )
+
+    @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias", "muchas gracias", "excelente", "perfecto",
+            "ok", "okey", "okay", "listo", "cuenta con eso",
+            "de acuerdo", "entendido", "bien",
+        }
+
+    @staticmethod
+    def _is_greeting_only(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "hola", "buenas", "buenos dias", "buenos días",
+            "buenas tardes", "buenas noches", "hola buenas",
+            "hola buenas tardes", "hola buenas noches",
+        }
+
+    @staticmethod
+    def _is_vague_property_followup(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "esto", "eso", "en esto", "en eso",
+            "sobre esto", "sobre eso", "esa", "ese",
+            "esta", "este", "esa propiedad", "ese inmueble",
+            "esta propiedad", "este inmueble", "esa casa",
+            "esta casa", "eso mismo",
+        }
+
+    @staticmethod
+    def _current_turn_has_search_signal(
+        legacy: Any,
+        state: dict,
+        text: str,
+    ) -> bool:
+        """Indica si ESTE turno pide una búsqueda, no solo si existe contexto previo."""
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
+        explicit = (
+            "busco", "estoy buscando", "quiero comprar",
+            "quiero alquilar", "quiero rentar", "quisiera comprar",
+            "quisiera alquilar", "necesito un apartamento",
+            "necesito una casa", "necesito un terreno",
+            "quiero una propiedad", "busco una propiedad",
+            "busco un apartamento", "busco una casa",
+            "busco un terreno", "busco local", "busco oficina",
+            "otras opciones", "mas opciones", "más opciones",
+            "muestrame otras", "muéstrame otras",
+        )
+        if any(frase in normalized for frase in explicit):
+            return True
+
+        prueba = deepcopy(state)
+        filtros_antes = deepcopy(prueba.get("filtros", {}))
+        sin_pref_antes = list(prueba.get("sin_preferencia", []))
+
+        try:
+            if hasattr(legacy, "aplicar_extracciones_tecnicas"):
+                legacy.aplicar_extracciones_tecnicas(prueba, text)
+            if hasattr(legacy, "aplicar_sin_preferencia_desde_texto"):
+                legacy.aplicar_sin_preferencia_desde_texto(prueba, text)
+        except Exception:
             return False
 
-        señales = (
-            "tipo_propiedad",
-            "ciudad",
-            "zona",
-            "presupuesto_max",
-            "habitaciones_min",
-            "banos_min",
-            "garajes_min",
-            "m2_min",
-            "m2_max",
+        return (
+            filtros_antes != prueba.get("filtros", {})
+            or sin_pref_antes != list(prueba.get("sin_preferencia", []))
         )
 
-        return any(filtros.get(field) not in (None, "", []) for field in señales) or bool(
-            filtros.get("caracteristicas")
+    @staticmethod
+    def _search_signal(state: dict) -> bool:
+        """La búsqueda solo se ejecuta con una ficha mínima ya calificada."""
+        filtros = state.get("filtros", {})
+        sin_preferencia = {
+            str(item).strip()
+            for item in (state.get("sin_preferencia") or [])
+        }
+
+        for field in ("tipo_operacion", "tipo_propiedad", "ciudad", "zona"):
+            if not filtros.get(field):
+                return False
+
+        presupuesto_ok = bool(
+            filtros.get("presupuesto_max")
+            or "presupuesto_max" in sin_preferencia
+            or state.get("presupuesto_abierto")
         )
+        caracteristicas_ok = bool(
+            filtros.get("habitaciones_min")
+            or filtros.get("banos_min")
+            or filtros.get("garajes_min")
+            or filtros.get("caracteristicas")
+            or "caracteristicas" in sin_preferencia
+            or state.get("caracteristicas_abiertas")
+        )
+
+        return presupuesto_ok and caracteristicas_ok
+
+
+    @staticmethod
+    def _next_search_question(legacy: Any, state: dict) -> str:
+        """Obtiene la siguiente pregunta de calificación antes de mostrar opciones."""
+        filtros = state.get("filtros", {})
+        sin_preferencia = {
+            str(item).strip()
+            for item in (state.get("sin_preferencia") or [])
+        }
+
+        base_question = legacy.obtener_pregunta_faltante(state)
+        if base_question:
+            return base_question
+
+        if (
+            not filtros.get("presupuesto_max")
+            and "presupuesto_max" not in sin_preferencia
+            and not state.get("presupuesto_abierto")
+        ):
+            state["pregunta_pendiente"] = "presupuesto_max"
+            return (
+                "Perfecto. ¿Cuál es tu presupuesto aproximado? "
+                "También puedes decirme “sin límite” si prefieres que revise "
+                "todas las opciones disponibles."
+            )
+
+        if not (
+            filtros.get("habitaciones_min")
+            or filtros.get("banos_min")
+            or filtros.get("garajes_min")
+            or filtros.get("caracteristicas")
+            or "caracteristicas" in sin_preferencia
+            or state.get("caracteristicas_abiertas")
+        ):
+            state["pregunta_pendiente"] = "caracteristicas_busqueda"
+            return (
+                "¿Cuántas habitaciones necesitas y hay alguna característica "
+                "especial que sea importante para ti? Por ejemplo: baños, "
+                "puestos de estacionamiento, planta eléctrica, pozo, patio u otra. "
+                "Si no tienes preferencia, también puedes indicármelo."
+            )
+
+        return ""
+
+
+    @staticmethod
+    def _is_generic_property_request(text: str, legacy: Any) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        return any(
+            phrase in normalized
+            for phrase in (
+                "quiero una casa",
+                "quiero un apartamento",
+                "quiero una oficina",
+                "quiero un local",
+                "quiero un terreno",
+                "quiero un townhouse",
+                "busco una casa",
+                "busco un apartamento",
+                "busco una oficina",
+                "busco un local",
+                "busco un terreno",
+                "busco un townhouse",
+                "necesito una casa",
+                "necesito un apartamento",
+            )
+        )
+
 
     @staticmethod
     def _clean_response(value: str) -> str:

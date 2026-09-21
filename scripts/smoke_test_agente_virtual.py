@@ -182,6 +182,25 @@ class FakeLegacy:
         match = re.search(r"https?://\\S+?(\\d+)-+_JM\\b", message or "", re.IGNORECASE)
         return match.group(1) if match else None
 
+    def extraer_codigo_inmueble(self, message, permitir_solo_digitos=False):
+        text = str(message or "").strip()
+        match = re.search(r"(?:codigo|código|id|inmueble)\\s*[:#-]?\\s*(\\d{4,})", text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        if permitir_solo_digitos and re.fullmatch(r"\\d{4,10}", re.sub(r"[\\s.,-]", "", text)):
+            return re.sub(r"[\\s.,-]", "", text)
+        return None
+
+    def solicita_informacion_propiedad_sin_referencia(self, message):
+        text = message.strip().lower()
+        return any(marker in text for marker in (
+            "informacion de la propiedad",
+            "información de la propiedad",
+            "ficha de la propiedad",
+            "detalles de la propiedad",
+            "fotos de la casa",
+        ))
+
     def detectar_rol_explicito(self, message):
         text = message.strip().lower()
         if "soy corredor" in text or "para mi cliente" in text:
@@ -365,6 +384,18 @@ async def main():
     assert "para ti o para un cliente" in response.lower()
     assert legacy.events.count("search") == 0
 
+    # Regresión: una vez confirmado el rol, no puede volver a aparecer
+    # la pregunta "¿para ti o para un cliente?" ni una variante equivalente.
+    role_state = legacy.states[client_sender]
+    role_state["rol"] = "cliente"
+    role_state["rol_confirmado"] = True
+    repeated_role = engine._sanitize_redundant_role_confirmation(
+        role_state,
+        "¡Genial! Entonces, ¿para ti? Me parece muy bien.\n\n¿En qué ciudad buscas?",
+    )
+    assert "¿para ti?" not in repeated_role.lower()
+    assert "¿en qué ciudad buscas?" in repeated_role.lower()
+
     response = await engine.process(client_sender, "Para mí")
     assert "valencia" in response.lower() and "cabudare" in response.lower()
     assert "en cuál de esas ciudades" in response.lower()
@@ -376,6 +407,19 @@ async def main():
     assert legacy.states[client_sender]["filtros"]["ciudad"] == "Valencia"
     assert legacy.states[client_sender]["filtros"]["zona"] == "El Trigal"
     assert legacy.events.count("search") == 1
+
+    multimedia_sender = "whatsapp:+584120000005"
+    response = await engine.process(
+        multimedia_sender,
+        "[multimedia_sin_texto]",
+    )
+    assert "no puedo ver imágenes ni escuchar audios" in response.lower()
+    assert legacy.states[multimedia_sender]["pregunta_pendiente"] == "codigo_para_detalle"
+
+    response = await engine.process(multimedia_sender, "¿Está disponible?")
+    assert "ciudad o zona" in response.lower()
+    assert "presupuesto" in response.lower()
+    assert legacy.states[multimedia_sender]["pregunta_pendiente"] is None
 
     portal_sender = "whatsapp:+584120000003"
     response = await engine.process(
@@ -391,6 +435,28 @@ async def main():
     response = await engine.process(portal_sender, "Sí, quiero más información.")
     assert "*Casa en Mañongo*" in response
     assert "detail_format" in legacy.events
+
+    # Regresión: un agradecimiento no puede disparar una nueva búsqueda
+    # solo porque quedaron filtros de propiedad en el estado.
+    search_count_before_ack = legacy.events.count("search")
+    legacy.states[portal_sender]["filtros"]["tipo_operacion"] = "alquiler"
+    legacy.states[portal_sender]["filtros"]["tipo_propiedad"] = "apartamento"
+    response = await engine.process(portal_sender, "Gracias")
+    assert legacy.events.count("search") == search_count_before_ack
+    assert "quedo atento" in response.lower()
+
+    # Regresión: referencias vagas posteriores al anuncio conservan contexto.
+    response = await engine.process(portal_sender, "en esto")
+    assert "propiedad" in response.lower()
+
+    # Regresión: un estado pendiente de código no puede secuestrar un cambio de tema.
+    pending_sender = "whatsapp:+584120000004"
+    legacy.states[pending_sender] = deepcopy(legacy.obtener_sesion(portal_sender))
+    legacy.states[pending_sender]["pregunta_pendiente"] = "codigo_para_detalle"
+    legacy.states[pending_sender]["esperando_codigo"] = True
+    response = await engine.process(pending_sender, "¿Cómo se llama la empresa?")
+    assert "enviame el código" not in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
 
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(
@@ -440,13 +506,16 @@ async def main():
         "Ahora sí, quiero hablar con un asesor.",
     )
     assert "human" in legacy.events
+    # Una solicitud explícita de atención humana sí genera un aviso
+    # administrativo. Los fallos/consultas no disponibles no lo generan.
     assert legacy.enviar_telegram_calls == 1
 
+    alertas_antes = legacy.enviar_telegram_calls
     response = await engine.process(
         client_sender,
         "Necesito un dato que no tienes a mano.",
     )
-    assert legacy.enviar_telegram_calls == 2
+    assert legacy.enviar_telegram_calls == alertas_antes
     assert "dato" in response.lower()
 
     print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
@@ -457,7 +526,9 @@ async def main():
     print("Cambio de tema casual: OK")
     print("Pregunta sobre propiedad sin repetir ficha completa: OK")
     print("Solicitud humana + aviso administrativo: OK")
-    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
+    print("Multimedia sin visión/audio + solicitud de código: OK")
+    print("Disponibilidad sin referencia + inicio de búsqueda: OK")
+    print("Sin alertas Telegram por fallos o información faltante: OK")    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
     print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
     print("Información no disponible + aviso administrativo: OK")
 

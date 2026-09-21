@@ -357,94 +357,54 @@ def extraer_telefono(texto: str) -> Optional[str]:
         return None
     return normalizar_telefono(coincidencia.group(1))
 
-
-def _limpiar_html_observaciones(valor: Any) -> str:
-    texto = unescape(str(valor or ""))
-    texto = re.sub(r"<br\s*/?>", "\n", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"</(?:div|p|li|tr|td|th|section)>", "\n", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"<[^>]+>", " ", texto)
-    texto = texto.replace("\xa0", " ")
-    texto = re.sub(r"[ \t]+", " ", texto)
-    texto = re.sub(r" *\n *", "\n", texto)
-    texto = re.sub(r"\n{3,}", "\n\n", texto)
-    return texto.strip()
-
-
-def _recoger_observaciones_privadas(propiedad: dict) -> str:
-    fuentes: List[str] = []
-    if propiedad.get("observaciones"): fuentes.append(str(propiedad.get("observaciones")))
-    raw = propiedad.get("detalle_raw")
-    if isinstance(raw, dict):
-        for clave in ("comment","private_comment","private_observations","observations_private","internal_comment","internal_observations"):
-            if raw.get(clave): fuentes.append(str(raw.get(clave)))
-    resultado: List[str] = []
-    vistos: Set[str] = set()
-    for fuente in fuentes:
-        limpio = _limpiar_html_observaciones(fuente)
-        firma = normalizar_texto(limpio)
-        if limpio and firma not in vistos:
-            vistos.add(firma)
-            resultado.append(limpio)
-    return "\n".join(resultado).strip()
-
-
-def extraer_asesor_desde_observaciones(propiedad: dict) -> dict:
-    texto = _recoger_observaciones_privadas(propiedad)
-    if not texto:
-        return {"nombre": "", "telefono": "", "fuente": None}
-
-    bloque = texto
-    marcador = re.search(
-        r"asesor\s+encargado\s*(?:---)?\s*:?(.*)",
-        texto,
-        re.IGNORECASE | re.DOTALL,
+def normalizar_mensaje_multimedia(mensaje: Any, payload: Optional[dict] = None) -> str:
+    """Normaliza placeholders de imagen/audio/archivo enviados por WhatsApp."""
+    texto = str(mensaje or "").strip()
+    limpio = (
+        texto.replace("\u200e", "")
+        .replace("\u200f", "")
+        .replace("\u200b", "")
+        .strip()
     )
-    if marcador:
-        bloque = marcador.group(1).strip()
+    normalizado = normalizar_para_comparar(limpio)
 
-    nombre_match = re.search(
-        r"(?:nombre|asesor|asesora)\s*:\s*([^\n\r<]+)",
-        bloque,
-        re.IGNORECASE,
-    )
-    telefono_match = re.search(
-        r"(?:tel[eé]fono|telefono|whatsapp|celular|m[oó]vil)\s*:\s*(\+?\d[\d\s().-]{7,}\d)",
-        bloque,
-        re.IGNORECASE,
-    )
-
-    nombre = ""
-    if nombre_match:
-        candidato = re.sub(
-            r"[^A-Za-zÀ-ÖØ-öø-ÿ .-]",
-            " ",
-            nombre_match.group(1),
-        )
-        candidato = re.sub(r"\s+", " ", candidato).strip()
-        if nombre_valido(candidato):
-            nombre = normalizar_nombre(candidato)
-
-    telefono = (
-        normalizar_telefono(telefono_match.group(1))
-        if telefono_match
-        else None
-    )
-
-    return {
-        "nombre": nombre,
-        "telefono": telefono or "",
-        "fuente": "observaciones" if nombre or telefono else None,
+    marcadores_texto = {
+        "multimedia omitido",
+        "media omitted",
+        "imagen omitida",
+        "image omitted",
+        "audio omitido",
+        "audio omitted",
+        "documento omitido",
+        "document omitted",
+        "archivo omitido",
+        "file omitted",
     }
 
+    tiene_adjunto = False
+    if isinstance(payload, dict):
+        claves_adjunto = (
+            "media_url", "mediaUrl", "image", "images",
+            "attachment", "attachments", "file", "document",
+            "video", "audio", "sticker",
+        )
+        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
 
-def obtener_datos_captador(propiedad: dict) -> dict:
-    principal = extraer_asesor_desde_observaciones(propiedad)
-    nombre_respaldo = str(propiedad.get("captador_wasi") or "").strip()
-    telefono_respaldo = normalizar_telefono(propiedad.get("telefono_captador_wasi")) or ""
-    nombre = principal.get("nombre") or nombre_respaldo or "Captador no identificado"
-    telefono = principal.get("telefono") or telefono_respaldo
-    fuente = "observaciones" if principal.get("nombre") or principal.get("telefono") else ("campos_wasi" if nombre_respaldo or telefono_respaldo else None)
-    return {"nombre":nombre,"telefono":telefono,"fuente":fuente}
+    nombre_adjunto = re.fullmatch(
+        r"(?i)\s*(?:‎)?(?:img|vid|aud|ptt|stk|doc)[-_a-z0-9]+(?:\.[a-z0-9]+)?\s*\(archivo adjunto\)\s*",
+        limpio,
+    )
+
+    if (
+        normalizado in marcadores_texto
+        or nombre_adjunto
+        or (tiene_adjunto and not limpio)
+    ):
+        return MARCADOR_MULTIMEDIA
+
+    return texto
+
+
 
 
 def extraer_correo(texto: str) -> Optional[str]:
@@ -701,7 +661,10 @@ PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA = (
     "dame informacion del inmueble","dame información del inmueble",
     "quiero informacion de la propiedad","quiero información de la propiedad",
     "quiero informacion del inmueble","quiero información del inmueble",
-    "detalle de la propiedad","detalles de la propiedad","ficha de la propiedad","ficha del inmueble",
+    "detalle de la propiedad","detalles de la propiedad",
+    "ficha de la propiedad","ficha del inmueble",
+    "fotos de la propiedad","fotos del inmueble",
+    "fotos de la casa","fotos del apartamento",
 )
 
 # FIX #10: se amplía la lista de frases para detectar solicitud de
@@ -864,12 +827,24 @@ def extraer_codigo_inmueble(
 
 
 def solicita_informacion_propiedad_sin_referencia(texto: str) -> bool:
+    """Detecta una petición directa de información sobre un inmueble concreto."""
     normalizado = normalizar_texto(texto)
-    if any(frase in normalizado for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA):
+
+    if any(
+        frase in normalizado
+        for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA
+    ):
         return True
-    pide_info = any(x in normalizado for x in ("informacion","información","info","detalles","ficha"))
-    menciona = any(x in normalizado for x in ("propiedad","inmueble","casa","apartamento","townhouse","oficina","local","terreno","galpon"))
-    return pide_info and menciona
+
+    patrones_directos = (
+        r"\b(?:quiero|necesito|dame|env[ií]ame|m[aá]ndame|p[aá]same|mu[eé]strame|informame|inf[oó]rmame)\s+"
+        r"(?:la\s+)?(?:informaci[oó]n|info|ficha|detalles?|fotos?)\s+"
+        r"(?:de|del|sobre)\s+(?:la|el|esta|ese|esa)?\s*"
+        r"(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+        r"\b(?:informaci[oó]n|info|detalles?|ficha|fotos?)\s+(?:de|del|sobre)\s+"
+        r"(?:la|el|esta|ese|esa)?\s*(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+    )
+    return any(re.search(patron, normalizado, re.IGNORECASE) for patron in patrones_directos)
 
 
 def detectar_posicion(texto: str) -> Optional[int]:
@@ -1032,6 +1007,48 @@ def detectar_tipo_propiedad(texto: str) -> Optional[str]:
             return tipo
 
     return None
+
+
+def _seguimiento_multimedia(texto: str) -> bool:
+    normalizado = normalizar_para_comparar(texto)
+    frases = (
+        "la de la foto", "el de la foto", "propiedad de la foto",
+        "inmueble de la foto", "en la foto", "esa foto",
+        "en la imagen", "de la imagen", "la imagen",
+        "lo dice en la foto", "dice en la foto", "la captura",
+        "lo dice ahi", "lo dice allí", "ahi esta", "ahí está",
+        "quiero ver la de", "quiero ver la propiedad de",
+        "no lo tengo", "no tengo el codigo", "no tengo el código",
+    )
+    return any(frase in normalizado for frase in frases)
+
+
+def _es_pregunta_disponibilidad_generica(texto: str, estado: Optional[dict] = None) -> bool:
+    normalizado = normalizar_para_comparar(texto)
+    return any(
+        frase in normalizado
+        for frase in (
+            "esta disponible",
+            "esta aun disponible",
+            "esta disponible todavia",
+            "sigue disponible",
+            "aun disponible",
+            "todavia esta disponible",
+            "todavia disponible",
+            "disponible",
+        )
+    )
+
+
+def _respuesta_espera_no_permitida(texto: str) -> bool:
+    normalizado = normalizar_texto(texto)
+    frases = (
+        "dame un momento", "dame un segundo", "un segundito",
+        "ya casi", "estoy buscando", "estoy revisando las opciones",
+        "estoy revisando", "espera un momento", "espera un segundo",
+        "permiteme buscar", "permíteme buscar",
+    )
+    return any(frase in normalizado for frase in frases)
 
 
 def tiene_intencion_busqueda(
@@ -2259,6 +2276,9 @@ REGLAS PRINCIPALES
 4. Puedes responder una pregunta y continuar naturalmente el flujo.
 5. Haz una sola pregunta principal por turno, salvo que sea natural
    pedir nombre, correo y WhatsApp juntos.
+15. Nunca prometas que vas a buscar "en un momento", "ya casi", "en un segundo"
+   o expresiones similares. La búsqueda es inmediata cuando existen criterios;
+   si falta un criterio, pregunta directamente cuál falta.
 6. Si el usuario solo saluda, responde el saludo y pregunta cómo
    puedes ayudarlo. No inicies un interrogatorio inmobiliario.
 7. Si solicita hablar con una persona, agente, asesor o humano,
@@ -5459,14 +5479,13 @@ ACCIONES_QUE_REQUIEREN_ROL = {
 
 async def procesar_mensaje(sender: str, mensaje: str) -> str:
     estado = obtener_sesion(sender)
-    texto = str(mensaje or "").strip()
+    texto = normalizar_mensaje_multimedia(mensaje)
     texto_norm = normalizar_texto(texto)
 
     # El agente virtual sustituye solo la capa conversacional. WASI, Sheets,
     # captadores, agentes, leads, visitas y notificaciones siguen en main.py.
     if (
         AGENTE_VIRTUAL_ACTIVO
-        and texto != MARCADOR_MULTIMEDIA
         and texto_norm != "/reiniciar"
     ):
         global agente_virtual_engine
@@ -5494,15 +5513,48 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         return respuesta
 
     # --------------------------------------------------------
-    # FIX #11: mensaje multimedia sin texto (imagen, audio, etc.)
+    # FIX #11/#12: multimedia y seguimiento
     # --------------------------------------------------------
     if texto == MARCADOR_MULTIMEDIA:
+        estado["multimedia_pendiente"] = True
+        estado["esperando_codigo"] = True
+        estado["pregunta_pendiente"] = "codigo_para_detalle"
+        estado["estado_conversacion"] = "esperando_codigo_propiedad"
         return await finalizar(
-            "Recibí una imagen o archivo, pero no puedo leer su "
-            "contenido automáticamente todavía. ¿Puedes escribirme "
-            "el código del inmueble, el enlace del anuncio, o "
-            "contarme qué necesitas?"
+            "Recibí el archivo, pero no puedo ver imágenes ni escuchar "
+            "audios desde este canal. Para identificar la propiedad exacta, "
+            "envíame el código o ID que aparece normalmente al final del "
+            "título del anuncio, el enlace de la publicación o copia aquí "
+            "el título."
         )
+
+    if estado.get("multimedia_pendiente"):
+        codigo_media = extraer_codigo_mercadolibre(texto) or extraer_codigo_inmueble(
+            texto, permitir_solo_digitos=True,
+        )
+        if codigo_media:
+            respuesta = await mostrar_inmueble_especifico(estado, codigo_media)
+            estado["multimedia_pendiente"] = False
+            estado["esperando_codigo"] = False
+            estado["pregunta_pendiente"] = None
+            return await finalizar(respuesta)
+
+        if (
+            _seguimiento_multimedia(texto)
+            or _es_pregunta_disponibilidad_generica(texto, estado)
+        ):
+            return await finalizar(
+                "Entiendo que te refieres a la propiedad de la imagen, pero "
+                "no puedo ver imágenes ni escuchar audios desde este canal. "
+                "Envíame el código/ID, el enlace del anuncio o copia aquí "
+                "el título de la publicación y te envío la ficha."
+            )
+
+        if _respuesta_espera_no_permitida(texto):
+            estado["multimedia_pendiente"] = False
+            estado["esperando_codigo"] = False
+            estado["pregunta_pendiente"] = None
+
 
     # --------------------------------------------------------
     # REINICIO DE BÚSQUEDA
@@ -5937,6 +5989,15 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         else:
             respuesta = decision.mensaje or "¡Con gusto! ¿Hay algo más en lo que pueda ayudarte?"
 
+    if _respuesta_espera_no_permitida(respuesta):
+        if criterios_suficientes(estado):
+            respuesta = await mostrar_propiedades(estado)
+        else:
+            pregunta_siguiente = obtener_pregunta_faltante(estado)
+            respuesta = pregunta_siguiente or (
+                "Claro. Dime qué información necesitas y te ayudo directamente."
+            )
+
     if not respuesta:
         respuesta = "¿Puedes contarme un poco más sobre lo que necesitas?"
 
@@ -6138,6 +6199,8 @@ async def webhook_agente_virtual(
 
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
+
+    mensaje = normalizar_mensaje_multimedia(mensaje, payload)
     if not mensaje:
         return {"replies": []}
 
@@ -6221,21 +6284,11 @@ async def webhook(
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
 
-    # FIX #11: cuando llega un mensaje multimedia (imagen, audio,
-    # documento) sin texto, en vez de ignorarlo silenciosamente se
-    # convierte en un marcador interno para que el bot responda
-    # pidiendo el código o el detalle por escrito.
+    # FIX #11/#12: normalizar tanto multimedia sin texto como los
+    # placeholders que el puente de WhatsApp puede colocar en message.
+    mensaje = normalizar_mensaje_multimedia(mensaje, payload)
     if not mensaje:
-        claves_adjunto = [
-            "media_url", "mediaUrl", "image", "images", "attachment",
-            "attachments", "file", "document", "video", "audio", "sticker",
-        ]
-        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
-
-        if not tiene_adjunto:
-            return {"replies": []}
-
-        mensaje = MARCADOR_MULTIMEDIA
+        return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
