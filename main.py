@@ -50,6 +50,9 @@ MODELO_AGENTE_RESPALDO = os.getenv(
 
 OPENROUTER_TIMEOUT = float(os.getenv("OPENROUTER_TIMEOUT", "35"))
 WASI_TIMEOUT = float(os.getenv("WASI_TIMEOUT", "40"))
+WASI_PAGE_SIZE = int(os.getenv("WASI_PAGE_SIZE", "50"))
+WASI_MAX_RETRIES = int(os.getenv("WASI_MAX_RETRIES", "3"))
+WASI_RETRY_BASE_SECONDS = float(os.getenv("WASI_RETRY_BASE_SECONDS", "2"))
 SHEETS_TIMEOUT = float(os.getenv("SHEETS_TIMEOUT", "20"))
 TELEGRAM_TIMEOUT = float(os.getenv("TELEGRAM_TIMEOUT", "15"))
 
@@ -80,6 +83,8 @@ API_KEYS_AGENTES = {
     if clave.strip()
 }
 
+MARCADOR_MULTIMEDIA = "[multimedia_sin_texto]"
+
 TELEGRAM_ADMIN_IDS = [
     valor.strip()
     for valor in os.getenv(
@@ -105,10 +110,6 @@ INTERVALO_ACTUALIZACION_SHEETS = timedelta(
 INTERVALO_ACTUALIZACION_WASI = timedelta(
     hours=int(os.getenv("INTERVALO_ACTUALIZACION_WASI_HORAS", "12"))
 )
-
-# Marcador interno usado cuando el webhook recibe un mensaje multimedia
-# (imagen, audio, documento) sin texto asociado.
-MARCADOR_MULTIMEDIA = "[multimedia_sin_texto]"
 
 # ============================================================
 # MODELOS ESTRUCTURADOS PARA LA IA
@@ -301,6 +302,8 @@ def normalizar_nombre(valor: Any) -> str:
     )
 
 
+
+
 def convertir_float(valor: Any) -> float:
     try:
         if valor in (None, "", "N/D"):
@@ -371,20 +374,49 @@ def _limpiar_html_observaciones(valor: Any) -> str:
 
 
 def _recoger_observaciones_privadas(propiedad: dict) -> str:
+    """Recupera primero las observaciones privadas reales de WASI."""
     fuentes: List[str] = []
-    if propiedad.get("observaciones"): fuentes.append(str(propiedad.get("observaciones")))
+
     raw = propiedad.get("detalle_raw")
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = None
+
     if isinstance(raw, dict):
-        for clave in ("comment","private_comment","private_observations","observations_private","internal_comment","internal_observations"):
-            if raw.get(clave): fuentes.append(str(raw.get(clave)))
+        # En la respuesta real de WASI de Mettryc, el bloque privado
+        # "ASESOR ENCARGADO" llega dentro de detail_raw["comment"].
+        for clave in (
+            "comment",
+            "private_comment",
+            "private_observations",
+            "observations_private",
+            "internal_comment",
+            "internal_observations",
+        ):
+            valor = raw.get(clave)
+            if valor:
+                fuentes.append(str(valor))
+
+    # Solo usamos el campo superior "observaciones" como respaldo cuando
+    # contiene explícitamente el bloque de asesor encargado. Así no
+    # confundimos la descripción pública del inmueble con datos privados.
+    observaciones = str(propiedad.get("observaciones") or "")
+    if re.search(r"asesor\s+encargado", observaciones, re.IGNORECASE):
+        fuentes.append(observaciones)
+
     resultado: List[str] = []
     vistos: Set[str] = set()
+
     for fuente in fuentes:
         limpio = _limpiar_html_observaciones(fuente)
         firma = normalizar_texto(limpio)
         if limpio and firma not in vistos:
             vistos.add(firma)
             resultado.append(limpio)
+
     return "\n".join(resultado).strip()
 
 
@@ -701,7 +733,10 @@ PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA = (
     "dame informacion del inmueble","dame información del inmueble",
     "quiero informacion de la propiedad","quiero información de la propiedad",
     "quiero informacion del inmueble","quiero información del inmueble",
-    "detalle de la propiedad","detalles de la propiedad","ficha de la propiedad","ficha del inmueble",
+    "detalle de la propiedad","detalles de la propiedad",
+    "ficha de la propiedad","ficha del inmueble",
+    "fotos de la propiedad","fotos del inmueble",
+    "fotos de la casa","fotos del apartamento",
 )
 
 # FIX #10: se amplía la lista de frases para detectar solicitud de
@@ -864,12 +899,24 @@ def extraer_codigo_inmueble(
 
 
 def solicita_informacion_propiedad_sin_referencia(texto: str) -> bool:
+    """Detecta una petición directa de información sobre un inmueble concreto."""
     normalizado = normalizar_texto(texto)
-    if any(frase in normalizado for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA):
+
+    if any(
+        frase in normalizado
+        for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA
+    ):
         return True
-    pide_info = any(x in normalizado for x in ("informacion","información","info","detalles","ficha"))
-    menciona = any(x in normalizado for x in ("propiedad","inmueble","casa","apartamento","townhouse","oficina","local","terreno","galpon"))
-    return pide_info and menciona
+
+    patrones_directos = (
+        r"\b(?:quiero|necesito|dame|env[ií]ame|m[aá]ndame|p[aá]same|mu[eé]strame|informame|inf[oó]rmame)\s+"
+        r"(?:la\s+)?(?:informaci[oó]n|info|ficha|detalles?|fotos?)\s+"
+        r"(?:de|del|sobre)\s+(?:la|el|esta|ese|esa)?\s*"
+        r"(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+        r"\b(?:informaci[oó]n|info|detalles?|ficha|fotos?)\s+(?:de|del|sobre)\s+"
+        r"(?:la|el|esta|ese|esa)?\s*(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+    )
+    return any(re.search(patron, normalizado, re.IGNORECASE) for patron in patrones_directos)
 
 
 def detectar_posicion(texto: str) -> Optional[int]:
@@ -1480,38 +1527,154 @@ async def obtener_inventario_wasi() -> List[dict]:
         return []
 
     propiedades: List[dict] = []
-    take = 100
     skip = 0
+    pagina_base = max(1, min(WASI_PAGE_SIZE, 100))
 
-    for _ in range(100):
-        params = {
-            "wasi_token": WASI_TOKEN,
-            "id_company": WASI_COMPANY_ID,
-            "take": take,
-            "skip": skip,
-            "status": 1,
-        }
-
+    for pagina in range(100):
         data = None
-        for intento in range(3):
-            try:
-                respuesta = await http_client.get(
-                    "https://api.wasi.co/v1/property/search",
-                    params=params,
-                    timeout=WASI_TIMEOUT,
-                )
-                respuesta.raise_for_status()
-                data = respuesta.json()
+        take_usado = pagina_base
+        ultimo_error: Optional[Exception] = None
+
+        tamanos = []
+        for candidato in (pagina_base, 50, 25):
+            candidato = max(1, min(int(candidato), 100))
+            if candidato not in tamanos:
+                tamanos.append(candidato)
+
+        for take in tamanos:
+            params = {
+                "wasi_token": WASI_TOKEN,
+                "id_company": WASI_COMPANY_ID,
+                "take": take,
+                "skip": skip,
+                "status": 1,
+            }
+
+            exito = False
+
+            for intento in range(WASI_MAX_RETRIES):
+                try:
+                    respuesta = await http_client.get(
+                        "https://api.wasi.co/v1/property/search",
+                        params=params,
+                        timeout=WASI_TIMEOUT,
+                    )
+                    respuesta.raise_for_status()
+                    data = respuesta.json()
+
+                    if isinstance(data, dict) and str(data.get("status", "")).lower() == "error":
+                        codigo_error = data.get("code", "N/D")
+                        mensaje_error = data.get("message", "Error no especificado")
+                        logger.error(
+                            "Wasi API devolvió error HTTP 200 skip=%s take=%s code=%s message=%s",
+                            skip,
+                            take,
+                            codigo_error,
+                            str(mensaje_error)[:240],
+                        )
+                        return propiedades
+
+                    exito = True
+                    take_usado = take
+                    break
+
+                except httpx.HTTPStatusError as exc:
+                    ultimo_error = exc
+                    status_code = exc.response.status_code
+
+                    cuerpo = ""
+                    try:
+                        payload_error = exc.response.json()
+                        if isinstance(payload_error, dict):
+                            cuerpo = (
+                                f" code={payload_error.get('code')}"
+                                f" message={payload_error.get('message')}"
+                            )
+                        else:
+                            cuerpo = str(payload_error)
+                    except Exception:
+                        cuerpo = str(exc.response.text or "")[:240]
+
+                    es_transitorio = status_code == 429 or status_code >= 500
+
+                    if status_code in {401, 403}:
+                        logger.error(
+                            "Wasi rechazó las credenciales/permisos HTTP=%s skip=%s take=%s%s",
+                            status_code,
+                            skip,
+                            take,
+                            cuerpo,
+                        )
+                        return propiedades
+
+                    logger.warning(
+                        "Error Wasi skip=%s take=%s intento=%s HTTP=%s%s",
+                        skip,
+                        take,
+                        intento + 1,
+                        status_code,
+                        cuerpo,
+                    )
+
+                    if not es_transitorio:
+                        break
+
+                    espera = WASI_RETRY_BASE_SECONDS * (2 ** intento)
+
+                    if status_code == 429:
+                        retry_after = exc.response.headers.get("Retry-After")
+                        try:
+                            espera = max(espera, float(retry_after))
+                        except (TypeError, ValueError):
+                            pass
+
+                    await asyncio.sleep(espera)
+
+                except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as exc:
+                    ultimo_error = exc
+                    logger.warning(
+                        "Timeout/conexión Wasi skip=%s take=%s intento=%s tipo=%s",
+                        skip,
+                        take,
+                        intento + 1,
+                        type(exc).__name__,
+                    )
+                    await asyncio.sleep(
+                        WASI_RETRY_BASE_SECONDS * (2 ** intento)
+                    )
+
+                except Exception as exc:
+                    ultimo_error = exc
+                    logger.warning(
+                        "Error Wasi skip=%s take=%s intento=%s tipo=%s",
+                        skip,
+                        take,
+                        intento + 1,
+                        type(exc).__name__,
+                    )
+                    await asyncio.sleep(
+                        WASI_RETRY_BASE_SECONDS * (2 ** intento)
+                    )
+
+            if exito:
                 break
-            except Exception as exc:
+
+            if take != tamanos[-1] and ultimo_error is not None:
                 logger.warning(
-                    "Error Wasi skip=%s intento=%s tipo=%s",
-                    skip, intento + 1, type(exc).__name__,
+                    "Wasi no pudo responder el lote skip=%s take=%s; probando lote más pequeño.",
+                    skip,
+                    take,
                 )
-                await asyncio.sleep(2 ** intento)
 
         if not isinstance(data, dict):
+            if ultimo_error:
+                logger.error(
+                    "Wasi no pudo cargar la página skip=%s. Último error=%s",
+                    skip,
+                    type(ultimo_error).__name__,
+                )
             break
+
         cantidad_pagina = 0
 
         for clave, valor in data.items():
@@ -1525,15 +1688,22 @@ async def obtener_inventario_wasi() -> List[dict]:
                 propiedades.append(propiedad)
                 property_detail_cache[propiedad["id"]] = propiedad
 
-        if cantidad_pagina < take:
+        if cantidad_pagina == 0:
+            logger.warning(
+                "Wasi respondió sin propiedades para skip=%s take=%s.",
+                skip,
+                take_usado,
+            )
             break
 
-        skip += take
-        await asyncio.sleep(0.2)
+        if cantidad_pagina < take_usado:
+            break
+
+        skip += cantidad_pagina
+        await asyncio.sleep(0.5)
 
     logger.info("Inventario Wasi cargado: %s propiedades", len(propiedades))
     return propiedades
-
 
 async def actualizar_inventario(force: bool = False) -> bool:
     if not force and not inventario_necesita_actualizacion():
@@ -3981,16 +4151,15 @@ async def atender_solicitud_captador(
             f"{nombre_captador}.\n📲 WhatsApp: https://wa.me/{telefono_captador}"
         )
 
-    if captador_wasi:
+    if datos_captador.get("fuente") == "campos_wasi":
         return (
             f"El captador registrado en Wasi es {nombre_captador}, "
-            "pero no pude localizar su WhatsApp en la información de la "
-            "propiedad. Si quieres, puedo notificar al equipo administrativo."
+            "pero no tiene un WhatsApp disponible en la información de la propiedad."
         )
 
     return (
         "No pude identificar al captador de esta propiedad en la información "
-        "disponible de Wasi. Si quieres, puedo notificar al equipo administrativo."
+        "disponible de Wasi."
     )
 
 def detalle_propiedad_para_ia(propiedad: dict) -> dict:
@@ -4812,7 +4981,11 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
 async def iniciar_visita(
     estado: dict, posicion: Optional[int], codigo: Optional[str] = None,
 ) -> str:
-    propiedad = resolver_propiedad_contexto(estado, posicion=posicion, codigo=codigo)
+    propiedad = resolver_propiedad_contexto(
+        estado,
+        posicion=posicion,
+        codigo=codigo,
+    )
 
     if not propiedad:
         if len(estado.get("ultimo_lote", [])) > 1:
@@ -4833,31 +5006,39 @@ async def iniciar_visita(
 
     if not rol_esta_confirmado(estado):
         return solicitar_rol_para_accion(
-            estado, "agendar_visita", propiedad_id=property_id, posicion=posicion,
+            estado,
+            "agendar_visita",
+            propiedad_id=property_id,
+            posicion=posicion,
         )
 
     if estado.get("rol") == "colega_inmobiliario":
-        await sincronizar_google_sheet()
-        cruce = cruzar_captador_con_sheet(propiedad.get("captador_wasi", ""))
+        detalle = await consultar_detalle_propiedad_wasi(property_id)
+        if detalle:
+            propiedad = detalle
+            estado["propiedad_interes"] = detalle
+
+        datos_captador = obtener_datos_captador(propiedad)
 
         estado["accion_pendiente_rol"] = None
         estado["pregunta_pendiente"] = None
         estado["estado_conversacion"] = "visita_colega"
 
-        if cruce.get("telefono"):
+        if datos_captador["telefono"]:
             return (
                 "Perfecto, colega. El captador de esta propiedad es "
-                f"{cruce.get('nombre')}. Puedes coordinar la visita "
+                f"{datos_captador['nombre']}. Puedes coordinar la visita "
                 "directamente por WhatsApp aquí: "
-                f"https://wa.me/{cruce['telefono']}"
+                f"https://wa.me/{datos_captador['telefono']}"
             )
 
         return (
             "Identifiqué la propiedad, pero el teléfono del captador "
-            "no aparece actualmente en el directorio. Si quieres, "
-            "puedo notificar al equipo administrativo para que "
-            "te ayude a coordinar la visita."
+            "no aparece actualmente en la información de la propiedad. "
+            "Si quieres, puedo notificar al equipo administrativo para "
+            "que te ayude a coordinar la visita."
         )
+
 
     estado["accion_pendiente_rol"] = None
     estado["pregunta_pendiente"] = None
@@ -5457,7 +5638,10 @@ ACCIONES_QUE_REQUIEREN_ROL = {
 }
 
 
-async def procesar_mensaje(sender: str, mensaje: str) -> str:
+async def procesar_mensaje(
+    sender: str,
+    mensaje: str,
+) -> str:
     estado = obtener_sesion(sender)
     texto = str(mensaje or "").strip()
     texto_norm = normalizar_texto(texto)
@@ -5466,7 +5650,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     # captadores, agentes, leads, visitas y notificaciones siguen en main.py.
     if (
         AGENTE_VIRTUAL_ACTIVO
-        and texto != MARCADOR_MULTIMEDIA
         and texto_norm != "/reiniciar"
     ):
         global agente_virtual_engine
@@ -5476,7 +5659,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             agente_virtual_engine = AgenteVirtualEngine()
 
         try:
-            return await agente_virtual_engine.process(sender, texto)
+            return await agente_virtual_engine.process(
+                sender,
+                texto,
+            )
         except Exception as exc:
             logger.exception(
                 "Agente Virtual falló; se activa fallback legacy sender=%s tipo=%s",
@@ -5492,17 +5678,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             agregar_historial(estado, "assistant", respuesta)
         guardar_sesion(sender, estado)
         return respuesta
-
-    # --------------------------------------------------------
-    # FIX #11: mensaje multimedia sin texto (imagen, audio, etc.)
-    # --------------------------------------------------------
-    if texto == MARCADOR_MULTIMEDIA:
-        return await finalizar(
-            "Recibí una imagen o archivo, pero no puedo leer su "
-            "contenido automáticamente todavía. ¿Puedes escribirme "
-            "el código del inmueble, el enlace del anuncio, o "
-            "contarme qué necesitas?"
-        )
 
     # --------------------------------------------------------
     # REINICIO DE BÚSQUEDA
@@ -5998,6 +6173,15 @@ app = FastAPI(
 )
 
 
+def payload_tiene_multimedia(payload: dict) -> bool:
+    claves = (
+        "media_url", "mediaUrl", "image", "images", "audio",
+        "document", "documents", "video", "sticker",
+        "attachment", "attachments", "file",
+    )
+    return any(payload.get(clave) for clave in claves)
+
+
 def validar_api_key(api_key: Optional[str]) -> None:
     if not API_KEYS_AGENTES:
         raise HTTPException(status_code=503, detail="API_KEYS_AGENTES no está configurado.")
@@ -6138,8 +6322,12 @@ async def webhook_agente_virtual(
 
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
+
     if not mensaje:
-        return {"replies": []}
+        if payload_tiene_multimedia(payload):
+            mensaje = MARCADOR_MULTIMEDIA
+        else:
+            return {"replies": []}
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
@@ -6155,8 +6343,10 @@ async def webhook_agente_virtual(
         locks_usuarios[sender] = asyncio.Lock()
 
     try:
+        # Las actualizaciones de servicios externos nunca deben bloquear
+        # la respuesta del usuario.
         if not inventory_cache.get("inventario"):
-            await actualizar_inventario(force=True)
+            asyncio.create_task(actualizar_inventario(force=True))
         elif inventario_necesita_actualizacion():
             asyncio.create_task(actualizar_inventario())
 
@@ -6169,7 +6359,10 @@ async def webhook_agente_virtual(
             agente_virtual_engine = AgenteVirtualEngine()
 
         async with locks_usuarios[sender]:
-            respuesta = await agente_virtual_engine.process(sender, mensaje)
+            respuesta = await agente_virtual_engine.process(
+                sender,
+                mensaje,
+            )
 
         return {
             "replies": [{"message": str(respuesta).replace("**", "*")}]
@@ -6221,21 +6414,11 @@ async def webhook(
     if not sender:
         raise HTTPException(status_code=422, detail="Falta sender.")
 
-    # FIX #11: cuando llega un mensaje multimedia (imagen, audio,
-    # documento) sin texto, en vez de ignorarlo silenciosamente se
-    # convierte en un marcador interno para que el bot responda
-    # pidiendo el código o el detalle por escrito.
     if not mensaje:
-        claves_adjunto = [
-            "media_url", "mediaUrl", "image", "images", "attachment",
-            "attachments", "file", "document", "video", "audio", "sticker",
-        ]
-        tiene_adjunto = any(payload.get(clave) for clave in claves_adjunto)
-
-        if not tiene_adjunto:
+        if payload_tiene_multimedia(payload):
+            mensaje = MARCADOR_MULTIMEDIA
+        else:
             return {"replies": []}
-
-        mensaje = MARCADOR_MULTIMEDIA
 
     if message_id:
         if mensaje_es_duplicado(sender, message_id):
@@ -6255,8 +6438,10 @@ async def webhook(
         locks_usuarios[sender] = asyncio.Lock()
 
     try:
+        # Las actualizaciones de servicios externos nunca deben bloquear
+        # la respuesta del usuario.
         if not inventory_cache.get("inventario"):
-            await actualizar_inventario(force=True)
+            asyncio.create_task(actualizar_inventario(force=True))
         elif inventario_necesita_actualizacion():
             asyncio.create_task(actualizar_inventario())
 
@@ -6271,7 +6456,10 @@ async def webhook(
 
     try:
         async with locks_usuarios[sender]:
-            respuesta = await procesar_mensaje(sender, mensaje)
+            respuesta = await procesar_mensaje(
+                sender,
+                mensaje,
+            )
 
         if not respuesta:
             return {"replies": []}

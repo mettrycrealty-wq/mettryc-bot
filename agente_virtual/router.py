@@ -53,7 +53,7 @@ class AgentModelRouter:
 
     async def completion(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         model: str | None = None,
         temperature: float = 0.4,
@@ -98,7 +98,7 @@ class AgentModelRouter:
 
     async def completion_with_fallback(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         temperature: float = 0.4,
         max_tokens: int = 900,
@@ -123,7 +123,7 @@ class AgentModelRouter:
     async def json_completion(
         self,
         schema: Type[BaseModel],
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         temperature: float = 0.1,
         max_tokens: int = 900,

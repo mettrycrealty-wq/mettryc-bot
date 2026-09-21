@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
@@ -162,21 +163,6 @@ class AgenteVirtualEngine:
         state = self.bridge.get_state(sender)
         await self.bridge.prepare_data()
 
-        # FLUJO DE LEAD: una vez iniciado, nunca dejamos que el LLM
-        # decida si debe procesar los datos o no. El motor legacy es la
-        # fuente de verdad para captura, confirmación, asignación y aviso.
-        lead_result = await self._process_lead_flow_deterministic(
-            text,
-            state,
-        )
-        if lead_result is not None:
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                lead_result,
-            )
-
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
         # resolverse antes de la conversación normal: no corresponde pedir rol,
@@ -239,6 +225,23 @@ class AgenteVirtualEngine:
             and state.get("propiedad_interes")
         )
 
+        # Respuestas sociales no deben iniciar búsquedas ni romper el contexto del anuncio.
+        if portal_context and self._is_simple_acknowledgement(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "¡Con gusto! Quedo atento por si necesitas algo más sobre esta propiedad.",
+            )
+
+        if portal_context and self._is_vague_property_followup(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "Claro, sobre esa propiedad. ¿Qué dato quieres consultar?",
+            )
+
         if (
             portal_context
             and self._requests_more_property_info(text)
@@ -262,18 +265,54 @@ class AgenteVirtualEngine:
                     ficha.message or "",
                 )
 
-        # CONSULTA DE PROPIEDAD SIN REFERENCIA
-        # Si piden información de una propiedad pero no indican cuál es y no
-        # existe una propiedad activa en contexto, no permitimos que el LLM
-        # adivine. Pedimos el ID/código y el siguiente turno lo resolvemos
-        # directamente contra WASI.
-        codigo_explicito = legacy.extraer_codigo_inmueble(
-            text,
-            permitir_solo_digitos=False,
-        )
+        if (
+            not legacy.resolver_propiedad_contexto(state)
+            and any(
+                frase in legacy.normalizar_texto(text)
+                for frase in (
+                    "esta disponible",
+                    "está disponible",
+                    "sigue disponible",
+                    "aun disponible",
+                    "aún disponible",
+                    "disponibilidad",
+                )
+            )
+        ):
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para confirmar la disponibilidad necesito identificar "
+                    "la propiedad. Envíame el código o ID que aparece normalmente "
+                    "al final del título del anuncio, o el enlace de la publicación."
+                ),
+            )
 
+        # REFERENCIA DIRECTA / SOLICITUD SIN ID
+        if text == "[multimedia_sin_texto]":
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Recibí la imagen. Para identificar exactamente la propiedad "
+                    "necesito el código o ID que aparece al final del título del "
+                    "anuncio, o el enlace de la publicación."
+                ),
+            )
+
+        # Si ya se solicitó el código, únicamente consumimos este turno
+        # cuando realmente llega un código. Otro tema queda libre para la conversación.
         if state.get("pregunta_pendiente") == "codigo_para_detalle":
-            codigo_pendiente = codigo_explicito or legacy.extraer_codigo_inmueble(
+            codigo_pendiente = legacy.extraer_codigo_inmueble(
                 text,
                 permitir_solo_digitos=True,
             )
@@ -292,35 +331,35 @@ class AgenteVirtualEngine:
                     ficha.message or "No pude recuperar la ficha de esa propiedad.",
                 )
 
+        if (
+            state.get("pregunta_pendiente") == "codigo_para_detalle"
+            and any(
+                frase in legacy.normalizar_texto(text)
+                for frase in (
+                    "esta disponible",
+                    "está disponible",
+                    "sigue disponible",
+                    "aun disponible",
+                    "aún disponible",
+                    "disponibilidad",
+                )
+            )
+        ):
             return await self._finalize(
                 sender,
                 state,
                 text,
                 (
-                    "Claro. Para darte la información exacta necesito identificar "
-                    "la propiedad. Envíame el código o ID que aparece normalmente "
-                    "al final del título del anuncio."
+                    "Para confirmar la disponibilidad de la propiedad necesito "
+                    "identificarla primero. Envíame el código o ID que aparece "
+                    "al final del título del anuncio o el enlace de la publicación."
                 ),
             )
 
-        if (
-            legacy.solicita_informacion_propiedad_sin_referencia(text)
-            and not codigo_explicito
-            and not legacy.resolver_propiedad_contexto(state)
-        ):
-            state["esperando_codigo"] = True
-            state["pregunta_pendiente"] = "codigo_para_detalle"
-            state["estado_conversacion"] = "esperando_codigo_propiedad"
-            return await self._finalize(
-                sender,
-                state,
-                text,
-                (
-                    "Claro. Para darte la información exacta necesito identificar "
-                    "la propiedad. Envíame el código o ID que aparece normalmente "
-                    "al final del título del anuncio."
-                ),
-            )
+        codigo_explicito = legacy.extraer_codigo_inmueble(
+            text,
+            permitir_solo_digitos=False,
+        )
 
         if codigo_explicito:
             ficha = await self.bridge.detail(
@@ -334,6 +373,43 @@ class AgenteVirtualEngine:
                 text,
                 ficha.message or "No pude recuperar la ficha de esa propiedad.",
             )
+
+        if (
+            legacy.solicita_informacion_propiedad_sin_referencia(text)
+            and not legacy.resolver_propiedad_contexto(state)
+        ):
+            state["esperando_codigo"] = True
+            state["pregunta_pendiente"] = "codigo_para_detalle"
+            state["estado_conversacion"] = "esperando_codigo_propiedad"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "Claro. Para darte la información exacta necesito identificar "
+                    "la propiedad. Envíame el código o ID que aparece normalmente "
+                    "al final del título del anuncio, o el enlace de la publicación."
+                ),
+            )
+
+        # Si ya hay una propiedad concreta en contexto y piden fotos,
+        # devolvemos la ficha real con su URL en lugar de inventar imágenes.
+        if self._requests_photos(text):
+            propiedad_actual = legacy.resolver_propiedad_contexto(state)
+            if propiedad_actual:
+                property_id = str(propiedad_actual.get("id") or "")
+                if property_id:
+                    ficha = await self.bridge.detail(
+                        state,
+                        code=property_id,
+                        format_legacy=True,
+                    )
+                    return await self._finalize(
+                        sender,
+                        state,
+                        text,
+                        ficha.message or "",
+                    )
 
         # La geografía se resuelve de forma determinista usando el catálogo
         # oficial + las variantes del inventario. Nunca dejamos que el modelo
@@ -377,6 +453,26 @@ class AgenteVirtualEngine:
             text,
             analysis,
         )
+
+        if state.get("pregunta_pendiente") == "codigo_para_detalle":
+            property_intents = {
+                "busqueda_propiedad",
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "mas_propiedades",
+            }
+            if (
+                analysis.intent not in property_intents
+                and not legacy.solicita_informacion_propiedad_sin_referencia(text)
+                and not legacy.extraer_codigo_mercadolibre(text)
+                and not legacy.extraer_codigo_inmueble(
+                    text,
+                    permitir_solo_digitos=True,
+                )
+            ):
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
 
         if geo_zone:
             analysis = analysis.model_copy(
@@ -569,21 +665,9 @@ class AgenteVirtualEngine:
         self.bridge.apply_analysis(state, analysis, text)
 
         business_results: list[BusinessActionResult] = []
-        admin_notified: set[str] = set()
-
         if analysis.human_requested or analysis.intent == "atencion_humana":
             # Para clientes avisamos al administrador de inmediato. Para colegas,
             # la propia rutina legacy conserva el proceso especial que ya funciona.
-            if state.get("rol") != "colega_inmobiliario":
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason="Solicitud explícita de atención humana",
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add("atencion_humana")
-
             result = await self.bridge.human(state, text)
             business_results.append(result)
 
@@ -644,34 +728,6 @@ class AgenteVirtualEngine:
                     await self.bridge.capture_colleague_contact(state, text)
                 )
 
-        if analysis.information_not_available:
-            reason = (
-                "Información solicitada no disponible: "
-                + str(analysis.unknown_information or "dato no identificado")
-            )
-            if reason not in admin_notified:
-                notified = await self.bridge.notify_admins(
-                    sender=sender,
-                    state=state,
-                    reason=reason,
-                    original_message=text,
-                )
-                if notified:
-                    admin_notified.add(reason)
-
-        for result in business_results:
-            if not result.ok:
-                reason = "Fallo en herramienta: " + result.name
-                if reason not in admin_notified:
-                    notified = await self.bridge.notify_admins(
-                        sender=sender,
-                        state=state,
-                        reason=reason,
-                        original_message=text,
-                    )
-                    if notified:
-                        admin_notified.add(reason)
-
         # La capa comercial no interviene en la selección ni entrega de propiedades.
         # Primero debe completarse la acción inmobiliaria; las técnicas de venta
         # se incorporarán después como una capa independiente.
@@ -693,7 +749,20 @@ class AgenteVirtualEngine:
             result.ok and result.name == "buscar_propiedades"
             for result in business_results
         )
-        if search_ready and not already_searched and analysis.intent not in special_intents:
+        current_turn_search = self._current_turn_has_search_signal(
+            legacy,
+            state,
+            text,
+        )
+        if (
+            search_ready
+            and not already_searched
+            and analysis.intent not in special_intents
+            and (
+                analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
+                or current_turn_search
+            )
+        ):
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
@@ -771,8 +840,94 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias", "muchas gracias", "excelente", "perfecto",
+            "ok", "okey", "okay", "listo", "cuenta con eso",
+            "de acuerdo", "entendido", "bien",
+        }
+
+    @staticmethod
+    def _is_vague_property_followup(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "esto", "eso", "en esto", "en eso", "sobre esto", "sobre eso",
+            "esa", "ese", "esta", "este", "esa propiedad", "ese inmueble",
+            "esta propiedad", "este inmueble", "esa casa", "esta casa",
+        }
+
+    @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias", "muchas gracias", "excelente", "perfecto",
+            "ok", "okey", "okay", "listo", "cuenta con eso",
+            "de acuerdo", "entendido", "bien",
+        }
+
+    @staticmethod
+    def _is_vague_property_followup(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "esto", "eso", "en esto", "en eso", "sobre esto", "sobre eso",
+            "esa", "ese", "esta", "este", "esa propiedad", "ese inmueble",
+            "esta propiedad", "este inmueble", "esa casa", "esta casa",
+        }
+
+    @staticmethod
+    def _requests_photos(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return any(
+            phrase in normalized
+            for phrase in (
+                "foto", "fotos", "fotografia", "fotografias",
+                "fotografía", "fotografías", "imagen", "imagenes", "imágenes",
+                "mándame las fotos", "mandame las fotos",
+                "envíame las fotos", "enviame las fotos",
+                "pásame las fotos", "pasame las fotos",
+            )
+        )
+
+    @staticmethod
+    def _current_turn_has_search_signal(
+        legacy: Any,
+        state: dict,
+        text: str,
+    ) -> bool:
+        normalized = legacy.normalizar_texto(text)
+        explicit = (
+            "busco", "estoy buscando", "quiero comprar",
+            "quiero alquilar", "quiero rentar", "quisiera comprar",
+            "quisiera alquilar", "necesito un apartamento",
+            "necesito una casa", "necesito un terreno",
+            "quiero una propiedad", "busco una propiedad",
+            "busco un apartamento", "busco una casa",
+            "busco un terreno", "busco local", "busco oficina",
+            "otras opciones", "más opciones", "mas opciones",
+            "muéstrame otras", "muestrame otras",
+        )
+        if any(frase in normalized for frase in explicit):
+            return True
+
+        prueba = deepcopy(state)
+        filtros_antes = deepcopy(prueba.get("filtros", {}))
+        sin_pref_antes = list(prueba.get("sin_preferencia", []))
+        try:
+            if hasattr(legacy, "aplicar_extracciones_tecnicas"):
+                legacy.aplicar_extracciones_tecnicas(prueba, text)
+            if hasattr(legacy, "aplicar_sin_preferencia_desde_texto"):
+                legacy.aplicar_sin_preferencia_desde_texto(prueba, text)
+        except Exception:
+            return False
+
+        return (
+            filtros_antes != prueba.get("filtros", {})
+            or sin_pref_antes != list(prueba.get("sin_preferencia", []))
+        )
+
+    @staticmethod
     def _requests_more_property_info(text: str) -> bool:
-        """Detecta cuando un mensaje de anuncio pide información inmediata."""
         normalized = str(text or "").lower()
         return any(
             phrase in normalized
@@ -807,8 +962,14 @@ class AgenteVirtualEngine:
                 "más información sobre la propiedad",
                 "informame sobre la propiedad",
                 "infórmame sobre la propiedad",
+                "tengo algunas preguntas",
+                "tengo preguntas sobre",
+                "algunas preguntas sobre tu publicación",
+                "fotos", "foto", "fotografias", "fotografías",
             )
         )
+
+
 
     def _update_sales_state(
         self,
@@ -884,74 +1045,6 @@ class AgenteVirtualEngine:
         if offer.lower() in clean.lower():
             return clean
         return f"{clean}\\n\\n{offer}" if clean else offer
-
-    async def _process_lead_flow_deterministic(
-        self,
-        text: str,
-        state: dict,
-    ) -> str | None:
-        """Ejecuta el flujo de lead sin depender de la clasificación del LLM."""
-        legacy = self.bridge.load()
-
-        if state.get("lead_confirmacion_pendiente"):
-            if legacy.es_respuesta_afirmativa(text):
-                result = await self.bridge.complete_lead(state)
-                return result.message
-
-            if legacy.es_respuesta_negativa(text):
-                state["lead_confirmacion_pendiente"] = False
-                state["lead_confirmado"] = False
-                legacy.actualizar_lead_desde_mensaje(state, text)
-                return (
-                    "Entendido. No enviaré esos datos todavía. "
-                    "Indícame qué dato deseas corregir y lo actualizamos."
-                )
-
-            # Una corrección de datos durante la confirmación vuelve a pasar
-            # directamente por el flujo legacy, no por la IA conversacional.
-            if self._looks_like_data_turn_without_analysis(legacy, text):
-                result = await self.bridge.capture_lead(state, text)
-                return result.message
-
-            return (
-                "Estoy revisando los datos que registré. "
-                "¿Están correctos o deseas corregir alguno?"
-            )
-
-        if state.get("objetivo") == "captura_lead":
-            if self._looks_like_data_turn_without_analysis(legacy, text):
-                result = await self.bridge.capture_lead(state, text)
-                return result.message
-
-        return None
-
-
-    @staticmethod
-    def _looks_like_data_turn_without_analysis(
-        legacy: Any,
-        text: str,
-    ) -> bool:
-        """Detecta datos de lead sin depender de la clasificación del modelo."""
-        if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
-            return True
-
-        normalized = legacy.normalizar_texto(text)
-        return any(
-            marker in normalized
-            for marker in (
-                "me llamo",
-                "mi nombre es",
-                "soy ",
-                "mi whatsapp",
-                "mi telefono",
-                "mi teléfono",
-                "mismo numero",
-                "numero del chat",
-                "numero actual",
-                "este numero",
-            )
-        )
-
 
     async def _process_pending_transaction(
         self,
@@ -1243,8 +1336,8 @@ class AgenteVirtualEngine:
 
         if analysis.intent == "informacion_no_disponible":
             return (
-                "No quiero darte un dato incorrecto. Esa información no la tengo "
-                "disponible ahora mismo y ya dejé el aviso al equipo para que la confirme."
+                "No quiero darte un dato incorrecto. Esa información no está "
+                "especificada en la ficha disponible ahora mismo."
             )
 
         if analysis.intent == "busqueda_propiedad":

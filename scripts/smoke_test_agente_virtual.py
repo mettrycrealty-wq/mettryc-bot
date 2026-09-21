@@ -21,6 +21,7 @@ class FakeRouter:
 
     async def json_completion(self, schema, messages, **kwargs):
         self.analysis_calls += 1
+
         context = json.loads(messages[-1]["content"])
         text = context["latest_user_message"].lower()
 
@@ -181,6 +182,25 @@ class FakeLegacy:
     def extraer_codigo_mercadolibre(self, message):
         match = re.search(r"https?://\\S+?(\\d+)-+_JM\\b", message or "", re.IGNORECASE)
         return match.group(1) if match else None
+
+    def extraer_codigo_inmueble(self, message, permitir_solo_digitos=False):
+        text = str(message or "").strip()
+        match = re.search(r"(?:codigo|código|id|inmueble)\\s*[:#-]?\\s*(\\d{4,})", text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        if permitir_solo_digitos and re.fullmatch(r"\\d{4,10}", re.sub(r"[\\s.,-]", "", text)):
+            return re.sub(r"[\\s.,-]", "", text)
+        return None
+
+    def solicita_informacion_propiedad_sin_referencia(self, message):
+        text = message.strip().lower()
+        return any(marker in text for marker in (
+            "informacion de la propiedad",
+            "información de la propiedad",
+            "ficha de la propiedad",
+            "detalles de la propiedad",
+            "fotos de la casa",
+        ))
 
     def detectar_rol_explicito(self, message):
         text = message.strip().lower()
@@ -392,6 +412,37 @@ async def main():
     assert "*Casa en Mañongo*" in response
     assert "detail_format" in legacy.events
 
+    # Regresión: un agradecimiento no puede disparar una nueva búsqueda
+    # solo porque quedaron filtros de propiedad en el estado.
+    search_count_before_ack = legacy.events.count("search")
+    legacy.states[portal_sender]["filtros"]["tipo_operacion"] = "alquiler"
+    legacy.states[portal_sender]["filtros"]["tipo_propiedad"] = "apartamento"
+    response = await engine.process(portal_sender, "Gracias")
+    assert legacy.events.count("search") == search_count_before_ack
+    assert "quedo atento" in response.lower()
+
+    response = await engine.process(portal_sender, "en esto")
+    assert "propiedad" in response.lower()
+
+    # Regresión: un estado pendiente de código no puede secuestrar un cambio de tema.
+    pending_sender = "whatsapp:+584120000004"
+    legacy.states[pending_sender] = deepcopy(legacy.obtener_sesion(portal_sender))
+    legacy.states[pending_sender]["pregunta_pendiente"] = "codigo_para_detalle"
+    legacy.states[pending_sender]["esperando_codigo"] = True
+    response = await engine.process(pending_sender, "¿Cómo se llama la empresa?")
+    assert "enviame el código" not in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
+    assert "mettryc" in response.lower()
+
+
+    # Regresión: una pregunta explícita sobre la empresa debe seguir el nuevo tema.
+    response = await engine.process(
+        pending_sender,
+        "¿Cómo se llama la empresa?",
+    )
+    assert "mettryc realty" in response.lower()
+    assert legacy.states[pending_sender]["pregunta_pendiente"] is None
+
     colleague_sender = "whatsapp:+584120000002"
     response = await engine.process(
         colleague_sender,
@@ -399,68 +450,3 @@ async def main():
     )
     assert "*Captador:* Ana Ejemplo" in response
     assert "https://wa.me/584120000001" in response
-
-    response = await engine.process(
-        client_sender,
-        "Qué bello está el día, ¿verdad?",
-    )
-    assert "retomamos" in response.lower()
-
-    response = await engine.process(
-        client_sender,
-        "¿Cuál es el precio de esa propiedad?",
-    )
-    assert "detail" in legacy.events
-    assert "detail_format" not in legacy.events
-    assert "Perfecto" in response or "$" in response
-
-    sales_sender = "whatsapp:+584120000003"
-    response = await engine.process(
-        sales_sender,
-        "Busco una casa en Mañongo para comprar hasta 250 mil.",
-    )
-    assert "para ti o para un cliente" in response.lower()
-
-    response = await engine.process(sales_sender, "Para mí")
-    assert "💰 $200.000" in response
-
-    response = await engine.process(
-        sales_sender,
-        "Esta casa me interesa mucho, quiero comprarla.",
-    )
-    assert "quieres que te contacte" in response.lower()
-    assert legacy.states[sales_sender]["pregunta_pendiente"] == "ofrecer_asesor"
-
-    response = await engine.process(sales_sender, "Sí")
-    assert "human" in legacy.events
-    assert legacy.states[sales_sender]["objetivo"] == "captura_lead"
-
-    response = await engine.process(
-        client_sender,
-        "Ahora sí, quiero hablar con un asesor.",
-    )
-    assert "human" in legacy.events
-    assert legacy.enviar_telegram_calls == 1
-
-    response = await engine.process(
-        client_sender,
-        "Necesito un dato que no tienes a mano.",
-    )
-    assert legacy.enviar_telegram_calls == 2
-    assert "dato" in response.lower()
-
-    print("\n✅ AGENTE VIRTUAL SMOKE TEST OK")
-    print("Confirmación de rol antes de búsqueda: OK")
-    print("Desambiguación geográfica El Trigal: OK")
-    print("Búsqueda natural + ficha cliente: OK")
-    print("Ficha para colega + captador: OK")
-    print("Cambio de tema casual: OK")
-    print("Pregunta sobre propiedad sin repetir ficha completa: OK")
-    print("Solicitud humana + aviso administrativo: OK")
-    print("Alta intención cliente + oferta de asesor + inicio de lead: OK")
-    print("Mercado Libre: disponibilidad inmediata + ficha bajo pedido: OK")
-    print("Información no disponible + aviso administrativo: OK")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

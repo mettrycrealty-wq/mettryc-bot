@@ -85,3 +85,4 @@ class BusinessActionResult(BaseModel):
     name: str
     data: dict[str, Any] | None = None
     message: str = ""
+
