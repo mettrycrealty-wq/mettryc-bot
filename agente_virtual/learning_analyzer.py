@@ -152,6 +152,63 @@ class PatyLearningAnalyzer:
             for e in turns
         )
 
+        roles = Counter(
+            str(e.get("role") or "sin_rol")
+            for e in turns
+        )
+
+        turns_with_conversation_id = sum(
+            1
+            for e in turns
+            if str(e.get("conversation_id") or "").strip()
+        )
+        turns_with_intent = sum(
+            1
+            for e in turns
+            if str(e.get("intent") or "").strip()
+        )
+        turns_with_origin = sum(
+            1
+            for e in turns
+            if str(e.get("origin") or "").strip()
+        )
+        turns_with_role = sum(
+            1
+            for e in turns
+            if str(e.get("role") or "").strip()
+        )
+        turns_with_sales_signal = sum(
+            1
+            for e in turns
+            if str(e.get("sales_signal") or "").strip()
+            and str(e.get("sales_signal")).strip().lower() != "ninguna"
+        )
+        turns_with_sales_next_step = sum(
+            1
+            for e in turns
+            if str(e.get("sales_next_step") or "").strip()
+            and str(e.get("sales_next_step")).strip().lower() != "ninguno"
+        )
+
+        def coverage(count: int) -> float:
+            return round(count / len(turns), 4) if turns else 0.0
+
+        data_quality = {
+            "turnos_evaluados": len(turns),
+            "turnos_con_conversation_id": turns_with_conversation_id,
+            "turnos_con_intencion": turns_with_intent,
+            "turnos_con_origen": turns_with_origin,
+            "turnos_con_rol": turns_with_role,
+            "turnos_con_senal_comercial": turns_with_sales_signal,
+            "turnos_con_siguiente_paso": turns_with_sales_next_step,
+            "cobertura_conversation_id": coverage(turns_with_conversation_id),
+            "cobertura_intencion": coverage(turns_with_intent),
+            "cobertura_origen": coverage(turns_with_origin),
+            "cobertura_rol": coverage(turns_with_role),
+            "cobertura_senal_comercial": coverage(turns_with_sales_signal),
+            "cobertura_siguiente_paso": coverage(turns_with_sales_next_step),
+        }
+
         by_origin: dict[str, dict[str, int]] = defaultdict(
             lambda: {
                 "conversaciones": 0,
@@ -225,6 +282,8 @@ class PatyLearningAnalyzer:
             "senales_comerciales": dict(signals),
             "siguientes_pasos": dict(next_steps),
             "origenes": dict(origins),
+            "roles": dict(roles),
+            "calidad_datos": data_quality,
             "por_origen": dict(by_origin),
         }
 
@@ -288,11 +347,16 @@ class PatyLearningAnalyzer:
 
             if isinstance(ai_report, dict):
                 result["ai_analysis"] = ai_report
+                result["ai_analysis_format"] = "json"
+            elif str(raw).strip():
+                # La IA puede devolver un informe Markdown/texto aunque se le
+                # pida una estructura JSON. Ese resultado sigue siendo útil:
+                # lo conservamos como informe legible sin tratarlo como error.
+                result["ai_analysis_text"] = str(raw).strip()
+                result["ai_analysis_format"] = "text"
             else:
-                result["ai_analysis_fallback"] = raw
                 result["ai_analysis_error"] = (
-                    "La IA respondió, pero no se pudo convertir su respuesta "
-                    "a un objeto JSON."
+                    "La IA no devolvió contenido para el análisis."
                 )
 
         except Exception as exc:
