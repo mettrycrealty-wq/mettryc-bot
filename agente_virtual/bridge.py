@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from .commercial_bridge import enrich_analysis
 from .schemas import BusinessActionResult, TurnAnalysis
 
 
@@ -173,6 +174,11 @@ class LegacyMettrycBridge:
             )
 
         state["ultima_intencion"] = analysis.intent
+
+        enrich_analysis(
+            state,
+            analysis,
+        )
 
         # Conservamos dos mecanismos útiles del bot anterior como apoyo
         # determinista: preferencias expresamente abiertas y extracciones
