@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from .commercial_bridge import enrich_analysis
 from .schemas import BusinessActionResult, TurnAnalysis
 
 
@@ -173,6 +174,35 @@ class LegacyMettrycBridge:
             )
 
         state["ultima_intencion"] = analysis.intent
+
+        logger.info(
+            "PATY COMMERCIAL DEBUG signal=%s next=%s objection=%s",
+            getattr(analysis, "sales_signal", None),
+            getattr(analysis, "sales_next_step", None),
+            getattr(analysis, "objection_type", None),
+        )
+
+        # Persistimos señales comerciales para la capa de aprendizaje de Paty.
+        # Estos campos alimentan learning.py y el análisis comercial.
+        state["ultima_senal_comercial"] = (
+            getattr(analysis, "sales_signal", None)
+            or "ninguna"
+        )
+
+        state["siguiente_paso_comercial"] = (
+            getattr(analysis, "sales_next_step", None)
+            or "ninguno"
+        )
+
+        if getattr(analysis, "objection_type", None):
+            state["ultima_objecion_comercial"] = (
+                analysis.objection_type
+            )
+
+        enrich_analysis(
+            state,
+            analysis,
+        )
 
         # Conservamos dos mecanismos útiles del bot anterior como apoyo
         # determinista: preferencias expresamente abiertas y extracciones
