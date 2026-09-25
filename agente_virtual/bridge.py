@@ -175,6 +175,23 @@ class LegacyMettrycBridge:
 
         state["ultima_intencion"] = analysis.intent
 
+        # Persistimos señales comerciales para la capa de aprendizaje de Paty.
+        # Estos campos alimentan learning.py y el análisis comercial.
+        state["ultima_senal_comercial"] = (
+            getattr(analysis, "sales_signal", None)
+            or "ninguna"
+        )
+
+        state["siguiente_paso_comercial"] = (
+            getattr(analysis, "sales_next_step", None)
+            or "ninguno"
+        )
+
+        if getattr(analysis, "objection_type", None):
+            state["ultima_objecion_comercial"] = (
+                analysis.objection_type
+            )
+
         enrich_analysis(
             state,
             analysis,
