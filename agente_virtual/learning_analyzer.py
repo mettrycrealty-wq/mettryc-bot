@@ -288,11 +288,16 @@ class PatyLearningAnalyzer:
 
             if isinstance(ai_report, dict):
                 result["ai_analysis"] = ai_report
+                result["ai_analysis_format"] = "json"
+            elif str(raw).strip():
+                # La IA puede devolver un informe Markdown/texto aunque se le
+                # pida una estructura JSON. Ese resultado sigue siendo útil:
+                # lo conservamos como informe legible sin tratarlo como error.
+                result["ai_analysis_text"] = str(raw).strip()
+                result["ai_analysis_format"] = "text"
             else:
-                result["ai_analysis_fallback"] = raw
                 result["ai_analysis_error"] = (
-                    "La IA respondió, pero no se pudo convertir su respuesta "
-                    "a un objeto JSON."
+                    "La IA no devolvió contenido para el análisis."
                 )
 
         except Exception as exc:
