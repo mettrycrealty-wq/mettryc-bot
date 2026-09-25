@@ -708,6 +708,38 @@ class AgenteVirtualEngine:
 
 
     @staticmethod
+    def _has_active_property_context(state: dict) -> bool:
+        """Comprueba si existe una propiedad activa en la conversación."""
+        return bool(
+            state.get("propiedad_interes")
+            or state.get("propiedad_activa_id")
+            or state.get("ultimo_lote")
+        )
+
+    @staticmethod
+    def _looks_like_property_followup(text: str) -> bool:
+        """Detecta preguntas o respuestas sobre la última ficha enviada."""
+        normalized = str(text or "").lower().strip()
+        return any(
+            phrase in normalized
+            for phrase in (
+                "tiene ",
+                "cuantos ",
+                "cuántos ",
+                "cuantas ",
+                "cuántas ",
+                "que dice",
+                "qué dice",
+                "cuenta con",
+                "dispone de",
+                "incluye",
+                "me gusta",
+                "me interesa",
+                "quiero verla",
+            )
+        )
+
+    @staticmethod
     def _enforce_legacy_business_intent(
         legacy: Any,
         state: dict,
@@ -729,6 +761,13 @@ class AgenteVirtualEngine:
             )
         except Exception:
             property_question = False
+
+        if (
+            AgenteVirtualEngine._has_active_property_context(state)
+            and AgenteVirtualEngine._looks_like_property_followup(text)
+            and analysis.intent in {"conversacion_casual", "unknown", "informacion_no_disponible"}
+        ):
+            return analysis.model_copy(update={"intent": "pregunta_propiedad"})
 
         if property_question and analysis.intent in {"conversacion_casual", "unknown"}:
             return analysis.model_copy(update={"intent": "pregunta_propiedad"})
