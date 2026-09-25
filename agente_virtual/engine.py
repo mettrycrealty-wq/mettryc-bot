@@ -816,7 +816,10 @@ class AgenteVirtualEngine:
         analysis: TurnAnalysis,
     ) -> None:
         """Actualiza el estado comercial sin interferir con el motor de negocio legacy."""
-        if state.get("rol") != "cliente":
+        if state.get("rol") not in {
+            "cliente",
+            "desconocido",
+        }:
             return
 
         signal = analysis.sales_signal
