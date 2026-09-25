@@ -228,6 +228,109 @@ class PatyLearningAnalyzer:
             "por_origen": dict(by_origin),
         }
 
+    @staticmethod
+    def _conversation_funnel(
+        conversations: dict[str, list[dict[str, Any]]],
+        total_conversations: int,
+    ) -> dict[str, Any]:
+        """
+        Mide etapas observables de cada conversación.
+
+        Las etapas no son exclusivas: una conversación puede alcanzar varias.
+        Sirve para detectar dónde aparecen señales, sin afirmar causalidad.
+        """
+        def truth(value: Any) -> bool:
+            return str(value).strip().lower() in {
+                "true", "1", "yes", "si", "sí"
+            }
+
+        stages = {
+            "busqueda_propiedad": set(),
+            "interes": set(),
+            "intencion_alta": set(),
+            "objecion": set(),
+            "visita": set(),
+            "asesor": set(),
+            "lead_capturado": set(),
+            "asignado": set(),
+            "posible_abandono": set(),
+        }
+
+        for cid, rows in conversations.items():
+            turns = [
+                row for row in rows
+                if row.get("event_type", row.get("event")) == "conversation_turn"
+            ]
+            intents = {str(row.get("intent") or "").strip() for row in turns}
+            signals = {str(row.get("sales_signal") or "").strip() for row in turns}
+
+            if "busqueda_propiedad" in intents:
+                stages["busqueda_propiedad"].add(cid)
+            if "interesado" in signals:
+                stages["interes"].add(cid)
+            if "alta_intencion" in signals:
+                stages["intencion_alta"].add(cid)
+            if "objecion" in signals:
+                stages["objecion"].add(cid)
+            if "visita" in signals or "visita" in intents:
+                stages["visita"].add(cid)
+            if "asesor" in signals or "atencion_humana" in intents:
+                stages["asesor"].add(cid)
+            if any(truth(row.get("lead_captured")) for row in rows):
+                stages["lead_capturado"].add(cid)
+            if any(truth(row.get("lead_assigned")) for row in rows):
+                stages["asignado"].add(cid)
+            if any(truth(row.get("possible_abandonment")) for row in rows):
+                stages["posible_abandono"].add(cid)
+
+        result: dict[str, Any] = {}
+        for stage, ids in stages.items():
+            count = len(ids)
+            result[stage] = {
+                "conversaciones": count,
+                "tasa_sobre_conversaciones": round(
+                    count / total_conversations, 4
+                ) if total_conversations else 0.0,
+            }
+        return result
+
+    @staticmethod
+    def _data_quality(
+        turns: list[dict[str, Any]],
+        total_conversations: int,
+    ) -> dict[str, Any]:
+        """Expone huecos de instrumentación sin cambiar a Paty."""
+        missing_intent = sum(
+            1 for turn in turns if not str(turn.get("intent") or "").strip()
+        )
+        missing_origin = sum(
+            1 for turn in turns if not str(turn.get("origin") or "").strip()
+        )
+        default_signal = sum(
+            1 for turn in turns
+            if str(turn.get("sales_signal") or "ninguna").strip() == "ninguna"
+        )
+        default_next_step = sum(
+            1 for turn in turns
+            if str(turn.get("sales_next_step") or "ninguno").strip() == "ninguno"
+        )
+
+        def rate(value: int) -> float:
+            return round(value / len(turns), 4) if turns else 0.0
+
+        return {
+            "turnos_analizados": len(turns),
+            "conversaciones_analizadas": total_conversations,
+            "turnos_sin_intencion": missing_intent,
+            "tasa_turnos_sin_intencion": rate(missing_intent),
+            "turnos_sin_origen": missing_origin,
+            "tasa_turnos_sin_origen": rate(missing_origin),
+            "senal_comercial_ninguna": default_signal,
+            "tasa_senal_comercial_ninguna": rate(default_signal),
+            "siguiente_paso_ninguno": default_next_step,
+            "tasa_siguiente_paso_ninguno": rate(default_next_step),
+        }
+
     async def analyze(
         self,
         *,
@@ -238,6 +341,24 @@ class PatyLearningAnalyzer:
         events = await self.fetch_events(limit=limit)
 
         summary = self.summarize(events)
+
+        conversations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            cid = str(event.get("conversation_id") or "").strip()
+            if cid:
+                conversations[cid].append(event)
+
+        summary["funnel"] = self._conversation_funnel(
+            conversations,
+            summary["conversaciones"],
+        )
+        summary["calidad_datos"] = self._data_quality(
+            [
+                event for event in events
+                if event.get("event_type", event.get("event")) == "conversation_turn"
+            ],
+            summary["conversaciones"],
+        )
 
         result: dict[str, Any] = {
             "ok": True,
@@ -288,11 +409,16 @@ class PatyLearningAnalyzer:
 
             if isinstance(ai_report, dict):
                 result["ai_analysis"] = ai_report
+                result["ai_analysis_format"] = "json"
+            elif str(raw).strip():
+                # La IA puede devolver un informe Markdown/texto aunque se le
+                # pida una estructura JSON. Ese resultado sigue siendo útil:
+                # lo conservamos como informe legible sin tratarlo como error.
+                result["ai_analysis_text"] = str(raw).strip()
+                result["ai_analysis_format"] = "text"
             else:
-                result["ai_analysis_fallback"] = raw
                 result["ai_analysis_error"] = (
-                    "La IA respondió, pero no se pudo convertir su respuesta "
-                    "a un objeto JSON."
+                    "La IA no devolvió contenido para el análisis."
                 )
 
         except Exception as exc:
