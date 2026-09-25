@@ -740,6 +740,62 @@ class AgenteVirtualEngine:
         )
 
     @staticmethod
+    def _build_property_knowledge_context(property_data: dict) -> str:
+        """
+        Construye un contexto de consulta de propiedad usando todos los datos
+        disponibles de WASI: descripción, características internas, externas
+        y datos técnicos.
+        """
+        if not isinstance(property_data, dict):
+            return ""
+
+        sections = []
+
+        for key in (
+            "descripcion",
+            "description",
+            "caracteristicas_internas",
+            "caracteristicas_externas",
+            "caracteristicas",
+            "features",
+            "habitaciones",
+            "banos",
+            "estacionamientos",
+            "metros",
+            "area",
+        ):
+            value = property_data.get(key)
+            if value:
+                sections.append(f"{key}: {value}")
+
+        return "\n".join(sections)
+
+    @staticmethod
+    def _property_question_instruction(state: dict) -> str:
+        """
+        Instrucción para que las preguntas de una propiedad activa sean
+        respondidas usando la ficha WASI y no una nueva búsqueda.
+        """
+        property_data = (
+            state.get("propiedad_interes")
+            or state.get("propiedad_activa")
+            or {}
+        )
+
+        context = AgenteVirtualEngine._build_property_knowledge_context(property_data)
+
+        if not context:
+            return ""
+
+        return (
+            "Responde la pregunta usando únicamente la información de la ficha "
+            "de la propiedad activa. Revisa primero descripción, luego "
+            "características internas, características externas y datos técnicos. "
+            "Si el dato no aparece, indícalo claramente.\n\n"
+            f"Ficha disponible:\n{context}"
+        )
+
+    @staticmethod
     def _enforce_legacy_business_intent(
         legacy: Any,
         state: dict,
