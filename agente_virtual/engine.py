@@ -61,6 +61,8 @@ Contexto de ANUNCIOS DE PORTALES:
 - Si la persona dice que tiene preguntas sobre la publicación pero no formula todavía una pregunta concreta, basta con confirmar disponibilidad y preguntarle qué dato desea conocer.
 - Si pide más información, detalles o datos de la propiedad, debe mostrarse la ficha de esa propiedad.
 - Los turnos posteriores deben conservar esa propiedad en contexto.
+- Un saludo, agradecimiento o comentario social NO inicia una nueva búsqueda y no debe hacer que olvides la propiedad del anuncio.
+- Si el usuario cambia claramente de tema hacia Mettryc, una persona, atención, empresa, servicios u otro asunto, responde al nuevo tema y no exijas el código de la propiedad.
 
 Señales comerciales para CLIENTES:
 - sales_signal="interesado" cuando expresa interés claro pero todavía está explorando.
@@ -85,6 +87,7 @@ Tu respuesta será enviada directamente al usuario.
 
 Comportamiento conversacional:
 - Habla con naturalidad, sin menús y sin frases de robot.
+- Un simple "gracias", "excelente", "perfecto", "cuenta con eso" u otro cierre social no debe disparar búsquedas nuevas ni diagnósticos de inventario.
 - Lee la conversación completa y conserva el contexto.
 - Puedes responder una pregunta casual aunque exista una búsqueda en curso.
 - Si el usuario cambia de tema, responde al nuevo tema sin perder el contexto anterior.
@@ -177,6 +180,35 @@ class AgenteVirtualEngine:
                 lead_result,
             )
 
+        # MULTIMEDIA SIN TEXTO
+        if text == getattr(legacy, "MARCADOR_MULTIMEDIA", "[multimedia_sin_texto]"):
+            if state.get("pregunta_pendiente") == "codigo_para_detalle":
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    (
+                        "Recibí la imagen. Para ubicar la propiedad con precisión, "
+                        "envíame el código o ID que aparece al final del título del anuncio "
+                        "o copia aquí el enlace de la publicación."
+                    ),
+                )
+
+            if state.get("propiedad_interes"):
+                return await self._finalize(
+                    sender,
+                    state,
+                    text,
+                    "Recibí la imagen. ¿Qué te gustaría consultar sobre esta propiedad?",
+                )
+
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "Recibí la imagen. ¿Qué información necesitas de la propiedad que aparece allí?",
+            )
+
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
         # resolverse antes de la conversación normal: no corresponde pedir rol,
@@ -239,6 +271,44 @@ class AgenteVirtualEngine:
             and state.get("propiedad_interes")
         )
 
+        if portal_context and self._is_availability_question(text):
+            active = bool(state.get("propiedad_interes", {}).get("activa", True))
+            if active:
+                response = (
+                    "Sí, la propiedad sigue disponible actualmente en nuestro inventario. "
+                    "¿Quieres conocer algún detalle específico o deseas agendar una visita?"
+                )
+            else:
+                response = (
+                    "Esa propiedad ya no aparece activa actualmente en nuestro inventario. "
+                    "Puedo ayudarte a buscar una alternativa similar."
+                )
+            return await self._finalize(sender, state, text, response)
+
+        if portal_context and self._is_simple_acknowledgement(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "¡Con gusto! Quedo atento por si necesitas algo más sobre esta propiedad.",
+            )
+
+        if portal_context and self._is_greeting_only(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "¡Buenas! Seguimos con la propiedad de Mercado Libre. ¿Qué te gustaría saber de ella?",
+            )
+
+        if portal_context and self._is_vague_property_followup(text):
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                "Claro, sobre esa propiedad. ¿Qué dato quieres consultar?",
+            )
+
         if (
             portal_context
             and self._requests_more_property_info(text)
@@ -262,6 +332,24 @@ class AgenteVirtualEngine:
                     ficha.message or "",
                 )
 
+        if (
+            state.get("pregunta_pendiente") == "codigo_para_detalle"
+            and self._is_no_code_response(text)
+        ):
+            state["esperando_codigo"] = False
+            state["pregunta_pendiente"] = None
+            state["estado_conversacion"] = "conversando"
+            return await self._finalize(
+                sender,
+                state,
+                text,
+                (
+                    "No hay problema. También puedes enviarme el enlace del anuncio, "
+                    "el título de la propiedad o decirme la zona y el tipo de inmueble "
+                    "para intentar identificarla."
+                ),
+            )
+
         # CONSULTA DE PROPIEDAD SIN REFERENCIA
         # Si piden información de una propiedad pero no indican cuál es y no
         # existe una propiedad activa en contexto, no permitimos que el LLM
@@ -272,35 +360,19 @@ class AgenteVirtualEngine:
             permitir_solo_digitos=False,
         )
 
-        if state.get("pregunta_pendiente") == "codigo_para_detalle":
-            codigo_pendiente = codigo_explicito or legacy.extraer_codigo_inmueble(
-                text,
-                permitir_solo_digitos=True,
+        if state.get("pregunta_pendiente") == "codigo_para_detalle" and codigo_explicito:
+            ficha = await self.bridge.detail(
+                state,
+                code=codigo_explicito,
+                format_legacy=True,
             )
-            if codigo_pendiente:
-                ficha = await self.bridge.detail(
-                    state,
-                    code=codigo_pendiente,
-                    format_legacy=True,
-                )
-                state["esperando_codigo"] = False
-                state["pregunta_pendiente"] = None
-                return await self._finalize(
-                    sender,
-                    state,
-                    text,
-                    ficha.message or "No pude recuperar la ficha de esa propiedad.",
-                )
-
+            state["esperando_codigo"] = False
+            state["pregunta_pendiente"] = None
             return await self._finalize(
                 sender,
                 state,
                 text,
-                (
-                    "Claro. Para darte la información exacta necesito identificar "
-                    "la propiedad. Envíame el código o ID que aparece normalmente "
-                    "al final del título del anuncio."
-                ),
+                ficha.message or "No pude recuperar la ficha de esa propiedad.",
             )
 
         if (
@@ -377,6 +449,36 @@ class AgenteVirtualEngine:
             text,
             analysis,
         )
+
+        if state.get("pregunta_pendiente") == "codigo_para_detalle":
+            property_intents = {
+                "busqueda_propiedad",
+                "detalle_propiedad",
+                "pregunta_propiedad",
+                "seleccion_propiedad",
+                "mas_propiedades",
+            }
+
+            # El código pendiente solo bloquea conversaciones realmente
+            # relacionadas con identificar una propiedad. Si el usuario cambia
+            # de tema hacia Mettryc, soporte, la empresa o atención humana,
+            # debemos liberar el estado aunque el LLM haya clasificado el turno
+            # de forma demasiado amplia como "detalle_propiedad".
+            cambio_tema_explicito = self._is_explicit_non_property_topic(text)
+
+            if (
+                (
+                    analysis.intent not in property_intents
+                    and not legacy.solicita_informacion_propiedad_sin_referencia(text)
+                    and not legacy.extraer_codigo_mercadolibre(text)
+                    and not legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=True)
+                )
+                or cambio_tema_explicito
+                or legacy.solicita_humano(text)
+            ):
+                state["esperando_codigo"] = False
+                state["pregunta_pendiente"] = None
+                state["estado_conversacion"] = "conversando"
 
         if geo_zone:
             analysis = analysis.model_copy(
@@ -693,7 +795,20 @@ class AgenteVirtualEngine:
             result.ok and result.name == "buscar_propiedades"
             for result in business_results
         )
-        if search_ready and not already_searched and analysis.intent not in special_intents:
+        current_turn_search = self._current_turn_has_search_signal(
+            legacy,
+            state,
+            text,
+        )
+        if (
+            search_ready
+            and not already_searched
+            and analysis.intent not in special_intents
+            and (
+                analysis.intent in {"busqueda_propiedad", "mas_propiedades"}
+                or current_turn_search
+            )
+        ):
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
@@ -738,18 +853,11 @@ class AgenteVirtualEngine:
         # existe intención de búsqueda. Así la clasificación comercial del LLM
         # nunca puede apagar una búsqueda inequívoca.
         try:
-            legacy_search_intent = False
-            if hasattr(legacy, "tiene_intencion_busqueda"):
-                estado_prueba = deepcopy(state)
-                if hasattr(legacy, "aplicar_extracciones_tecnicas"):
-                    legacy.aplicar_extracciones_tecnicas(estado_prueba, text)
-                legacy_search_intent = bool(
-                    legacy.tiene_intencion_busqueda(
-                        estado_prueba,
-                        None,
-                        text,
-                    )
-                )
+            legacy_search_intent = self._current_turn_has_search_signal(
+                legacy,
+                state,
+                text,
+            )
         except Exception:
             legacy_search_intent = False
 
@@ -772,7 +880,7 @@ class AgenteVirtualEngine:
 
     @staticmethod
     def _requests_more_property_info(text: str) -> bool:
-        """Detecta cuando un mensaje de anuncio pide información inmediata."""
+        """Detecta una solicitud directa de información/fotos de un anuncio."""
         normalized = str(text or "").lower()
         return any(
             phrase in normalized
@@ -781,6 +889,9 @@ class AgenteVirtualEngine:
                 "más información",
                 "mas info",
                 "más info",
+                "tengo algunas preguntas",
+                "tengo preguntas sobre",
+                "algunas preguntas sobre tu publicación",
                 "informacion de la propiedad",
                 "información de la propiedad",
                 "detalles de la propiedad",
@@ -807,8 +918,13 @@ class AgenteVirtualEngine:
                 "más información sobre la propiedad",
                 "informame sobre la propiedad",
                 "infórmame sobre la propiedad",
+                "fotos",
+                "fotografias",
+                "fotografías",
             )
         )
+
+
 
     def _update_sales_state(
         self,
@@ -935,7 +1051,12 @@ class AgenteVirtualEngine:
         if legacy.extraer_correo(text) or legacy.extraer_telefono(text):
             return True
 
-        normalized = legacy.normalizar_texto(text)
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
         return any(
             marker in normalized
             for marker in (
@@ -1174,6 +1295,155 @@ class AgenteVirtualEngine:
 
         self.bridge.save_state(sender, state)
         return response
+
+    @staticmethod
+    def _is_simple_acknowledgement(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "gracias", "muchas gracias", "excelente", "perfecto",
+            "ok", "okey", "okay", "listo", "cuenta con eso",
+            "de acuerdo", "entendido", "bien",
+        }
+
+    @staticmethod
+    def _is_greeting_only(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "hola", "buenas", "buenos dias", "buenos días",
+            "buenas tardes", "buenas noches", "hola buenas",
+            "hola buenas tardes", "hola buenas noches",
+        }
+
+    @staticmethod
+    def _is_availability_question(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return any(
+            phrase in normalized
+            for phrase in (
+                "aun disponible",
+                "aún disponible",
+                "sigue disponible",
+                "todavia disponible",
+                "todavía disponible",
+                "esta disponible",
+                "está disponible",
+                "continua disponible",
+                "continúa disponible",
+                "todavia esta",
+                "todavía está",
+            )
+        )
+
+    @staticmethod
+    def _is_explicit_non_property_topic(text: str) -> bool:
+        """Detecta cambios de tema claros que nunca deben quedar atrapados
+        esperando el código de una propiedad."""
+        normalized = " ".join(str(text or "").lower().split())
+
+        phrases = (
+            "como se llama la empresa",
+            "cómo se llama la empresa",
+            "que hace mettryc",
+            "qué hace mettryc",
+            "quienes son",
+            "quiénes son",
+            "que servicios ofrecen",
+            "qué servicios ofrecen",
+            "que servicios tiene mettryc",
+            "qué servicios tiene mettryc",
+            "cual es el sitio web",
+            "cuál es el sitio web",
+            "cual es la pagina web",
+            "cuál es la página web",
+            "cual es el correo",
+            "cuál es el correo",
+            "donde estan ubicados",
+            "dónde están ubicados",
+            "donde estan",
+            "dónde están",
+            "quiero trabajar con ustedes",
+            "quiero trabajar en mettryc",
+            "quiero ser agente",
+            "quiero ser asesor",
+            "quiero unirme al equipo",
+            "informacion sobre mettryc",
+            "información sobre mettryc",
+            "informacion de mettryc",
+            "información de mettryc",
+        )
+
+        return any(phrase in normalized for phrase in phrases)
+
+
+    @staticmethod
+    def _is_no_code_response(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "no lo tengo",
+            "no tengo el codigo",
+            "no tengo el código",
+            "no se",
+            "no sé",
+            "no lo sé",
+            "no recuerdo",
+            "no recuerdo el codigo",
+            "no recuerdo el código",
+        }
+
+    @staticmethod
+    def _is_vague_property_followup(text: str) -> bool:
+        normalized = " ".join(str(text or "").lower().split())
+        return normalized in {
+            "esto", "eso", "en esto", "en eso",
+            "sobre esto", "sobre eso", "esa", "ese",
+            "esta", "este", "esa propiedad", "ese inmueble",
+            "esta propiedad", "este inmueble", "esa casa",
+            "esta casa", "eso mismo",
+        }
+
+    @staticmethod
+    def _current_turn_has_search_signal(
+        legacy: Any,
+        state: dict,
+        text: str,
+    ) -> bool:
+        """Indica si ESTE turno pide una búsqueda, no solo si existe contexto previo."""
+        normalizar = getattr(
+            legacy,
+            "normalizar_texto",
+            lambda value: " ".join(str(value or "").lower().split()),
+        )
+        normalized = normalizar(text)
+        explicit = (
+            "busco", "estoy buscando", "quiero comprar",
+            "quiero alquilar", "quiero rentar", "quisiera comprar",
+            "quisiera alquilar", "necesito un apartamento",
+            "necesito una casa", "necesito un terreno",
+            "quiero una propiedad", "busco una propiedad",
+            "busco un apartamento", "busco una casa",
+            "busco un terreno", "busco local", "busco oficina",
+            "otras opciones", "mas opciones", "más opciones",
+            "muestrame otras", "muéstrame otras",
+        )
+        if any(frase in normalized for frase in explicit):
+            return True
+
+        prueba = deepcopy(state)
+        filtros_antes = deepcopy(prueba.get("filtros", {}))
+        sin_pref_antes = list(prueba.get("sin_preferencia", []))
+
+        try:
+            if hasattr(legacy, "aplicar_extracciones_tecnicas"):
+                legacy.aplicar_extracciones_tecnicas(prueba, text)
+            if hasattr(legacy, "aplicar_sin_preferencia_desde_texto"):
+                legacy.aplicar_sin_preferencia_desde_texto(prueba, text)
+        except Exception:
+            return False
+
+        return (
+            filtros_antes != prueba.get("filtros", {})
+            or sin_pref_antes != list(prueba.get("sin_preferencia", []))
+        )
 
     @staticmethod
     def _search_signal(state: dict) -> bool:

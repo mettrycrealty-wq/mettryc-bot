@@ -371,20 +371,49 @@ def _limpiar_html_observaciones(valor: Any) -> str:
 
 
 def _recoger_observaciones_privadas(propiedad: dict) -> str:
+    """Recupera primero las observaciones privadas reales de WASI."""
     fuentes: List[str] = []
-    if propiedad.get("observaciones"): fuentes.append(str(propiedad.get("observaciones")))
+
     raw = propiedad.get("detalle_raw")
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = None
+
     if isinstance(raw, dict):
-        for clave in ("comment","private_comment","private_observations","observations_private","internal_comment","internal_observations"):
-            if raw.get(clave): fuentes.append(str(raw.get(clave)))
+        # En la respuesta real de WASI de Mettryc, el bloque privado
+        # "ASESOR ENCARGADO" llega dentro de detail_raw["comment"].
+        for clave in (
+            "comment",
+            "private_comment",
+            "private_observations",
+            "observations_private",
+            "internal_comment",
+            "internal_observations",
+        ):
+            valor = raw.get(clave)
+            if valor:
+                fuentes.append(str(valor))
+
+    # Solo usamos el campo superior "observaciones" como respaldo cuando
+    # contiene explícitamente el bloque de asesor encargado. Así no
+    # confundimos la descripción pública del inmueble con datos privados.
+    observaciones = str(propiedad.get("observaciones") or "")
+    if re.search(r"asesor\s+encargado", observaciones, re.IGNORECASE):
+        fuentes.append(observaciones)
+
     resultado: List[str] = []
     vistos: Set[str] = set()
+
     for fuente in fuentes:
         limpio = _limpiar_html_observaciones(fuente)
         firma = normalizar_texto(limpio)
         if limpio and firma not in vistos:
             vistos.add(firma)
             resultado.append(limpio)
+
     return "\n".join(resultado).strip()
 
 
@@ -701,7 +730,10 @@ PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA = (
     "dame informacion del inmueble","dame información del inmueble",
     "quiero informacion de la propiedad","quiero información de la propiedad",
     "quiero informacion del inmueble","quiero información del inmueble",
-    "detalle de la propiedad","detalles de la propiedad","ficha de la propiedad","ficha del inmueble",
+    "detalle de la propiedad","detalles de la propiedad",
+    "ficha de la propiedad","ficha del inmueble",
+    "fotos de la propiedad","fotos del inmueble",
+    "fotos de la casa","fotos del apartamento",
 )
 
 # FIX #10: se amplía la lista de frases para detectar solicitud de
@@ -864,12 +896,24 @@ def extraer_codigo_inmueble(
 
 
 def solicita_informacion_propiedad_sin_referencia(texto: str) -> bool:
+    """Detecta una petición directa de información sobre un inmueble concreto."""
     normalizado = normalizar_texto(texto)
-    if any(frase in normalizado for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA):
+
+    if any(
+        frase in normalizado
+        for frase in PALABRAS_CONSULTA_PROPIEDAD_SIN_REFERENCIA
+    ):
         return True
-    pide_info = any(x in normalizado for x in ("informacion","información","info","detalles","ficha"))
-    menciona = any(x in normalizado for x in ("propiedad","inmueble","casa","apartamento","townhouse","oficina","local","terreno","galpon"))
-    return pide_info and menciona
+
+    patrones_directos = (
+        r"\b(?:quiero|necesito|dame|env[ií]ame|m[aá]ndame|p[aá]same|mu[eé]strame|informame|inf[oó]rmame)\s+"
+        r"(?:la\s+)?(?:informaci[oó]n|info|ficha|detalles?|fotos?)\s+"
+        r"(?:de|del|sobre)\s+(?:la|el|esta|ese|esa)?\s*"
+        r"(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+        r"\b(?:informaci[oó]n|info|detalles?|ficha|fotos?)\s+(?:de|del|sobre)\s+"
+        r"(?:la|el|esta|ese|esa)?\s*(?:propiedad|inmueble|casa|apartamento|townhouse|oficina|local|terreno|galp[oó]n)\b",
+    )
+    return any(re.search(patron, normalizado, re.IGNORECASE) for patron in patrones_directos)
 
 
 def detectar_posicion(texto: str) -> Optional[int]:
@@ -4812,7 +4856,11 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
 async def iniciar_visita(
     estado: dict, posicion: Optional[int], codigo: Optional[str] = None,
 ) -> str:
-    propiedad = resolver_propiedad_contexto(estado, posicion=posicion, codigo=codigo)
+    propiedad = resolver_propiedad_contexto(
+        estado,
+        posicion=posicion,
+        codigo=codigo,
+    )
 
     if not propiedad:
         if len(estado.get("ultimo_lote", [])) > 1:
@@ -4833,39 +4881,38 @@ async def iniciar_visita(
 
     if not rol_esta_confirmado(estado):
         return solicitar_rol_para_accion(
-            estado, "agendar_visita", propiedad_id=property_id, posicion=posicion,
+            estado,
+            "agendar_visita",
+            propiedad_id=property_id,
+            posicion=posicion,
         )
 
     if estado.get("rol") == "colega_inmobiliario":
-        await sincronizar_google_sheet()
-        cruce = cruzar_captador_con_sheet(propiedad.get("captador_wasi", ""))
+        detalle = await consultar_detalle_propiedad_wasi(property_id)
+        if detalle:
+            propiedad = detalle
+            estado["propiedad_interes"] = detalle
+
+        datos_captador = obtener_datos_captador(propiedad)
 
         estado["accion_pendiente_rol"] = None
         estado["pregunta_pendiente"] = None
         estado["estado_conversacion"] = "visita_colega"
 
-        if cruce.get("telefono"):
+        if datos_captador["telefono"]:
             return (
                 "Perfecto, colega. El captador de esta propiedad es "
-                f"{cruce.get('nombre')}. Puedes coordinar la visita "
+                f"{datos_captador['nombre']}. Puedes coordinar la visita "
                 "directamente por WhatsApp aquí: "
-                f"https://wa.me/{cruce['telefono']}"
+                f"https://wa.me/{datos_captador['telefono']}"
             )
 
         return (
             "Identifiqué la propiedad, pero el teléfono del captador "
-            "no aparece actualmente en el directorio. Si quieres, "
-            "puedo notificar al equipo administrativo para que "
-            "te ayude a coordinar la visita."
+            "no aparece actualmente en la información de la propiedad. "
+            "Si quieres, puedo notificar al equipo administrativo para "
+            "que te ayude a coordinar la visita."
         )
-
-    estado["accion_pendiente_rol"] = None
-    estado["pregunta_pendiente"] = None
-    estado["objetivo"] = "captura_lead"
-    estado["estado_conversacion"] = "captura_lead"
-    estado["motivo_contacto"] = "Agendar visita"
-
-    return mensaje_solicitud_datos_lead(estado, saludo=True)
 
 
 async def iniciar_atencion_humana(estado: dict, mensaje: str) -> str:
