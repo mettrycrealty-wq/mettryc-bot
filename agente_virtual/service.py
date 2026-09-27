@@ -17,6 +17,9 @@ class AgenteVirtualService:
             raise ValueError("El sender no puede estar vacío.")
 
         legacy = self.engine.bridge.load()
+        if hasattr(legacy, "procesar_turno"):
+            legacy.agente_virtual_engine = self.engine
+            return await legacy.procesar_turno(sender_key, message, forzar_virtual=True)
         lock = legacy.locks_usuarios.setdefault(
             sender_key,
             asyncio.Lock(),
