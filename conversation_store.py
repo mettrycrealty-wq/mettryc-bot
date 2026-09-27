@@ -15,6 +15,7 @@ class ConversationStoreUnavailable(RuntimeError):
 
 
 class RedisConversationStore:
+    backend_name = "redis"
     def __init__(self, client, *, prefix="mettryc:paty:v1", ttl=604800, turn_timeout=240):
         self.client = client
         self.prefix = prefix
@@ -98,3 +99,20 @@ class RedisConversationStore:
 
     async def close(self):
         await self.client.aclose()
+
+
+def conversation_store_from_environment():
+    backend = os.getenv("PATY_MEMORY_BACKEND", "").strip().lower()
+    if not backend:
+        backend = "drive" if os.getenv("PATY_DRIVE_URL") else "redis" if os.getenv("PATY_REDIS_URL") else "memory"
+    if backend == "drive":
+        from drive_conversation_store import DriveConversationStore
+        return DriveConversationStore.from_environment()
+    if backend == "redis":
+        store = RedisConversationStore.from_environment()
+        if store is None:
+            raise ValueError("Falta PATY_REDIS_URL")
+        return store
+    if backend == "memory":
+        return None
+    raise ValueError("PATY_MEMORY_BACKEND debe ser drive, redis o memory")

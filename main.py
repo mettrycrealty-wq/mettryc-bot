@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from geografia import DICCIONARIO_GEOGRAFICO
 from agente_virtual.learning_analyzer import PatyLearningAnalyzer
-from conversation_store import RedisConversationStore, ConversationStoreUnavailable
+from conversation_store import conversation_store_from_environment, ConversationStoreUnavailable
 # ============================================================
 # LOGS Y CONFIGURACIÓN
 # ============================================================
@@ -231,7 +231,7 @@ class InterpretacionRespuestaCortaIA(BaseModel):
 # ============================================================
 
 sesiones: Dict[str, dict] = {}
-conversation_store = RedisConversationStore.from_environment()
+conversation_store = conversation_store_from_environment()
 locks_usuarios: Dict[str, asyncio.Lock] = {}
 mensajes_duplicados: Dict[str, float] = {}
 
@@ -6121,7 +6121,7 @@ async def health():
         "captadores": len(sheets_cache.get("captadores", {})),
         "sesiones_memoria": len(sesiones),
         "modelo_principal": MODELO_AGENTE_PRINCIPAL,
-        "persistencia": "redis" if conversation_store is not None else "memoria_del_proceso",
+        "persistencia": conversation_store.backend_name if conversation_store is not None else "memoria_del_proceso",
         "persistencia_disponible": memoria_disponible,
     }
 
@@ -6207,7 +6207,7 @@ async def admin_status(x_api_key: Optional[str] = Header(default=None, alias="x-
         "telegram_configurado": bool(TELEGRAM_BOT_TOKEN),
         "wasi_configurado": bool(WASI_TOKEN and WASI_COMPANY_ID),
         "agente_virtual_activo": AGENTE_VIRTUAL_ACTIVO,
-        "persistencia": "redis" if conversation_store is not None else "memoria_del_proceso",
+        "persistencia": conversation_store.backend_name if conversation_store is not None else "memoria_del_proceso",
         "estado_inventario": estado_inventario(),
     }
 
