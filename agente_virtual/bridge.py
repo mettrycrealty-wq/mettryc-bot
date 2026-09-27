@@ -37,9 +37,7 @@ class LegacyMettrycBridge:
     async def prepare_data(self) -> None:
         legacy = self.load()
 
-        if not legacy.inventory_cache.get("inventario"):
-            await legacy.actualizar_inventario(force=True)
-        elif legacy.inventario_necesita_actualizacion():
+        if legacy.inventario_necesita_actualizacion():
             await legacy.actualizar_inventario()
 
         if legacy.sheets_necesita_actualizacion():
@@ -120,6 +118,12 @@ class LegacyMettrycBridge:
         message: str,
     ) -> None:
         legacy = self.load()
+        if analysis.intent not in {"busqueda_propiedad", "mas_propiedades"}:
+            # Una pregunta sobre la casa activa no cambia los filtros de búsqueda.
+            state["ultima_intencion"] = analysis.intent
+            return
+
+        previous_filters = deepcopy(state.get("filtros", {}))
 
         filtros = state.setdefault(
             "filtros",
@@ -181,6 +185,12 @@ class LegacyMettrycBridge:
             legacy.aplicar_sin_preferencia_desde_texto(state, message)
         if hasattr(legacy, "aplicar_extracciones_tecnicas"):
             legacy.aplicar_extracciones_tecnicas(state, message)
+        if previous_filters != state.get("filtros"):
+            state["propiedades_enviadas"] = []
+            state["ultimo_lote"] = []
+            state["propiedad_interes"] = None
+            state["propiedad_activa_id"] = None
+            state["consulta_anuncio_pendiente"] = False
 
     async def search(self, state: dict) -> BusinessActionResult:
         legacy = self.load()
@@ -228,82 +238,72 @@ class LegacyMettrycBridge:
         code: str | None = None,
         position: int | None = None,
         format_legacy: bool = True,
+        question: str | None = None,
     ) -> BusinessActionResult:
         legacy = self.load()
-        property_item = None
-
-        # Primero resolvemos la referencia para poder entregar el mismo
-        # formato de ficha específica que usaba el chatbot antiguo.
-        if code:
-            property_item = await legacy.consultar_detalle_propiedad_wasi(
-                str(code)
-            )
-        elif position and 1 <= position <= len(state.get("ultimo_lote", [])):
-            property_id = state["ultimo_lote"][position - 1]
-            property_item = await legacy.consultar_detalle_propiedad_wasi(
-                str(property_id)
-            )
-        else:
-            property_item = legacy.resolver_propiedad_contexto(state)
-
-        if not property_item:
-            return BusinessActionResult(
-                ok=False,
-                name="detalle_propiedad",
-                message=(
-                    "No pude identificar una propiedad concreta para "
-                    "consultar."
-                ),
-            )
-
-        property_id = str(property_item.get("id") or "")
+        property_id = str(code or "")
+        if not property_id and position is not None:
+            batch = state.get("ultimo_lote", [])
+            if not 1 <= position <= len(batch):
+                return BusinessActionResult(
+                    ok=False, name="detalle_propiedad",
+                    message="No identifiqué esa opción. Indícame una opción del último listado o su código.",
+                )
+            property_id = str(batch[position - 1])
+        if not property_id:
+            selected = legacy.resolver_propiedad_contexto(state)
+            property_id = str((selected or {}).get("id") or "")
         if not property_id:
             return BusinessActionResult(
-                ok=False,
-                name="detalle_propiedad",
-                message="No pude identificar el código de la propiedad.",
+                ok=False, name="detalle_propiedad",
+                message="¿Sobre cuál propiedad quieres consultar? Indícame su opción o código.",
             )
 
-        # Una referencia explícita (código o posición) siempre tiene prioridad
-        # sobre la propiedad que pudiera estar previamente en contexto.
-        final_property = property_item or state.get("propiedad_interes")
+        try:
+            property_item = await legacy.consultar_detalle_propiedad_wasi(property_id)
+        except legacy.WasiConsultaError:
+            return BusinessActionResult(
+                ok=False, name="detalle_propiedad",
+                data={"failure": "consulta_no_disponible"},
+                message="No pude consultar la ficha completa en este momento. Todavía no puedo confirmar ese dato ni la disponibilidad.",
+            )
+        if not property_item or not property_item.get("activa", True):
+            # Una referencia explícita fallida nunca reutiliza la propiedad anterior.
+            state["propiedad_interes"] = None
+            state["propiedad_activa_id"] = None
+            state["consulta_anuncio_pendiente"] = False
+            state["ultimo_lote"] = []
+            return BusinessActionResult(
+                ok=False, name="detalle_propiedad",
+                data={"failure": "no_encontrada_o_inactiva"},
+                message=f"No encontré un inmueble activo con el código {property_id}. Revisa el código o indícame otra propiedad.",
+            )
 
-        # Una propiedad identificada por un anuncio externo queda inmediatamente
-        # en contexto para que los mensajes siguientes puedan preguntar por ella
-        # sin volver a identificarla.
-        state["propiedad_interes"] = final_property
+        state["propiedad_interes"] = property_item
         state["propiedad_activa_id"] = property_id
         state["ultima_propiedad_consultada_id"] = property_id
-        state["ultimo_lote"] = [property_id]
+        if property_id not in state.get("ultimo_lote", []):
+            state["ultimo_lote"] = [property_id]
 
         if format_legacy:
             formatted = await legacy.mostrar_inmueble_especifico(
-                state,
-                property_id,
+                state, property_id, detalle_confirmado=property_item,
             )
-            final_property = state.get("propiedad_interes") or property_item
-
-            return BusinessActionResult(
-                ok=True,
-                name="detalle_propiedad",
-                data={
-                    "property": legacy.detalle_propiedad_para_ia(final_property),
-                    "formatted_legacy": True,
-                },
-                message=formatted or "",
+        elif question:
+            formatted = await legacy.responder_pregunta_propiedad(
+                state, property_item, question, detalle_confirmado=property_item,
             )
+        else:
+            formatted = ""
 
-        # Para una pregunta sobre una propiedad ya identificada no enviamos
-        # nuevamente la ficha completa. Entregamos los datos reales al LLM
-        # conversacional para que responda solo lo que el usuario preguntó.
         return BusinessActionResult(
             ok=True,
-            name="pregunta_propiedad",
+            name="detalle_propiedad" if format_legacy else "pregunta_propiedad",
             data={
-                "property": legacy.detalle_propiedad_para_ia(final_property),
-                "formatted_legacy": False,
+                "property": legacy.detalle_propiedad_para_ia(property_item),
+                "formatted_legacy": bool(format_legacy or question),
             },
-            message="Datos reales de la propiedad recuperados para responder la pregunta.",
+            message=formatted,
         )
 
     async def captador(

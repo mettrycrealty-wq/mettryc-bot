@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
@@ -189,6 +190,9 @@ class AgenteVirtualEngine:
                 format_legacy=False,
             )
 
+            if not portal_result.ok:
+                return await self._finalize(sender, state, text, portal_result.message)
+
             if portal_result.ok and portal_result.data:
                 portal_property = portal_result.data.get("property") or {}
                 if portal_property:
@@ -323,10 +327,15 @@ class AgenteVirtualEngine:
             )
 
         if codigo_explicito:
+            pregunta_concreta = (
+                legacy.es_pregunta_sobre_propiedad_activa(text, {"propiedad_activa_id": codigo_explicito})
+                and not self._requests_more_property_info(text)
+            )
             ficha = await self.bridge.detail(
                 state,
                 code=codigo_explicito,
-                format_legacy=True,
+                format_legacy=not pregunta_concreta,
+                question=text if pregunta_concreta else None,
             )
             return await self._finalize(
                 sender,
@@ -613,6 +622,7 @@ class AgenteVirtualEngine:
                     code=analysis.property_code,
                     position=analysis.property_position,
                     format_legacy=analysis.intent != "pregunta_propiedad",
+                    question=text if analysis.intent == "pregunta_propiedad" else None,
                 )
             )
 
@@ -676,24 +686,14 @@ class AgenteVirtualEngine:
         # Primero debe completarse la acción inmobiliaria; las técnicas de venta
         # se incorporarán después como una capa independiente.
 
-        # Segunda defensa determinista: si los criterios ya quedaron cargados
-        # en el estado, la ficha debe salir aunque el LLM haya elegido una
-        # intención conversacional distinta. Solo respetamos aquí intenciones
-        # que representan una acción sobre una propiedad ya identificada.
-        special_intents = {
-            "detalle_propiedad",
-            "pregunta_propiedad",
-            "seleccion_propiedad",
-            "captador",
-            "visita",
-            "atencion_humana",
-        }
+        # Solo la intención de búsqueda del turno actual autoriza otro lote.
         search_ready = self._search_signal(state)
         already_searched = any(
             result.ok and result.name == "buscar_propiedades"
             for result in business_results
         )
-        if search_ready and not already_searched and analysis.intent not in special_intents:
+        if (search_ready and not already_searched
+                and analysis.intent in {"busqueda_propiedad", "mas_propiedades"}):
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
@@ -730,7 +730,7 @@ class AgenteVirtualEngine:
         except Exception:
             property_question = False
 
-        if property_question and analysis.intent in {"conversacion_casual", "unknown"}:
+        if property_question and analysis.intent == "unknown":
             return analysis.model_copy(update={"intent": "pregunta_propiedad"})
 
         # Importante: probar la detección legacy sobre una COPIA del estado
@@ -740,7 +740,9 @@ class AgenteVirtualEngine:
         try:
             legacy_search_intent = False
             if hasattr(legacy, "tiene_intencion_busqueda"):
+                # Detectar la búsqueda en este mensaje, no en filtros de turnos anteriores.
                 estado_prueba = deepcopy(state)
+                estado_prueba["filtros"] = {"caracteristicas": []}
                 if hasattr(legacy, "aplicar_extracciones_tecnicas"):
                     legacy.aplicar_extracciones_tecnicas(estado_prueba, text)
                 legacy_search_intent = bool(
@@ -1085,7 +1087,7 @@ class AgenteVirtualEngine:
             intent=(
                 "atencion_humana"
                 if legacy.solicita_humano(message)
-                else "conversacion_casual"
+                else "unknown"
             ),
             human_requested=legacy.solicita_humano(message),
             reasoning_summary="Fallback local sin análisis del modelo.",
@@ -1104,6 +1106,8 @@ class AgenteVirtualEngine:
         # convertirlas en una frase genérica, porque aquí importan sus campos,
         # enlaces y, para colegas, los datos del captador.
         for result in business_results:
+            if not result.ok:
+                return result.message
             if (
                 result.ok
                 and result.data

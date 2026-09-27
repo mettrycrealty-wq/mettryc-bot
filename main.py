@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from geografia import DICCIONARIO_GEOGRAFICO
 from agente_virtual.learning_analyzer import PatyLearningAnalyzer
+from conversation_store import RedisConversationStore, ConversationStoreUnavailable
 # ============================================================
 # LOGS Y CONFIGURACIÓN
 # ============================================================
@@ -33,7 +34,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_MAIN_API_KEY", "")
 WASI_TOKEN = os.getenv("WASI_TOKEN", "")
 WASI_COMPANY_ID = os.getenv("WASI_COMPANY_ID", "")
 GOOGLE_SHEET_TURNOS_URL = os.getenv("GOOGLE_SHEET_TURNOS_URL", "")
@@ -230,6 +231,7 @@ class InterpretacionRespuestaCortaIA(BaseModel):
 # ============================================================
 
 sesiones: Dict[str, dict] = {}
+conversation_store = RedisConversationStore.from_environment()
 locks_usuarios: Dict[str, asyncio.Lock] = {}
 mensajes_duplicados: Dict[str, float] = {}
 
@@ -239,6 +241,26 @@ inventory_cache: Dict[str, Any] = {
 }
 
 property_detail_cache: Dict[str, Dict[str, Any]] = {}
+PROPERTY_DETAIL_TTL_SECONDS = int(os.getenv("PROPERTY_DETAIL_TTL_SECONDS", "300"))
+
+
+class WasiConsultaError(RuntimeError):
+    """WASI no pudo confirmar la consulta; no equivale a cero resultados."""
+
+
+def estado_inventario() -> dict:
+    ultima = inventory_cache.get("ultima_actualizacion")
+    vencido = not ultima or datetime.utcnow() - ultima >= INTERVALO_ACTUALIZACION_WASI
+    error = inventory_cache.get("ultimo_error")
+    estado = "no_disponible" if not ultima else (
+        "desactualizado" if vencido or error else "actualizado"
+    )
+    return {
+        "estado": estado,
+        "ultimo_intento": inventory_cache.get("ultimo_intento"),
+        "ultimo_error": error,
+        "cantidad": len(inventory_cache.get("inventario", [])),
+    }
 
 sheets_cache: Dict[str, Any] = {
     "agentes": [],
@@ -1296,6 +1318,7 @@ def agregar_historial(estado: dict, rol: Literal["user", "assistant"], contenido
             "timestamp": datetime.utcnow().isoformat(),
         }
     )
+    estado["historial"] = estado["historial"][-max(MAX_HISTORIAL, 60):]
 
 
 def historial_para_ia(estado: dict) -> List[dict]:
@@ -1397,8 +1420,11 @@ def mensaje_sin_id_es_duplicado(sender: str, mensaje: str) -> bool:
 # ============================================================
 
 def inventario_necesita_actualizacion() -> bool:
+    if inventory_cache.get("ultimo_error") and inventory_cache.get("ultimo_intento"):
+        intento = datetime.fromisoformat(inventory_cache["ultimo_intento"])
+        return (datetime.utcnow() - intento).total_seconds() >= 60
     ultima = inventory_cache.get("ultima_actualizacion")
-    if not inventory_cache.get("inventario") or not ultima:
+    if not ultima:
         return True
     return datetime.utcnow() - ultima >= INTERVALO_ACTUALIZACION_WASI
 
@@ -1433,8 +1459,12 @@ def normalizar_propiedad_wasi(valor: Dict[str, Any]) -> dict:
         "direccion_publica": valor.get("address") or "",
 
         "tipo_propiedad_wasi": valor.get("type_label") or "N/D",
-        "estado_wasi": valor.get("status"),
-        "activa": str(valor.get("status", "1")) not in {"0", "False", "false"},
+        "estado_wasi": valor.get("id_status_on_page", valor.get("status")),
+        "activa": (
+            str(valor["id_status_on_page"]) in {"1", "3"}
+            if valor.get("id_status_on_page") is not None
+            else str(valor.get("status", "1")).lower() not in {"0", "false"}
+        ) and str(valor.get("id_availability", "1")) not in {"2", "3"},
 
         "precio_venta": parsear_precio_wasi(
             valor.get("sale_price"), valor.get("sale_price_label")
@@ -1447,7 +1477,7 @@ def normalizar_propiedad_wasi(valor: Dict[str, Any]) -> dict:
 
         "area": extraer_area_principal_wasi(valor) or "N/D",
         "area_construida": convertir_float(
-            valor.get("constructed_area") or valor.get("construction_area")
+            valor.get("built_area") or valor.get("constructed_area") or valor.get("construction_area")
         ) or None,
         "area_terreno": convertir_float(
             valor.get("lot_area") or valor.get("land_area")
@@ -1470,14 +1500,14 @@ def normalizar_propiedad_wasi(valor: Dict[str, Any]) -> dict:
         "enlace": f"https://www.mettryc.com/inmueble/{property_id}",
 
         "actualizado_en": datetime.utcnow().isoformat(),
+        "_detalle_completo": False,
         "detalle_raw": valor,
     }
 
 
 async def obtener_inventario_wasi() -> List[dict]:
     if not WASI_TOKEN or not WASI_COMPANY_ID:
-        logger.error("Faltan WASI_TOKEN o WASI_COMPANY_ID.")
-        return []
+        raise WasiConsultaError("configuracion_ausente")
 
     propiedades: List[dict] = []
     take = 100
@@ -1489,7 +1519,8 @@ async def obtener_inventario_wasi() -> List[dict]:
             "id_company": WASI_COMPANY_ID,
             "take": take,
             "skip": skip,
-            "status": 1,
+            "id_status_on_page": 5,
+            "id_availability": 1,
         }
 
         data = None
@@ -1510,8 +1541,10 @@ async def obtener_inventario_wasi() -> List[dict]:
                 )
                 await asyncio.sleep(2 ** intento)
 
-        if not isinstance(data, dict):
-            break
+        if not isinstance(data, dict) or str(data.get("status", "success")).lower() in {"error", "failed", "false"}:
+            raise WasiConsultaError("pagina_no_disponible")
+        if "total" not in data and not any(str(k).isdigit() for k in data):
+            raise WasiConsultaError("formato_invalido")
         cantidad_pagina = 0
 
         for clave, valor in data.items():
@@ -1523,13 +1556,18 @@ async def obtener_inventario_wasi() -> List[dict]:
 
             if propiedad.get("id"):
                 propiedades.append(propiedad)
-                property_detail_cache[propiedad["id"]] = propiedad
+            else:
+                raise WasiConsultaError("propiedad_sin_identificador")
 
         if cantidad_pagina < take:
+            if convertir_entero(data.get("total")) > skip + cantidad_pagina:
+                raise WasiConsultaError("inventario_incompleto")
             break
 
         skip += take
         await asyncio.sleep(0.2)
+    else:
+        raise WasiConsultaError("limite_paginacion")
 
     logger.info("Inventario Wasi cargado: %s propiedades", len(propiedades))
     return propiedades
@@ -1543,15 +1581,21 @@ async def actualizar_inventario(force: bool = False) -> bool:
         if not force and not inventario_necesita_actualizacion():
             return False
 
-        propiedades = await obtener_inventario_wasi()
-        if not propiedades:
-            logger.error(
-                "Wasi no devolvió propiedades; se conserva el inventario anterior."
+        inventory_cache["ultimo_intento"] = datetime.utcnow().isoformat()
+        try:
+            propiedades = await obtener_inventario_wasi()
+        except Exception as exc:
+            # No guardar URLs ni excepciones de HTTP que puedan contener tokens.
+            inventory_cache["ultimo_error"] = (
+                str(exc) if isinstance(exc, WasiConsultaError) else type(exc).__name__
             )
+            logger.warning("No se renovó WASI: %s", inventory_cache["ultimo_error"])
             return False
 
         inventory_cache["inventario"] = propiedades
         inventory_cache["ultima_actualizacion"] = datetime.utcnow()
+        inventory_cache["ultimo_error"] = None
+        property_detail_cache.clear()
         reconstruir_catalogo_geografico()
         return True
 
@@ -1573,12 +1617,13 @@ async def consultar_detalle_propiedad_wasi(codigo: str) -> Optional[dict]:
         return None
 
     propiedad_cache = property_detail_cache.get(codigo)
-    if propiedad_cache:
-        return deepcopy(propiedad_cache)
+    if propiedad_cache and propiedad_cache.get("_detalle_completo"):
+        edad = time.time() - propiedad_cache.get("_detalle_obtenido_en", 0)
+        if 0 <= edad < PROPERTY_DETAIL_TTL_SECONDS:
+            return deepcopy(propiedad_cache)
 
-    propiedad_resumen = buscar_por_codigo(codigo)
-    if propiedad_resumen:
-        property_detail_cache[codigo] = propiedad_resumen
+    if not WASI_TOKEN or not WASI_COMPANY_ID:
+        raise WasiConsultaError("configuracion_ausente")
 
     endpoints = [
         f"https://api.wasi.co/v1/property/get/{codigo}",
@@ -1591,6 +1636,7 @@ async def consultar_detalle_propiedad_wasi(codigo: str) -> Optional[dict]:
         "id_property": codigo,
     }
 
+    no_encontrada = False
     for endpoint in endpoints:
         try:
             respuesta = await http_client.get(
@@ -1598,6 +1644,9 @@ async def consultar_detalle_propiedad_wasi(codigo: str) -> Optional[dict]:
             )
             respuesta.raise_for_status()
             payload = respuesta.json()
+
+            if not isinstance(payload, dict) or str(payload.get("status", "success")).lower() in {"error", "failed", "false"}:
+                raise WasiConsultaError("detalle_no_disponible")
 
             detalle = None
             if isinstance(payload, dict):
@@ -1612,10 +1661,15 @@ async def consultar_detalle_propiedad_wasi(codigo: str) -> Optional[dict]:
                             detalle = valor
                             break
 
-            if detalle:
+            if detalle and str(detalle.get("id_property") or detalle.get("id")) == codigo:
                 propiedad = normalizar_propiedad_wasi(detalle)
+                propiedad["_detalle_completo"] = True
+                propiedad["_detalle_obtenido_en"] = time.time()
                 property_detail_cache[codigo] = propiedad
                 return deepcopy(propiedad)
+
+            if payload.get("status") == "success" and not detalle:
+                no_encontrada = True
 
         except Exception as exc:
             logger.debug(
@@ -1623,7 +1677,10 @@ async def consultar_detalle_propiedad_wasi(codigo: str) -> Optional[dict]:
                 endpoint, type(exc).__name__,
             )
 
-    return deepcopy(propiedad_resumen) if propiedad_resumen else None
+    if no_encontrada:
+        property_detail_cache.pop(codigo, None)
+        return None
+    raise WasiConsultaError("detalle_no_disponible")
 
 
 # ============================================================
@@ -3873,8 +3930,7 @@ def resolver_propiedad_contexto(
 ) -> Optional[dict]:
     if codigo:
         propiedad = buscar_por_codigo(codigo)
-        if propiedad:
-            return propiedad
+        return propiedad or deepcopy(property_detail_cache.get(str(codigo)))
 
     if posicion is not None:
         lote = estado.get("ultimo_lote", [])
@@ -3883,6 +3939,7 @@ def resolver_propiedad_contexto(
             propiedad = buscar_por_codigo(lote[indice])
             if propiedad:
                 return propiedad
+        return None
 
     propiedad_interes = estado.get("propiedad_interes")
     if propiedad_interes:
@@ -3959,7 +4016,10 @@ async def atender_solicitud_captador(
             "agentes. " + solicitud_datos
         )
 
-    detalle = await consultar_detalle_propiedad_wasi(property_id)
+    try:
+        detalle = await consultar_detalle_propiedad_wasi(property_id)
+    except WasiConsultaError:
+        return "No pude consultar la ficha completa ahora para confirmar el captador. Inténtalo nuevamente en unos minutos."
     if not detalle:
         detalle = propiedad
 
@@ -3981,7 +4041,7 @@ async def atender_solicitud_captador(
             f"{nombre_captador}.\n📲 WhatsApp: https://wa.me/{telefono_captador}"
         )
 
-    if captador_wasi:
+    if nombre_captador and nombre_captador != "Captador no identificado":
         return (
             f"El captador registrado en Wasi es {nombre_captador}, "
             "pero no pude localizar su WhatsApp en la información de la "
@@ -4016,6 +4076,7 @@ def detalle_propiedad_para_ia(propiedad: dict) -> dict:
         "caracteristicas_externas": propiedad.get("caracteristicas_externas", []),
         "video": propiedad.get("video"),
         "enlace": propiedad.get("enlace"),
+        "detalle_completo": bool(propiedad.get("_detalle_completo")),
     }
 
 
@@ -4032,25 +4093,37 @@ def construir_texto_documental_propiedad(propiedad: dict) -> str:
             f"Baños: {propiedad.get('banos')}",
             f"Garajes o puestos: {propiedad.get('garajes')}",
             f"Área: {propiedad.get('area')}",
+            f"Área construida: {propiedad.get('area_construida')}",
+            f"Área de terreno: {propiedad.get('area_terreno')}",
+            f"Activa y disponible: {propiedad.get('activa')}",
+            f"Video: {propiedad.get('video') or ''}",
+            f"Enlace: {propiedad.get('enlace') or ''}",
             f"Precio de venta: {propiedad.get('precio_venta')}",
             f"Precio de alquiler: {propiedad.get('precio_alquiler')}",
         ]
     ).strip()
 
 
-async def responder_pregunta_propiedad(estado: dict, propiedad: dict, pregunta: str) -> str:
-    detalle = await consultar_detalle_propiedad_wasi(str(propiedad.get("id")))
+async def responder_pregunta_propiedad(
+    estado: dict, propiedad: dict, pregunta: str, *, detalle_confirmado: Optional[dict] = None,
+) -> str:
+    try:
+        detalle = detalle_confirmado if detalle_confirmado is not None else await consultar_detalle_propiedad_wasi(str(propiedad.get("id")))
+    except WasiConsultaError:
+        return "No pude consultar la ficha completa en este momento. No puedo confirmar ese dato todavía. ¿Quieres que un asesor lo revise?"
 
     if not detalle:
         return (
             "No pude recuperar los detalles de esa propiedad en "
             "este momento. ¿Quieres que un asesor lo confirme?"
         )
+    if not detalle.get("activa", True):
+        return "Esa propiedad figura como ❌ *No disponible*. Puedo ayudarte a buscar una alternativa."
 
     estado["propiedad_interes"] = detalle
     estado["propiedad_activa_id"] = detalle.get("id")
     estado["estado_conversacion"] = "consulta_propiedad"
-    estado["pregunta_pendiente"] = "confirmar_visita"
+    estado["pregunta_pendiente"] = "visita_o_pregunta_propiedad"
 
     pregunta_norm = normalizar_texto(pregunta)
     fuente = construir_texto_documental_propiedad(detalle)
@@ -4076,7 +4149,7 @@ async def responder_pregunta_propiedad(estado: dict, propiedad: dict, pregunta: 
                 "con otras opciones. No inventes cantidades ni "
                 "características. Si el dato no está documentado, "
                 "di claramente que no está especificado. "
-                "Termina preguntando si desea agendar una visita."
+                "Responde primero la pregunta concreta; no fuerces una visita en cada respuesta."
             ),
         },
         {
@@ -4097,13 +4170,12 @@ async def responder_pregunta_propiedad(estado: dict, propiedad: dict, pregunta: 
         RespuestaPropiedadIA, mensajes, temperatura=0.05, max_tokens=700,
     )
 
-    if isinstance(resultado, RespuestaPropiedadIA):
+    if isinstance(resultado, RespuestaPropiedadIA) and resultado.respuesta.strip():
         return resultado.respuesta.strip()
 
     return (
-        "No encontré ese dato especificado en la ficha de Wasi. "
-        "Si quieres, puedo pedirle a un asesor que lo confirme. "
-        "¿Deseas agendar una visita?"
+        "Recuperé la ficha, pero no pude preparar una respuesta fiable "
+        "en este momento. ¿Quieres que un asesor revise tu pregunta?"
     )
 
 
@@ -4673,6 +4745,13 @@ def obtener_pregunta_faltante(estado: dict) -> str:
 
 
 async def mostrar_propiedades(estado: dict) -> str:
+    salud = estado_inventario()
+    if salud["estado"] != "actualizado":
+        return (
+            "No pude confirmar el inventario actualizado en este momento. "
+            "Esto no significa que no existan propiedades con esos criterios. "
+            "Puedes intentarlo nuevamente o solicitar un asesor."
+        )
     rol = estado.get("rol")
     filtros = estado.get("filtros", {})
 
@@ -4762,6 +4841,8 @@ async def mostrar_propiedades(estado: dict) -> str:
             estado["propiedades_enviadas"].append(property_id)
 
     estado["ultimo_lote"] = ids
+    estado["propiedad_interes"] = None
+    estado["consulta_anuncio_pendiente"] = False
     estado["propiedad_activa_id"] = ids[0] if len(ids) == 1 else None
     estado["objetivo"] = "evaluar_resultados"
     estado["estado_conversacion"] = "propiedades_mostradas"
@@ -4771,11 +4852,19 @@ async def mostrar_propiedades(estado: dict) -> str:
     return await construir_respuesta_fichas(estado, propiedades)
 
 
-async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
-    propiedad = await consultar_detalle_propiedad_wasi(codigo)
+async def mostrar_inmueble_especifico(
+    estado: dict, codigo: str, *, detalle_confirmado: Optional[dict] = None,
+) -> str:
+    try:
+        propiedad = deepcopy(detalle_confirmado) if detalle_confirmado is not None else await consultar_detalle_propiedad_wasi(codigo)
+    except WasiConsultaError:
+        return "No pude consultar esa propiedad en este momento. Todavía no puedo confirmar su ficha ni su disponibilidad."
 
     if not propiedad or not propiedad.get("activa", True):
         estado["esperando_codigo"] = True
+        estado["propiedad_interes"] = None
+        estado["propiedad_activa_id"] = None
+        estado["ultimo_lote"] = []
         return (
             f"No encontré un inmueble activo con el código {codigo}. "
             "Revisa el código o envíame el enlace del anuncio."
@@ -4794,7 +4883,8 @@ async def mostrar_inmueble_especifico(estado: dict, codigo: str) -> str:
     propiedad["operacion_buscada"] = operacion
     property_id = str(propiedad["id"])
 
-    estado["ultimo_lote"] = [property_id]
+    if property_id not in estado.get("ultimo_lote", []):
+        estado["ultimo_lote"] = [property_id]
     estado["propiedad_activa_id"] = property_id
     estado["ultima_propiedad_consultada_id"] = property_id
     estado["propiedad_interes"] = propiedad
@@ -5728,7 +5818,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     # PREGUNTAS SOBRE UNA PROPIEDAD ACTIVA
     # --------------------------------------------------------
     if es_pregunta_sobre_propiedad_activa(texto, estado):
-        propiedad = resolver_propiedad_contexto(estado)
+        propiedad = resolver_propiedad_contexto(
+            estado, posicion=detectar_posicion(texto),
+            codigo=extraer_codigo_inmueble(texto, permitir_solo_digitos=False),
+        )
         if propiedad:
             respuesta = await responder_pregunta_propiedad(estado, propiedad, texto)
             return await finalizar(respuesta)
@@ -5985,6 +6078,8 @@ async def lifespan(app: FastAPI):
             pass
 
     await http_client.aclose()
+    if conversation_store is not None:
+        await conversation_store.close()
 
 
 # ============================================================
@@ -6014,16 +6109,20 @@ async def root():
 @app.get("/health")
 async def health():
     ultima = inventory_cache.get("ultima_actualizacion")
+    salud = estado_inventario()
+    memoria_disponible = conversation_store is None or await conversation_store.available()
 
     return {
-        "status": "ok",
+        "status": "ok" if salud["estado"] == "actualizado" and memoria_disponible else "degraded",
+        "estado_inventario": salud,
         "inventario": len(inventory_cache.get("inventario", [])),
         "ultima_actualizacion_inventario": ultima.isoformat() if ultima else None,
         "agentes": len(sheets_cache.get("agentes", [])),
         "captadores": len(sheets_cache.get("captadores", {})),
         "sesiones_memoria": len(sesiones),
         "modelo_principal": MODELO_AGENTE_PRINCIPAL,
-        "persistencia": "memoria_del_proceso",
+        "persistencia": "redis" if conversation_store is not None else "memoria_del_proceso",
+        "persistencia_disponible": memoria_disponible,
     }
 
 
@@ -6065,13 +6164,14 @@ async def admin_paty_learning(
 async def refresh(x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
     validar_api_key(x_api_key)
 
-    await asyncio.gather(
+    resultados = await asyncio.gather(
         actualizar_inventario(force=True),
         sincronizar_google_sheet(force=True),
     )
 
     return {
-        "ok": True,
+        "ok": all(resultados),
+        "estado_inventario": estado_inventario(),
         "propiedades": len(inventory_cache.get("inventario", [])),
         "agentes": len(sheets_cache.get("agentes", [])),
         "captadores": len(sheets_cache.get("captadores", {})),
@@ -6081,8 +6181,13 @@ async def refresh(x_api_key: Optional[str] = Header(default=None, alias="x-api-k
 @app.post("/admin/reset/{sender}")
 async def reset_session(sender: str, x_api_key: Optional[str] = Header(default=None, alias="x-api-key")):
     validar_api_key(x_api_key)
-    sesiones.pop(sender, None)
-    locks_usuarios.pop(sender, None)
+    async with locks_usuarios.setdefault(sender, asyncio.Lock()):
+        if conversation_store is not None:
+            try:
+                await conversation_store.reset(sender)
+            except ConversationStoreUnavailable as exc:
+                raise HTTPException(status_code=503, detail="No se pudo reiniciar la conversación.") from exc
+        sesiones.pop(sender, None)
     return {"ok": True, "sender": sender}
 
 
@@ -6102,7 +6207,38 @@ async def admin_status(x_api_key: Optional[str] = Header(default=None, alias="x-
         "telegram_configurado": bool(TELEGRAM_BOT_TOKEN),
         "wasi_configurado": bool(WASI_TOKEN and WASI_COMPANY_ID),
         "agente_virtual_activo": AGENTE_VIRTUAL_ACTIVO,
+        "persistencia": "redis" if conversation_store is not None else "memoria_del_proceso",
+        "estado_inventario": estado_inventario(),
     }
+
+
+async def procesar_turno(sender: str, mensaje: str, message_id: str = "", *, forzar_virtual: bool = False) -> str:
+    """Una única frontera para locks, persistencia y deduplicación de ambos flujos."""
+    async def ejecutar():
+        global agente_virtual_engine
+        if forzar_virtual and mensaje != MARCADOR_MULTIMEDIA and normalizar_texto(mensaje) != "/reiniciar":
+            if agente_virtual_engine is None:
+                from agente_virtual.engine import AgenteVirtualEngine
+                agente_virtual_engine = AgenteVirtualEngine()
+            return await agente_virtual_engine.process(sender, mensaje)
+        return await procesar_mensaje(sender, mensaje)
+
+    message_key = "id:" + message_id if message_id else "text:" + normalizar_texto(mensaje)
+    ttl = max(1, DUPLICATE_TTL_SECONDS if message_id else DUPLICATE_NO_ID_TTL_SECONDS)
+    async with locks_usuarios.setdefault(sender, asyncio.Lock()):
+        if conversation_store is not None:
+            return await conversation_store.run(sender, message_key, ttl, sesiones, ejecutar)
+        ahora = time.time()
+        for key, expiry in list(mensajes_duplicados.items()):
+            if expiry <= ahora:
+                mensajes_duplicados.pop(key, None)
+        key = f"{sender}:{message_key}"
+        if key in mensajes_duplicados:
+            return ""
+        respuesta = await ejecutar()
+        # Un error no marca el mensaje como completado y permite reintentarlo.
+        mensajes_duplicados[key] = time.time() + ttl
+        return respuesta
 
 
 @app.post("/webhook-agente-virtual")
@@ -6118,6 +6254,8 @@ async def webhook_agente_virtual(
     except Exception as exc:
         raise HTTPException(status_code=400, detail="JSON inválido.") from exc
 
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Se espera un objeto JSON.")
     payload = data.get("query") if isinstance(data.get("query"), dict) else data
     sender = str(payload.get("sender", "")).strip()
     mensaje = str(
@@ -6141,40 +6279,26 @@ async def webhook_agente_virtual(
     if not mensaje:
         return {"replies": []}
 
-    if message_id:
-        if mensaje_es_duplicado(sender, message_id):
-            return {"replies": []}
-    elif mensaje_sin_id_es_duplicado(sender, mensaje):
-        logger.info(
-            "Mensaje duplicado sin message_id ignorado sender=%s",
-            sender[-4:],
-        )
-        return {"replies": []}
-
-    if sender not in locks_usuarios:
-        locks_usuarios[sender] = asyncio.Lock()
-
     try:
-        if not inventory_cache.get("inventario"):
-            await actualizar_inventario(force=True)
-        elif inventario_necesita_actualizacion():
-            asyncio.create_task(actualizar_inventario())
+        if inventario_necesita_actualizacion():
+            if not inventory_cache.get("ultima_actualizacion"):
+                await actualizar_inventario()
+            else:
+                asyncio.create_task(actualizar_inventario())
 
         if sheets_necesita_actualizacion():
             asyncio.create_task(sincronizar_google_sheet())
 
-        global agente_virtual_engine
-        if agente_virtual_engine is None:
-            from agente_virtual.engine import AgenteVirtualEngine
-            agente_virtual_engine = AgenteVirtualEngine()
-
-        async with locks_usuarios[sender]:
-            respuesta = await agente_virtual_engine.process(sender, mensaje)
+        respuesta = await procesar_turno(sender, mensaje, message_id, forzar_virtual=True)
+        if not respuesta:
+            return {"replies": []}
 
         return {
             "replies": [{"message": str(respuesta).replace("**", "*")}]
         }
 
+    except ConversationStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="No se pudo recuperar o guardar la conversación. Reintenta el mensaje.") from exc
     except Exception as exc:
         logger.exception(
             "Error webhook-agente-virtual sender=%s tipo=%s",
@@ -6205,10 +6329,12 @@ async def webhook(
     except Exception:
         raise HTTPException(status_code=400, detail="JSON inválido.")
 
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Se espera un objeto JSON.")
     payload = data.get("query") if isinstance(data.get("query"), dict) else data
 
     sender = str(payload.get("sender", "")).strip()
-    mensaje = str(payload.get("message", "")).strip()
+    mensaje = str(payload.get("message") or payload.get("text") or payload.get("body") or "").strip()
     message_id = str(
         payload.get("message_id")
         or payload.get("messageId")
@@ -6237,28 +6363,12 @@ async def webhook(
 
         mensaje = MARCADOR_MULTIMEDIA
 
-    if message_id:
-        if mensaje_es_duplicado(sender, message_id):
-            logger.info(
-                "Mensaje duplicado ignorado sender=%s id=%s",
-                sender[-4:], message_id[-12:],
-            )
-            return {"replies": []}
-    elif mensaje_sin_id_es_duplicado(sender, mensaje):
-        logger.info(
-            "Mensaje duplicado sin message_id ignorado sender=%s",
-            sender[-4:],
-        )
-        return {"replies": []}
-
-    if sender not in locks_usuarios:
-        locks_usuarios[sender] = asyncio.Lock()
-
     try:
-        if not inventory_cache.get("inventario"):
-            await actualizar_inventario(force=True)
-        elif inventario_necesita_actualizacion():
-            asyncio.create_task(actualizar_inventario())
+        if inventario_necesita_actualizacion():
+            if not inventory_cache.get("ultima_actualizacion"):
+                await actualizar_inventario()
+            else:
+                asyncio.create_task(actualizar_inventario())
 
         if sheets_necesita_actualizacion():
             asyncio.create_task(sincronizar_google_sheet())
@@ -6270,14 +6380,15 @@ async def webhook(
         )
 
     try:
-        async with locks_usuarios[sender]:
-            respuesta = await procesar_mensaje(sender, mensaje)
+        respuesta = await procesar_turno(sender, mensaje, message_id)
 
         if not respuesta:
             return {"replies": []}
 
         return {"replies": [{"message": str(respuesta).replace("**", "*")}]}
 
+    except ConversationStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail="No se pudo recuperar o guardar la conversación. Reintenta el mensaje.") from exc
     except Exception as exc:
         logger.exception("Error webhook sender=%s tipo=%s", sender[-4:], type(exc).__name__)
 
