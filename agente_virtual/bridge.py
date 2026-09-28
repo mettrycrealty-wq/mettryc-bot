@@ -243,6 +243,30 @@ class LegacyMettrycBridge:
             message=formatted or "",
         )
 
+    async def select(
+        self,
+        state: dict,
+        *,
+        code: str | None = None,
+        position: int | None = None,
+    ) -> BusinessActionResult:
+        legacy = self.load()
+        if code is None and position is None:
+            return BusinessActionResult(
+                ok=False,
+                name="seleccion_propiedad",
+                message="¿Cuál opción te interesa? Indícame su número o código.",
+            )
+        message = await legacy.proponer_visita_propiedad(
+            state, posicion=position, codigo=code,
+        )
+        return BusinessActionResult(
+            ok=state.get("estado_conversacion") in {"propiedad_seleccionada", "visita_colega"},
+            name="seleccion_propiedad",
+            data={"formatted_legacy": True},
+            message=message,
+        )
+
     async def detail(
         self,
         state: dict,

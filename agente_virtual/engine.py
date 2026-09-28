@@ -408,6 +408,18 @@ class AgenteVirtualEngine:
             analysis,
         )
 
+        # Un interés explícito por una opción del lote es una selección,
+        # aunque el modelo lo haya clasificado como petición de detalles.
+        interes_posicion = legacy.detectar_interes_en_opcion(text, state)
+        if interes_posicion is not None and not legacy.solicita_visita(text):
+            analysis = analysis.model_copy(update={
+                "intent": "seleccion_propiedad",
+                "property_position": interes_posicion,
+                "property_code": None,
+                "sales_signal": "interesado",
+                "sales_next_step": "visita",
+            })
+
         if (state.get("pregunta_pendiente") in PROFILE_FIELDS
                 and analysis.intent in {"conversacion_casual", "captura_datos", "unknown"}
                 and (any(value is not None for value in (analysis.operation, analysis.property_type, analysis.city, analysis.zone, analysis.max_budget, analysis.bedrooms, analysis.bathrooms, analysis.parking))
@@ -647,11 +659,19 @@ class AgenteVirtualEngine:
             if self._search_signal(state):
                 business_results.append(await self.bridge.search(state))
 
-        elif analysis.intent in {
-            "detalle_propiedad",
-            "pregunta_propiedad",
-            "seleccion_propiedad",
-        }:
+        elif analysis.intent == "seleccion_propiedad":
+            if state.get("rol") == "colega_inmobiliario":
+                business_results.append(await self.bridge.detail(
+                    state, code=analysis.property_code,
+                    position=analysis.property_position,
+                ))
+            else:
+                business_results.append(await self.bridge.select(
+                    state, code=analysis.property_code,
+                    position=analysis.property_position,
+                ))
+
+        elif analysis.intent in {"detalle_propiedad", "pregunta_propiedad"}:
             business_results.append(
                 await self.bridge.detail(
                     state,
@@ -903,7 +923,7 @@ class AgenteVirtualEngine:
             signal == "alta_intencion"
             and analysis.intent in {
                 "busqueda_propiedad", "mas_propiedades", "detalle_propiedad",
-                "pregunta_propiedad", "seleccion_propiedad",
+                "pregunta_propiedad",
             }
             and property_in_context
             and not state.get("advisor_offer_attempted")
