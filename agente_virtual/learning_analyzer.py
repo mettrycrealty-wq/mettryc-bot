@@ -224,6 +224,29 @@ class PatyLearningAnalyzer:
             "cobertura_siguiente_paso": coverage(turns_with_sales_next_step),
         }
 
+        profiling_turns = 0
+        listings_with_profile = 0
+        listings_missing_profile = 0
+        for turn in turns:
+            profiling_turns += int(turn.get("conversation_status") == "perfilando_busqueda")
+            filters = turn.get("filters") or {}
+            if isinstance(filters, str):
+                try:
+                    filters = json.loads(filters)
+                except (ValueError, TypeError):
+                    filters = {}
+            # Solo búsquedas generales instrumentadas: los códigos no requieren perfil.
+            if (turn.get("intent") in {"busqueda_propiedad", "mas_propiedades"}
+                    and turn.get("conversation_status") == "propiedades_mostradas"
+                    and isinstance(filters, dict) and isinstance(filters.get("perfil_faltante"), list)):
+                listings_with_profile += int(not filters["perfil_faltante"])
+                listings_missing_profile += int(bool(filters["perfil_faltante"]))
+        data_quality.update(
+            turnos_perfilando=profiling_turns,
+            listados_con_perfil_completo=listings_with_profile,
+            listados_con_perfil_incompleto=listings_missing_profile,
+        )
+
         by_origin: dict[str, dict[str, int]] = defaultdict(
             lambda: {
                 "conversaciones": 0,

@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from .schemas import BusinessActionResult, TurnAnalysis
+from search_profile import split_down_payment
 
 
 class LegacyMettrycBridge:
@@ -94,6 +95,7 @@ class LegacyMettrycBridge:
             "conversation_status": state.get("estado_conversacion"),
             "goal": state.get("objetivo"),
             "filters": deepcopy(state.get("filtros", {})),
+            "open_preferences": list(state.get("sin_preferencia", [])),
             "pending": state.get("pregunta_pendiente"),
             "last_properties": properties,
             "selected_property": selected,
@@ -145,12 +147,17 @@ class LegacyMettrycBridge:
             state["rol_confirmado"] = True
             state["confianza_rol"] = 1.0
 
+        _, initial = split_down_payment(message)
+        budget = analysis.max_budget
+        if initial is not None:
+            budget = legacy.detectar_presupuesto(message) or None
+
         updates = {
             "tipo_operacion": analysis.operation,
             "tipo_propiedad": analysis.property_type,
             "ciudad": analysis.city,
             "zona": analysis.zone,
-            "presupuesto_max": analysis.max_budget,
+            "presupuesto_max": budget,
             "habitaciones_min": analysis.bedrooms,
             "banos_min": analysis.bathrooms,
             "garajes_min": analysis.parking,
@@ -194,6 +201,11 @@ class LegacyMettrycBridge:
 
     async def search(self, state: dict) -> BusinessActionResult:
         legacy = self.load()
+
+        question = legacy.obtener_pregunta_faltante(state)
+        if question:
+            return BusinessActionResult(name="perfilar_busqueda",
+                data={"formatted_legacy": True}, message=question)
 
         # La búsqueda continúa delegándose COMPLETAMENTE al chatbot legacy.
         # Así se conservan sus reglas de complementariedad, exclusiones,

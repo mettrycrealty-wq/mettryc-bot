@@ -13,6 +13,7 @@ from .router import AgentModelRouter
 from .schemas import BusinessActionResult, TurnAnalysis
 from .learning import PatyLearningRecorder
 from .offer_optimizer import AdaptiveOfferOptimizer
+from search_profile import PROFILE_FIELDS, missing_profile, operational_reply, pending_visit_invitation
 
 
 ANALYSIS_PROMPT = """
@@ -32,7 +33,10 @@ Reglas:
   si todavía no hay evidencia suficiente.
 - conversation_casual es para saludos, comentarios sociales o conversación que no
   requiere una acción inmobiliaria.
-- busqueda_propiedad es para descubrir propiedades con uno o más criterios útiles.
+- busqueda_propiedad indica intención de buscar; no implica que el perfil esté completo.
+- Las respuestas a ciudad, zona, presupuesto o preferencias pendientes continúan la búsqueda, incluso si son breves.
+- max_budget es el precio TOTAL máximo. Nunca uses la inicial, depósito, comisión, número de inmueble ni número telefónico como precio total.
+- Conserva las características indispensables; no inventes habitaciones o baños si la persona no los indicó.
 - detalle_propiedad es para pedir datos generales de una propiedad concreta.
 - pregunta_propiedad es para preguntar algo específico sobre una propiedad que ya
   está en contexto.
@@ -114,6 +118,8 @@ Exactitud:
 - Los datos de propiedades solo pueden salir del contexto de negocio y de las
   herramientas.
 - No inventes datos que no estén disponibles.
+- No afirmes haber agregado contactos a la agenda, enviado fotos o reservado citas sin un resultado de herramienta que lo confirme.
+- Si una herramienta solicita datos de contacto, continúa con esos datos; no vuelvas a preguntar si desea una visita.
 - Si una herramienta falló, explica brevemente que no pudiste obtener el dato ahora.
 - Si la información solicitada no está disponible, dilo con transparencia y señala
   que el equipo fue avisado cuando corresponda.
@@ -183,6 +189,15 @@ class AgenteVirtualEngine:
                 text,
                 lead_result,
             )
+
+        operational = operational_reply(state, text)
+        if operational:
+            return await self._finalize(sender, state, text, operational)
+        if legacy.es_agradecimiento_simple(text):
+            state["ultima_intencion"] = "agradecimiento"
+            state["ultima_senal_comercial"] = "ninguna"
+            state["siguiente_paso_comercial"] = "ninguno"
+            return await self._finalize(sender, state, text, legacy.respuesta_agradecimiento())
 
         # ANUNCIOS DE MERCADO LIBRE / PORTALES
         # Un enlace de portal trae una referencia concreta del inmueble. Debe
@@ -393,6 +408,14 @@ class AgenteVirtualEngine:
             analysis,
         )
 
+        if (state.get("pregunta_pendiente") in PROFILE_FIELDS
+                and analysis.intent in {"conversacion_casual", "captura_datos", "unknown"}
+                and (any(value is not None for value in (analysis.operation, analysis.property_type, analysis.city, analysis.zone, analysis.max_budget, analysis.bedrooms, analysis.bathrooms, analysis.parking))
+                     or analysis.features
+                     or any(word in legacy.normalizar_texto(text) for word in ("cualquier", "sin preferencia", "presupuesto", "no importa", "ninguna", "ninguno", "no tengo", "inicial"))
+                     or legacy.normalizar_texto(text) in {"no", "asi esta bien", "adelante", "si", "sí"})):
+            analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
+
         if geo_zone:
             analysis = analysis.model_copy(
                 update={
@@ -582,6 +605,13 @@ class AgenteVirtualEngine:
             )
 
         self.bridge.apply_analysis(state, analysis, text)
+
+        if analysis.intent in {"busqueda_propiedad", "mas_propiedades"}:
+            question = legacy.obtener_pregunta_faltante(state)
+            if question:
+                state["ultima_senal_comercial"] = "interesado" if state.get("rol") == "cliente" else "ninguna"
+                state["siguiente_paso_comercial"] = "perfilar_busqueda"
+                return await self._finalize(sender, state, text, question)
 
         business_results: list[BusinessActionResult] = []
         admin_notified: set[str] = set()
@@ -992,6 +1022,13 @@ class AgenteVirtualEngine:
     ) -> str | None:
         legacy = self.bridge.load()
 
+        if legacy.es_respuesta_afirmativa(text) and pending_visit_invitation(state):
+            state["ultima_intencion"] = "visita"
+            state["ultima_senal_comercial"] = "visita"
+            state["siguiente_paso_comercial"] = "captura_lead"
+            result = await self.bridge.visit(state)
+            return result.message
+
         if state.get("pregunta_pendiente") == "ofrecer_asesor":
             if legacy.es_respuesta_afirmativa(text):
                 state["pregunta_pendiente"] = None
@@ -1130,6 +1167,10 @@ class AgenteVirtualEngine:
         business_results: list[BusinessActionResult],
         knowledge: str,
     ) -> str:
+        for result in reversed(business_results):
+            if result.message and result.name in {"visita", "atencion_humana", "captura_lead", "captura_contacto_colega", "asignacion_lead", "captador", "perfilar_busqueda"}:
+                return result.message
+
         # Las fichas comerciales se entregan con el formato exacto del
         # chatbot anterior. El LLM conversacional no debe reescribirlas ni
         # convertirlas en una frase genérica, porque aquí importan sus campos,
@@ -1212,25 +1253,7 @@ class AgenteVirtualEngine:
 
     @staticmethod
     def _search_signal(state: dict) -> bool:
-        filtros = state.get("filtros", {})
-        if not filtros.get("tipo_operacion"):
-            return False
-
-        señales = (
-            "tipo_propiedad",
-            "ciudad",
-            "zona",
-            "presupuesto_max",
-            "habitaciones_min",
-            "banos_min",
-            "garajes_min",
-            "m2_min",
-            "m2_max",
-        )
-
-        return any(filtros.get(field) not in (None, "", []) for field in señales) or bool(
-            filtros.get("caracteristicas")
-        )
+        return not missing_profile(state)
 
     @staticmethod
     def _clean_response(value: str) -> str:

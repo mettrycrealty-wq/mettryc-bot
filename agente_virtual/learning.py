@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from lead_rules import contacto_prospecto_completo
+from search_profile import missing_profile
 
 
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
@@ -162,6 +163,11 @@ class PatyLearningRecorder:
                 key: value
                 for key, value in (state.get("filtros") or {}).items()
                 if key != "caracteristicas"
+            } | {
+                "caracteristicas": [self._sanitize_text(v) for v in (state.get("filtros", {}).get("caracteristicas") or [])],
+                "sin_preferencia": list(state.get("sin_preferencia") or []),
+                "perfil_faltante": missing_profile(state),
+                "preferencias_consultadas": bool(state.get("perfil_preferencias_consultadas")),
             },
             "lead_captured": lead_captured,
             "contact_partial": contact_partial,

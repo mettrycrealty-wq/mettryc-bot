@@ -17,6 +17,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from geografia import DICCIONARIO_GEOGRAFICO
+from search_profile import missing_profile, profile_question, split_down_payment, operational_reply, pending_visit_invitation
 from agente_virtual.learning_analyzer import PatyLearningAnalyzer
 from agente_virtual.learning import PatyLearningRecorder
 from lead_rules import contacto_prospecto_completo, nombre_prospecto_parcial_valido, nombre_prospecto_valido
@@ -697,7 +698,16 @@ def extraer_area_principal_wasi(payload: Dict[str, Any]) -> Optional[float]:
         if isinstance(valor, str):
             numero = re.sub(r"[^\d.,]", "", valor)
             if numero:
-                valor = numero.replace(".", "").replace(",", ".")
+                # El campo numérico de WASI puede usar punto decimal. No
+                # eliminarlo: "418.11" son 418,11 m², no 41.811 m².
+                if "," in numero and "." in numero:
+                    if numero.rfind(",") > numero.rfind("."):
+                        numero = numero.replace(".", "").replace(",", ".")
+                    else:
+                        numero = numero.replace(",", "")
+                elif "," in numero:
+                    numero = numero.replace(",", ".")
+                valor = numero
 
         numero_float = convertir_float(valor)
         if numero_float > 0:
@@ -933,6 +943,7 @@ def detectar_rol_explicito(texto: str) -> Optional[str]:
     ]
 
     patrones_colega = [
+        r"\b(?:te escribe|les escribe|me presento|soy)\s+[a-z\s]{1,70}\b(?:asesor|asesora|agente|corredor|corredora)\s+(?:de|en|inmobiliari[oa])\b",
         r"\bsoy\s+(asesor|asesora|agente|corredor|corredora|broker|realtor)\b",
         r"\bsoy\s+colega\b",
         r"\b(?:hola|saludos|buenas)\s+colega\b",
@@ -1086,6 +1097,8 @@ def tiene_intencion_busqueda(
 def detectar_presupuesto(texto: str) -> float:
     if not texto:
         return 0.0
+
+    texto, _ = split_down_payment(texto)
 
     texto_sin_correos = re.sub(
         r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
@@ -1365,6 +1378,7 @@ def reiniciar_busqueda(estado: dict) -> dict:
         "caracteristicas": [],
     }
     estado["sin_preferencia"] = []
+    estado.pop("perfil_preferencias_consultadas", None)
     estado["propiedades_enviadas"] = []
     estado["ultimo_lote"] = []
     estado["propiedad_interes"] = None
@@ -1486,9 +1500,9 @@ def normalizar_propiedad_wasi(valor: Dict[str, Any]) -> dict:
             valor.get("lot_area") or valor.get("land_area")
         ) or None,
 
-        "habitaciones": valor.get("bedrooms") or "N/D",
-        "banos": valor.get("bathrooms") or "N/D",
-        "garajes": valor.get("garages") or "N/D",
+        "habitaciones": valor.get("bedrooms") if valor.get("bedrooms") not in (None, "") else "N/D",
+        "banos": valor.get("bathrooms") if valor.get("bathrooms") not in (None, "") else "N/D",
+        "garajes": valor.get("garages") if valor.get("garages") not in (None, "") else "N/D",
 
         "caracteristicas_generales": generales,
         "caracteristicas_internas": internas,
@@ -3054,6 +3068,9 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
         estado["confianza_rol"] = decision.confianza_rol
 
     actualizaciones = decision.actualizaciones.model_dump()
+    _, inicial = split_down_payment(mensaje)
+    if inicial is not None:
+        actualizaciones["presupuesto_max"] = detectar_presupuesto(mensaje) or None
 
     ciudad_explicita, sector_explicito = detectar_ciudad_y_sector(mensaje)
     zona_es_curada = False  # CORREGIDO: nueva bandera
@@ -3178,6 +3195,13 @@ def aplicar_extracciones_tecnicas(estado: dict, mensaje: str) -> bool:
         filtros["tipo_propiedad"] = tipo
         hubo_cambio = True
 
+    _, inicial = split_down_payment(mensaje)
+    if inicial is not None:
+        filtros["inicial_disponible"] = inicial
+        hubo_cambio = True
+    if any(p in normalizar_texto(mensaje) for p in ("financiamiento", "opcion a compra", "pagar en cuotas")):
+        filtros["requiere_financiamiento"] = True
+        hubo_cambio = True
     presupuesto = detectar_presupuesto(mensaje)
     if (
         presupuesto > 0
@@ -3299,7 +3323,7 @@ def aplicar_sin_preferencia_desde_texto(estado: dict, mensaje: str) -> bool:
 
     frases_zona_abierta = [
         "cualquier zona", "cualquiera zona", "no importa la zona",
-        "me da igual la zona", "toda valencia", "todo naguanagua",
+        "me da igual la zona", "toda valencia", "toda la ciudad", "todo naguanagua",
         "todo san diego", "zona abierta", "sin preferencia de zona",
     ]
 
@@ -3308,6 +3332,7 @@ def aplicar_sin_preferencia_desde_texto(estado: dict, mensaje: str) -> bool:
         "no importa el presupuesto", "cualquier presupuesto",
         "no tengo presupuesto definido", "aun no tiene presupuesto",
         "todavia no tiene presupuesto",
+        "no se mi presupuesto", "no tengo un presupuesto definido",
     ]
 
     respuesta_abierta_breve = normalizado in {normalizar_para_comparar(r) for r in respuestas_abiertas}
@@ -3325,7 +3350,7 @@ def aplicar_sin_preferencia_desde_texto(estado: dict, mensaje: str) -> bool:
 
     if (
         any(frase in normalizado for frase in frases_presupuesto_abierto)
-        or (pregunta_pendiente == "presupuesto_max" and respuesta_abierta_breve)
+        or (pregunta_pendiente == "presupuesto_max" and (respuesta_abierta_breve or normalizado in {"aun no lo he definido", "no lo he definido", "no se"}))
     ):
         if "presupuesto_max" not in sin_preferencia:
             sin_preferencia.append("presupuesto_max")
@@ -3405,31 +3430,7 @@ def zona_coincide(
 
 
 def criterios_suficientes(estado: dict) -> bool:
-    if not rol_esta_confirmado(estado):
-        return False
-
-    filtros = estado.get("filtros", {})
-    sin_preferencia = set(estado.get("sin_preferencia", []))
-    rol = estado.get("rol")
-
-    criterios_base = bool(
-        filtros.get("tipo_operacion")
-        and filtros.get("tipo_propiedad")
-        and filtros.get("ciudad")
-    )
-
-    if not criterios_base:
-        return False
-
-    zona_resuelta = bool(filtros.get("zona") or "zona" in sin_preferencia)
-
-    if rol == "colega_inmobiliario":
-        presupuesto_resuelto = bool(
-            filtros.get("presupuesto_max") or "presupuesto_max" in sin_preferencia
-        )
-        return bool(zona_resuelta and presupuesto_resuelto)
-
-    return zona_resuelta
+    return rol_esta_confirmado(estado) and not missing_profile(estado)
 
 
 def evaluar_propiedad(original: dict, filtros: dict) -> Optional[dict]:
@@ -3861,7 +3862,7 @@ async def formatear_ficha(
         titulo = f"Opción {posicion}: {titulo}"
 
     area = convertir_float(propiedad.get("area"))
-    area_texto = f"{area:,.0f} m²".replace(",", ".") if area > 0 else "N/D"
+    area_texto = (f"{area:,.2f}".rstrip("0").rstrip(".").replace(",", "_").replace(".", ",").replace("_", ".") + " m²") if area > 0 else "N/D"
 
     lineas = [
         f"*{titulo}*",
@@ -4423,6 +4424,10 @@ def resumen_filtros(estado: dict) -> str:
 
     if filtros.get("presupuesto_max"):
         lineas.append("- Presupuesto: " + formato_moneda(filtros["presupuesto_max"]))
+    if filtros.get("inicial_disponible") is not None:
+        lineas.append("- Inicial disponible: " + formato_moneda(filtros["inicial_disponible"]))
+    if filtros.get("requiere_financiamiento"):
+        lineas.append("- Solicita financiamiento; condiciones pendientes de confirmar con el propietario.")
 
     if filtros.get("caracteristicas"):
         lineas.append("- Características: " + ", ".join(filtros["caracteristicas"]))
@@ -4722,72 +4727,21 @@ async def completar_y_asignar_lead(estado: dict) -> str:
 # ============================================================
 
 def obtener_pregunta_faltante(estado: dict) -> str:
-    filtros = estado.get("filtros", {})
-    sin_preferencia = set(estado.get("sin_preferencia", []))
-    rol = estado.get("rol")
-
     if not rol_esta_confirmado(estado):
         estado["pregunta_pendiente"] = "confirmar_rol"
         return mensaje_confirmacion_rol()
-
-    if not filtros.get("tipo_operacion"):
-        estado["pregunta_pendiente"] = "tipo_operacion"
-        return "¿La propiedad sería para comprar o alquilar?"
-
-    if not filtros.get("tipo_propiedad"):
-        estado["pregunta_pendiente"] = "tipo_propiedad"
-        return (
-            "¿Qué tipo de inmueble buscas, por ejemplo apartamento, "
-            "casa, townhouse, local u oficina?"
-        )
-
-    if not filtros.get("ciudad"):
-        confirmacion = estado.get("requiere_confirmar_ciudad")
-
-        if confirmacion:
-            opciones = confirmacion.get("opciones", [])
-            zona = confirmacion.get("zona") or filtros.get("zona")
-
-            if opciones:
-                estado["pregunta_pendiente"] = "confirmar_ciudad"
-                return (
-                    f"La zona {zona} aparece en {', '.join(opciones)}. "
-                    "¿En cuál ciudad deseas buscar?"
-                )
-
-        estado["pregunta_pendiente"] = "ciudad"
-        return "¿En qué ciudad deseas buscar?"
-
-    if not filtros.get("zona") and "zona" not in sin_preferencia:
-        estado["pregunta_pendiente"] = "zona"
-
-        if rol == "colega_inmobiliario":
-            return (
-                f"Perfecto, colega. ¿Qué zona de {filtros.get('ciudad')} "
-                "prefiere tu cliente? Si está abierto a cualquier zona, "
-                "también puedes indicármelo."
-            )
-
-        return "¿En qué zona o urbanización de esa ciudad te gustaría encontrar la propiedad?"
-
-    if (
-        rol == "colega_inmobiliario"
-        and not filtros.get("presupuesto_max")
-        and "presupuesto_max" not in sin_preferencia
-    ):
-        estado["pregunta_pendiente"] = "presupuesto_max"
-        return (
-            "¿Qué presupuesto aproximado maneja tu cliente? "
-            "También puedes indicarme si el presupuesto está abierto. "
-            "Si necesita habitaciones o alguna característica "
-            "especial, puedes decírmelo en el mismo mensaje."
-        )
-
-    estado["pregunta_pendiente"] = None
-    return ""
+    confirmacion = estado.get("requiere_confirmar_ciudad")
+    if not (estado.get("filtros") or {}).get("ciudad") and confirmacion:
+        estado["pregunta_pendiente"] = "confirmar_ciudad"
+        return (f"La zona {confirmacion.get('zona')} aparece en "
+                f"{', '.join(confirmacion.get('opciones', []))}. ¿En cuál ciudad deseas buscar?")
+    return profile_question(estado)
 
 
 async def mostrar_propiedades(estado: dict) -> str:
+    pregunta = obtener_pregunta_faltante(estado)
+    if pregunta:
+        return pregunta
     salud = estado_inventario()
     if salud["estado"] != "actualizado":
         return (
@@ -4892,7 +4846,10 @@ async def mostrar_propiedades(estado: dict) -> str:
     estado["pregunta_pendiente"] = "visita_o_pregunta_propiedad"
     estado["detalle_pregunta_pendiente"] = None
 
-    return await construir_respuesta_fichas(estado, propiedades)
+    respuesta = await construir_respuesta_fichas(estado, propiedades)
+    if filtros.get("requiere_financiamiento") or filtros.get("inicial_disponible") is not None:
+        respuesta = "ℹ️ Los precios son totales. El financiamiento y la inicial aceptada deben confirmarse con el propietario.\n\n" + respuesta
+    return respuesta
 
 
 async def mostrar_inmueble_especifico(
@@ -5634,6 +5591,10 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         guardar_sesion(sender, estado)
         return respuesta
 
+    respuesta_operativa = operational_reply(estado, texto)
+    if respuesta_operativa:
+        return await finalizar(respuesta_operativa)
+
     # --------------------------------------------------------
     # FIX #11: mensaje multimedia sin texto (imagen, audio, etc.)
     # --------------------------------------------------------
@@ -5777,7 +5738,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         "podemos verla", "podemos verlo", "cuando puedo verla", "cuando puedo verlo",
     ]
 
-    visita_evidente = solicita_visita(texto) or any(
+    visita_evidente = (es_respuesta_afirmativa(texto) and pending_visit_invitation(estado)) or solicita_visita(texto) or any(
         frase in texto_norm for frase in frases_visita_adicionales
     )
 
