@@ -524,6 +524,80 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quality["listados_con_perfil_completo"], 1)
         self.assertEqual(quality["listados_con_perfil_incompleto"], 0)
 
+    async def test_interest_selects_previous_option_and_invites_visit_in_both_engines(self):
+        for virtual in (False, True):
+            with self.subTest(virtual=virtual):
+                bot.sesiones.clear()
+                state = self.state()
+                await bot.mostrar_propiedades(state)
+                batch = list(state["ultimo_lote"])
+                engine = self.engine(intent="detalle_propiedad", property_position=3,
+                                     sales_signal="alta_intencion")
+                if virtual:
+                    reply = await engine.process("test-user", "Me interesa la opción 3")
+                else:
+                    with patch.object(bot, "decidir_con_ia", new=AsyncMock(return_value=bot.DecisionAgente())):
+                        reply = await bot.procesar_mensaje("test-user", "Me interesa la opción 3")
+                self.assertIn("agendar una visita", reply)
+                self.assertNotIn("https://www.mettryc.com/inmueble/", reply)
+                self.assertEqual(state["propiedad_activa_id"], batch[2])
+                self.assertEqual(state["ultimo_lote"], batch)
+                self.assertEqual(state["pregunta_pendiente"], "confirmar_visita")
+                if virtual:
+                    accepted = await engine.process("test-user", "Sí")
+                else:
+                    accepted = await bot.procesar_mensaje("test-user", "Sí")
+                self.assertIn("nombre completo", accepted.lower())
+                self.assertIn("correo electrónico", accepted.lower())
+                self.assertEqual(state["objetivo"], "captura_lead")
+
+    async def test_interest_failure_never_offers_stale_property(self):
+        for issue in ("missing", "inactive", "failure"):
+            with self.subTest(issue=issue):
+                bot.sesiones.clear()
+                state = self.state()
+                await bot.mostrar_propiedades(state)
+                state["propiedad_interes"] = bot.buscar_por_codigo(self.codes[0])
+                state["propiedad_activa_id"] = self.codes[0]
+                position = 5
+                if issue == "missing":
+                    state["ultimo_lote"] = state["ultimo_lote"][:2]
+                if issue == "inactive":
+                    self.details[self.codes[4]]["id_availability"] = "2"
+                if issue == "failure":
+                    self.fail_details = True
+                try:
+                    reply = await self.engine(intent="detalle_propiedad", property_position=position).process(
+                        "test-user", f"Me interesa la opción {position}")
+                finally:
+                    self.fail_details = False
+                    self.details[self.codes[4]]["id_availability"] = "1"
+                self.assertNotIn("agendar una visita", reply)
+                self.assertIsNone(state["propiedad_activa_id"])
+                self.assertIsNone(state["propiedad_interes"])
+
+    async def test_property_question_is_not_treated_as_simple_interest(self):
+        state = self.state()
+        await bot.mostrar_propiedades(state)
+        self.assertIsNone(bot.detectar_interes_en_opcion("Me interesa la opción 3, ¿tiene patio?", state))
+        self.assertEqual(bot.detectar_interes_en_opcion("Me interesa la última", state), len(state["ultimo_lote"]))
+        with patch.object(bot, "llamar_openrouter_json", new=AsyncMock(
+            return_value=bot.RespuestaPropiedadIA(respuesta="Esa característica no aparece en la ficha."))):
+            reply = await self.engine(intent="pregunta_propiedad", property_position=3).process(
+                "test-user", "Me interesa la opción 3, ¿tiene patio?")
+        self.assertIn("característica", reply)
+        self.assertNotIn("agendar una visita", reply)
+
+    async def test_colleague_selection_preserves_detail_card(self):
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        await bot.mostrar_propiedades(state)
+        reply = await self.engine(intent="detalle_propiedad", property_position=2).process(
+            "test-user", "Me interesa la opción 2")
+        self.assertIn("https://www.mettryc.com/inmueble/" + state["ultimo_lote"][1], reply)
+        self.assertIn("Captador:", reply)
+        self.assertNotIn("¿Quieres agendar una visita para conocerla?", reply)
+
 
 if __name__ == "__main__":
     unittest.main()

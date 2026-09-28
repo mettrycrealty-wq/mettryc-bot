@@ -928,6 +928,26 @@ def detectar_posicion(texto: str) -> Optional[int]:
     )
     return int(coincidencia.group(1)) if coincidencia else None
 
+
+def detectar_interes_en_opcion(texto: str, estado: dict) -> Optional[int]:
+    """Distingue una elección del listado de una consulta sobre sus detalles."""
+    if not estado.get("ultimo_lote"):
+        return None
+    normalizado = normalizar_para_comparar(texto)
+    if not re.fullmatch(
+        r"(?:me interesa|me gusta|me encanto|me llama la atencion|"
+        r"estoy interesad[oa] en|elijo|quiero)\s+"
+        r"(?:(?:la|el|esa|ese)\s+)?"
+        r"(?:(?:opcion|propiedad|inmueble|casa|numero)\s+)?"
+        r"(?:[1-5]|primera|segunda|tercera|cuarta|quinta|ultima|ultimo)"
+        r"(?:\s+opcion)?",
+        normalizado,
+    ):
+        return None
+    if normalizado.endswith(("ultima", "ultimo", "ultima opcion", "ultimo opcion")):
+        return len(estado["ultimo_lote"])
+    return detectar_posicion(texto)
+
 def detectar_rol_explicito(texto: str) -> Optional[str]:
     normalizado = normalizar_texto(texto)
 
@@ -4899,6 +4919,44 @@ async def mostrar_inmueble_especifico(
 
     return await construir_respuesta_fichas(estado, [propiedad], especifica=True)
 
+
+async def proponer_visita_propiedad(
+    estado: dict, *, posicion: Optional[int] = None, codigo: Optional[str] = None,
+) -> str:
+    """Confirma la opción elegida y propone visitarla sin repetir su ficha."""
+    if estado.get("rol") == "colega_inmobiliario":
+        return await iniciar_visita(estado, posicion=posicion, codigo=codigo)
+
+    def seleccion_fallida(mensaje: str) -> str:
+        estado["propiedad_interes"] = None
+        estado["propiedad_activa_id"] = None
+        estado["pregunta_pendiente"] = None
+        estado["estado_conversacion"] = "seleccion_no_disponible"
+        return mensaje
+
+    propiedad = resolver_propiedad_contexto(estado, posicion=posicion, codigo=codigo)
+    if not propiedad:
+        return seleccion_fallida("No pude identificar esa opción. Indícame su número en el último listado o su código.")
+
+    property_id = str(propiedad.get("id") or "")
+    try:
+        detalle = await consultar_detalle_propiedad_wasi(property_id)
+    except WasiConsultaError:
+        return seleccion_fallida("No pude confirmar la disponibilidad de esa propiedad ahora. Puedes intentar de nuevo o elegir otra opción.")
+    if not detalle or not detalle.get("activa", True):
+        return seleccion_fallida("Esa propiedad ya no figura disponible en el inventario actual. ¿Quieres que busquemos otra opción?")
+
+    estado["propiedad_interes"] = detalle
+    estado["propiedad_activa_id"] = property_id
+    estado["ultima_propiedad_consultada_id"] = property_id
+    estado["objetivo"] = "evaluar_resultados"
+    estado["estado_conversacion"] = "propiedad_seleccionada"
+    estado["pregunta_pendiente"] = "confirmar_visita"
+
+    referencia = f"La opción {posicion}" if posicion is not None else "La propiedad"
+    return (f"¡Excelente! {referencia} sigue ✅ *Disponible*. "
+            "¿Quieres agendar una visita para conocerla?")
+
 async def iniciar_visita(
     estado: dict, posicion: Optional[int], codigo: Optional[str] = None,
 ) -> str:
@@ -5906,6 +5964,13 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         accion = "agendar_visita"
     elif pide_mas_opciones(texto):
         accion = "mostrar_mas_propiedades"
+    elif (interes_posicion := detectar_interes_en_opcion(texto, estado)) is not None:
+        accion = "seleccionar_propiedad"
+        posicion = interes_posicion
+        codigo = None
+        estado["ultima_intencion"] = "seleccion_propiedad"
+        estado["ultima_senal_comercial"] = "interesado"
+        estado["siguiente_paso_comercial"] = "visita"
     elif codigo:
         accion = "buscar_por_codigo"
 
@@ -5977,24 +6042,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             )
 
     elif accion == "seleccionar_propiedad":
-        propiedad = resolver_propiedad_contexto(estado, posicion=posicion, codigo=codigo)
-
-        if propiedad:
-            estado["propiedad_interes"] = propiedad
-            estado["propiedad_activa_id"] = propiedad.get("id")
-            estado["ultima_propiedad_consultada_id"] = propiedad.get("id")
-            estado["pregunta_pendiente"] = "visita_o_pregunta_propiedad"
-
-            if estado.get("rol") == "colega_inmobiliario":
-                respuesta = await iniciar_visita(estado, posicion, codigo)
-            else:
-                respuesta = (
-                    "Perfecto, ya identifiqué esa propiedad. "
-                    "¿Quieres agendar una visita o preguntarme "
-                    "algo específico sobre ella?"
-                )
-        else:
-            respuesta = "No pude identificar la propiedad. Indícame el número de la opción o su código."
+        respuesta = await proponer_visita_propiedad(estado, posicion=posicion, codigo=codigo)
 
     elif accion == "solicitar_captador":
         respuesta = await atender_solicitud_captador(estado, posicion=posicion, codigo=codigo)
