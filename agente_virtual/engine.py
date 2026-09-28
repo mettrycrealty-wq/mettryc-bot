@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import datetime, timezone
 from copy import deepcopy
 from typing import Any
 
@@ -10,6 +12,7 @@ from .bridge import LegacyMettrycBridge
 from .router import AgentModelRouter
 from .schemas import BusinessActionResult, TurnAnalysis
 from .learning import PatyLearningRecorder
+from .offer_optimizer import AdaptiveOfferOptimizer
 
 
 ANALYSIS_PROMPT = """
@@ -153,6 +156,9 @@ class AgenteVirtualEngine:
         self.bridge = bridge or LegacyMettrycBridge()
         self.max_history = max(6, max_history)
         self.learning = PatyLearningRecorder()
+        self.offer_optimizer = AdaptiveOfferOptimizer(
+            lambda: getattr(self.bridge.load(), "conversation_store", None)
+        )
 
     async def process(self, sender: str, message: str) -> str:
         text = str(message or "").strip()
@@ -697,6 +703,7 @@ class AgenteVirtualEngine:
             analysis = analysis.model_copy(update={"intent": "busqueda_propiedad"})
             business_results.append(await self.bridge.search(state))
 
+        self._update_sales_state(state, analysis)
         response = await self._generate_response(
             text,
             state,
@@ -704,6 +711,8 @@ class AgenteVirtualEngine:
             business_results,
             legacy.construir_contexto_conocimiento(),
         )
+        if not any(not result.ok for result in business_results):
+            response = self._append_advisor_offer(state, response, sender)
         return await self._finalize(sender, state, text, response)
 
 
@@ -862,7 +871,12 @@ class AgenteVirtualEngine:
 
         if (
             signal == "alta_intencion"
+            and analysis.intent in {
+                "busqueda_propiedad", "mas_propiedades", "detalle_propiedad",
+                "pregunta_propiedad", "seleccion_propiedad",
+            }
             and property_in_context
+            and not state.get("advisor_offer_attempted")
             and not already_assigned
             and not transactional_flow
             and not blocking_pending
@@ -870,22 +884,32 @@ class AgenteVirtualEngine:
             state["pregunta_pendiente"] = "ofrecer_asesor"
             state["oferta_asesor_pendiente"] = True
 
-    @staticmethod
     def _append_advisor_offer(
-        state: dict,
-        response: str,
+        self, state: dict, response: str, sender: str,
     ) -> str:
         if state.get("pregunta_pendiente") != "ofrecer_asesor":
             return response
 
-        offer = (
-            "Si te parece, puedo conectarte con un asesor de Mettryc para ayudarte "
-            "con esta propiedad y dar el siguiente paso. ¿Quieres que te contacte?"
-        )
         clean = str(response or "").rstrip()
-        if offer.lower() in clean.lower():
+        if not clean or (
+            "asesor" in clean.lower()
+            and any(word in clean.lower() for word in ("¿quieres", "¿te gustaría", "¿deseas"))
+        ):
+            if clean:
+                state["advisor_offer_attempted"] = True
             return clean
-        return f"{clean}\\n\\n{offer}" if clean else offer
+        variant = self.offer_optimizer.select(sender + str(state.get("creado_en") or ""))
+        state["advisor_offer_variant"] = variant
+        state["advisor_offer_at"] = datetime.now(timezone.utc).isoformat()
+        state["advisor_offer_attempted"] = True
+        state["_advisor_offer_this_turn"] = True
+        offer = {
+            "A": "Si te parece, puedo conectarte con un asesor de Mettryc "
+                 "para ayudarte con esta propiedad. ¿Quieres que te contacte?",
+            "B": "¿Te gustaría que un asesor de Mettryc te ayude a avanzar "
+                 "con esta propiedad? Puedo ponerte en contacto.",
+        }[variant]
+        return f"{clean}\n\n{offer}"
 
     async def _process_lead_flow_deterministic(
         self,
@@ -1169,12 +1193,14 @@ class AgenteVirtualEngine:
         # La capa de aprendizaje se ejecuta DESPUÉS de preparar la respuesta y
         # ANTES de guardar la sesión. Nunca decide la respuesta ni puede bloquear
         # el flujo comercial.
-        self.learning.record_turn(
-            sender=sender,
-            state=state,
-            user_message=user_message,
-            assistant_response=response,
-        )
+        if self.learning.enabled:
+            await asyncio.to_thread(
+                self.learning.record_turn,
+                sender=sender, state=state, user_message=user_message,
+                assistant_response=response,
+            )
+        else:
+            state.pop("_advisor_offer_this_turn", None)
 
         self.bridge.save_state(sender, state)
         return response

@@ -16,12 +16,45 @@ function doPost(e) {
     const p = PropertiesService.getScriptProperties();
     const token = p.getProperty('PATY_TOKEN');
     if (!token || q.token !== token) throw Error('auth');
+    // Lectura agregada fuera del bloqueo: no retrasa las conversaciones.
+    if (q.action === 'offer_stats') {
+      result = estadisticasOfertas(DriveApp.getFolderById(p.getProperty('PATY_FOLDER_ID')));
+    } else {
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(10000)) throw Error('busy');
     try { result = operarMemoria(q, DriveApp.getFolderById(p.getProperty('PATY_FOLDER_ID'))); }
     finally { lock.releaseLock(); }
+    }
   } catch (_) { result = {ok: false}; }
   return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function estadisticasOfertas(folder) {
+  const stats = {A: {offers: 0, notified: 0}, B: {offers: 0, notified: 0}};
+  const files = folder.getFiles();
+  const seen = {};
+  const now = Date.now();
+  let count = 0;
+  while (files.hasNext()) {
+    const file = files.next();
+    const name = file.getName();
+    if (!/^paty-[a-f0-9]{64}\.json$/.test(name)) continue;
+    if (++count > 500 || seen[name]) throw Error('stats_limit_or_duplicate');
+    seen[name] = true;
+    const record = JSON.parse(file.getBlob().getDataAsString());
+    if (record.schema !== 1) throw Error('stats_corrupt');
+    const state = record.state;
+    if (!state || state.rol !== 'cliente') continue;
+    const variant = state.advisor_offer_variant;
+    const date = Date.parse(state.advisor_offer_at || '');
+    if (!Object.prototype.hasOwnProperty.call(stats, variant)
+        || !Number.isFinite(date) || now - date < 86400000
+        || now - date > 30 * 86400000) continue;
+    stats[variant].offers++;
+    if (state.lead_confirmado === true && state.notificacion_enviada === true)
+      stats[variant].notified++;
+  }
+  return {ok: true, stats: stats};
 }
 
 function operarMemoria(q, folder) {

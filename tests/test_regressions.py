@@ -281,6 +281,59 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Opción 1", reply)
         self.assertEqual(state["rol"], "cliente")
 
+    async def test_legacy_turn_is_included_in_learning(self):
+        with patch.object(bot.legacy_learning_recorder, "enabled", True), patch.object(
+            bot.legacy_learning_recorder, "record_turn"
+        ) as record:
+            response = await bot.procesar_mensaje("test-user", "Gracias")
+        self.assertTrue(response)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.kwargs["user_message"], "Gracias")
+
+    async def test_high_intent_offer_follows_confirmed_property_without_changing_fact(self):
+        state = self.state()
+        state["ultimo_lote"] = [self.codes[0]]
+        engine = self.engine(intent="pregunta_propiedad", property_position=1,
+                             sales_signal="alta_intencion")
+        with patch.object(engine.offer_optimizer, "select", return_value="A"), patch.object(
+            bot, "llamar_openrouter_json", new=AsyncMock(return_value=bot.RespuestaPropiedadIA(
+                respuesta="Tiene planta eléctrica."))
+        ):
+            response = await engine.process("test-user", "¿Tiene planta? Quiero avanzar con esta casa")
+        self.assertIn("Tiene planta eléctrica.", response)
+        self.assertIn("¿Quieres que te contacte?", response)
+        self.assertEqual(state["pregunta_pendiente"], "ofrecer_asesor")
+        self.assertEqual(state["advisor_offer_variant"], "A")
+        self.assertEqual(state["propiedad_activa_id"], self.codes[0])
+        self.assertTrue(state["advisor_offer_attempted"])
+        state["pregunta_pendiente"] = None
+        engine._update_sales_state(state, TurnAnalysis(intent="pregunta_propiedad",
+                                                       sales_signal="alta_intencion"))
+        self.assertIsNone(state["pregunta_pendiente"])
+
+    async def test_colleague_does_not_get_sales_offer(self):
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        state["ultimo_lote"] = [self.codes[0]]
+        engine = self.engine(intent="pregunta_propiedad", property_position=1,
+                             sales_signal="alta_intencion")
+        with patch.object(bot, "llamar_openrouter_json", new=AsyncMock(return_value=bot.RespuestaPropiedadIA(
+            respuesta="Tiene planta eléctrica."))):
+            response = await engine.process("test-user", "¿Tiene planta eléctrica?")
+        self.assertEqual(response, "Tiene planta eléctrica.")
+        self.assertNotIn("advisor_offer_variant", state)
+
+    async def test_wasi_failure_never_appends_an_advisor_offer(self):
+        state = self.state()
+        state["ultimo_lote"] = [self.codes[0]]
+        self.fail_details = True
+        engine = self.engine(intent="pregunta_propiedad", property_position=1,
+                             sales_signal="alta_intencion")
+        response = await engine.process("test-user", "¿Tiene planta? Quiero avanzar")
+        self.assertIn("No pude consultar", response)
+        self.assertNotIn("asesor de Mettryc", response)
+        self.assertNotIn("advisor_offer_variant", state)
+
     async def test_geographic_question_keeps_search_until_city_is_confirmed(self):
         # Dos ciudades en el inventario de prueba comparten el mismo sector.
         bot.inventory_cache["inventario"][-1].update(ciudad="Cabudare", zona="El Trigal")

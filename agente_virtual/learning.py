@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import urllib.request
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -48,9 +48,8 @@ class PatyLearningRecorder:
 
     @staticmethod
     def _conversation_key(sender: str) -> str:
-        return hashlib.sha256(
-            str(sender or "").encode("utf-8")
-        ).hexdigest()[:16]
+        # Una conversación nueva del mismo remitente debe tener otro episodio.
+        return uuid.uuid4().hex
 
     @staticmethod
     def _sanitize_text(value: Any) -> str:
@@ -114,7 +113,14 @@ class PatyLearningRecorder:
             or lead.get("correo")
             or lead.get("whatsapp")
         )
-        lead_assigned = bool(state.get("agente_asignado"))
+        lead_complete = bool(
+            lead.get("nombre") and lead.get("correo")
+            and lead.get("whatsapp") and lead.get("whatsapp_confirmado")
+        )
+        lead_confirmed = bool(state.get("lead_confirmado") and lead_complete)
+        lead_assigned = bool(state.get("agente_asignado") and lead_confirmed)
+        notification_sent = bool(state.get("notificacion_enviada") and lead_assigned)
+        colleague_notified = state.get("estado_conversacion") == "colega_notificado"
 
         learning["turn_count"] = int(learning.get("turn_count") or 0) + 1
         learning["user_turns"] = int(learning.get("user_turns") or 0) + 1
@@ -160,7 +166,13 @@ class PatyLearningRecorder:
                 if key != "caracteristicas"
             },
             "lead_captured": lead_captured,
+            "lead_complete": lead_complete,
+            "lead_confirmed": lead_confirmed,
             "lead_assigned": lead_assigned,
+            "notification_sent": notification_sent,
+            "colleague_notified": colleague_notified,
+            "advisor_offer_variant": state.get("advisor_offer_variant"),
+            "advisor_offer_present": bool(state.pop("_advisor_offer_this_turn", False)),
             "pause_detected": pause_detected,
             "possible_abandonment": bool(
                 learning.get("possible_abandonment")

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from geografia import DICCIONARIO_GEOGRAFICO
 from agente_virtual.learning_analyzer import PatyLearningAnalyzer
+from agente_virtual.learning import PatyLearningRecorder
 from conversation_store import conversation_store_from_environment, ConversationStoreUnavailable
 # ============================================================
 # LOGS Y CONFIGURACIÓN
@@ -99,6 +100,7 @@ AGENTE_VIRTUAL_ACTIVO = (
     in {"1", "true", "yes", "si", "sí"}
 )
 agente_virtual_engine = None
+legacy_learning_recorder = PatyLearningRecorder()
 
 INTERVALO_ACTUALIZACION_SHEETS = timedelta(
     minutes=int(os.getenv("INTERVALO_ACTUALIZACION_SHEETS_MINUTOS", "60"))
@@ -5580,6 +5582,14 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
         agregar_historial(estado, "user", texto)
         if respuesta:
             agregar_historial(estado, "assistant", respuesta)
+        # El flujo legacy también debe aportar evidencia; la escritura de
+        # Sheets/disco corre en un hilo para no detener otros webhooks.
+        if legacy_learning_recorder.enabled:
+            await asyncio.to_thread(
+                legacy_learning_recorder.record_turn,
+                sender=sender, state=estado, user_message=texto,
+                assistant_response=respuesta,
+            )
         guardar_sesion(sender, estado)
         return respuesta
 
@@ -6207,6 +6217,18 @@ async def admin_status(x_api_key: Optional[str] = Header(default=None, alias="x-
         "telegram_configurado": bool(TELEGRAM_BOT_TOKEN),
         "wasi_configurado": bool(WASI_TOKEN and WASI_COMPANY_ID),
         "agente_virtual_activo": AGENTE_VIRTUAL_ACTIVO,
+        "aprendizaje": {
+            "registro_activo": legacy_learning_recorder.enabled,
+            "google_sheets_configurado": bool(legacy_learning_recorder.webhook_url),
+            "oferta_ganadora": (
+                agente_virtual_engine.offer_optimizer.winner
+                if agente_virtual_engine is not None else None
+            ),
+            "muestras_ofertas": (
+                agente_virtual_engine.offer_optimizer.sample_sizes
+                if agente_virtual_engine is not None else {}
+            ),
+        },
         "persistencia": conversation_store.backend_name if conversation_store is not None else "memoria_del_proceso",
         "estado_inventario": estado_inventario(),
     }

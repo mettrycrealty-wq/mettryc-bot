@@ -6,16 +6,23 @@ function setup() {
   const records = new Map(); let now = 1000000;
   const folder = {
     getName: () => 'private',
+    getFiles: () => {
+      const names = [...records.keys()]; let i = 0;
+      return {hasNext: () => i < names.length, next: () => {
+        const name = names[i++];
+        return {getName: () => name, getBlob: () => ({getDataAsString: () => records.get(name)})};
+      }};
+    },
     getFilesByName: name => { let used = false; return {hasNext: () => !used && records.has(name), next: () => {
       used = true; return {getBlob: () => ({getDataAsString: () => records.get(name)}), setContent: text => records.set(name,text)};
     }}; },
     createFile: (name,text) => records.set(name,text)
   };
-  const ctx = vm.createContext({Date: {now: () => now}, MimeType: {PLAIN_TEXT:'text/plain'}});
+  const ctx = vm.createContext({Date: {now: () => now, parse: Date.parse}, MimeType: {PLAIN_TEXT:'text/plain'}});
   vm.runInContext(fs.readFileSync('apps_script/paty_memory/Code.gs','utf8'),ctx);
   const base={sender:'a'.repeat(64), owner:'b'.repeat(32), message:'c'.repeat(64)};
   return {call: (action, values={}) => ctx.operarMemoria({...base,action,...values},folder), records,
-    advance: ms => now += ms, ctx};
+    advance: ms => now += ms, ctx, folder};
 }
 test('restore after new execution, duplicate and idempotent commit', () => {
   const s=setup();
@@ -47,4 +54,15 @@ test('unauthenticated request cannot access Drive',()=>{
   s.ctx.ContentService={MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})};
   assert.equal(s.ctx.doPost({postData:{contents:JSON.stringify({token:'wrong'})}}).ok,false);
   assert.equal(accessed,false);
+});
+test('learning counts only mature client offers with confirmed notification',()=>{
+  const s=setup();
+  s.call('acquire',{lease:360});
+  s.call('commit',{state:{rol:'cliente',advisor_offer_variant:'B',
+    advisor_offer_at:new Date(1000000-2*86400000).toISOString(),
+    lead_confirmado:true,notificacion_enviada:true},ttl:60,duplicate_ttl:180});
+  const stats=s.ctx.estadisticasOfertas(s.folder).stats;
+  assert.equal(stats.B.offers,1);
+  assert.equal(stats.B.notified,1);
+  assert.equal(stats.A.offers,0);
 });
