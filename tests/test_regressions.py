@@ -81,6 +81,8 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         state = bot.obtener_sesion("test-user")
         state.update(rol="cliente", rol_confirmado=True, confianza_rol=1.0)
         state["filtros"].update(tipo_operacion="venta", tipo_propiedad="casa", ciudad="Valencia")
+        state["sin_preferencia"] = ["zona", "presupuesto_max"]
+        state["perfil_preferencias_consultadas"] = True
         return state
 
     def engine(self, **analysis):
@@ -278,8 +280,11 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["pregunta_pendiente"], "confirmar_rol")
         self.assertFalse(state["propiedades_enviadas"])
         reply = await engine.process("new-user", "Para mí")
-        self.assertIn("Opción 1", reply)
+        self.assertNotIn("Opción 1", reply)
+        self.assertIn("presupuesto", reply)
         self.assertEqual(state["rol"], "cliente")
+        reply = await engine.process("new-user", "Cualquier zona, presupuesto abierto")
+        self.assertIn("Opción 1", reply)
 
     async def test_legacy_turn_is_included_in_learning(self):
         with patch.object(bot.legacy_learning_recorder, "enabled", True), patch.object(
@@ -411,6 +416,113 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot, "llamar_openrouter_json", new=AsyncMock(return_value=bot.RespuestaPropiedadIA(respuesta="Tiene planta eléctrica."))):
             reply = await self.engine(intent="pregunta_propiedad").process("test-user", "¿El inmueble 1000002 tiene planta eléctrica?")
         self.assertEqual(reply, "Tiene planta eléctrica.")
+
+    async def test_profile_blocks_both_search_entry_points(self):
+        state = self.state()
+        state["sin_preferencia"] = []
+        state["filtros"]["ciudad"] = None
+        for search in (bot.mostrar_propiedades, LegacyMettrycBridge(bot).search):
+            result = await search(state)
+            text = result if isinstance(result, str) else result.message
+            self.assertIn("ciudad", text)
+            self.assertIn("presupuesto", text)
+            self.assertNotIn("Opción", text)
+            self.assertEqual(state["ultimo_lote"], [])
+
+    async def test_optional_preferences_allow_decline_without_loop(self):
+        state = self.state()
+        state.pop("perfil_preferencias_consultadas")
+        reply = await self.engine(intent="busqueda_propiedad").process("test-user", "Busco casas")
+        self.assertIn("habitaciones", reply)
+        self.assertNotIn("Opción", reply)
+        reply = await self.engine(intent="conversacion_casual").process("test-user", "No tengo preferencias")
+        self.assertIn("Opción 1", reply)
+
+    async def test_specific_code_bypasses_incomplete_profile(self):
+        state = bot.obtener_sesion("test-user")
+        reply = await self.engine(intent="detalle_propiedad", property_code=self.codes[0]).process("test-user", "Información del código " + self.codes[0])
+        self.assertIn(self.codes[0], reply)
+        self.assertNotIn("presupuesto", reply)
+        self.assertIsNone(state["filtros"]["ciudad"])
+
+    async def test_initial_does_not_overwrite_total_budget_even_if_model_confuses_it(self):
+        state = self.state()
+        state["filtros"]["presupuesto_max"] = 40000
+        bridge = LegacyMettrycBridge(bot)
+        bridge.apply_analysis(state, TurnAnalysis(intent="busqueda_propiedad", max_budget=2000), "Tengo 2000 de inicial y necesito financiamiento")
+        self.assertEqual(state["filtros"]["presupuesto_max"], 40000)
+        self.assertEqual(state["filtros"]["inicial_disponible"], 2000)
+        self.assertTrue(state["filtros"]["requiere_financiamiento"])
+        for message in ("Inicial de $2.000", "Dispongo de 2 mil para la inicial", "2000 de inicial"):
+            self.assertEqual(bot.detectar_presupuesto(message), 0, message)
+        self.assertEqual(bot.detectar_presupuesto("Inicial de 2000, precio máximo 40000"), 40000)
+
+    async def test_colleague_intro_and_role_question_repair(self):
+        self.assertEqual(bot.detectar_rol_explicito("Te escribe Ana Ejemplo asesora de Mettryc San Diego"), "colega_inmobiliario")
+        self.assertNotEqual(bot.detectar_rol_explicito("Quiero hablar con una asesora de Mettryc"), "colega_inmobiliario")
+        state = bot.obtener_sesion("test-user")
+        state["pregunta_pendiente"] = "confirmar_rol"
+        reply = await self.engine().process("test-user", "?")
+        self.assertIn("adaptar la atención", reply)
+
+    async def test_yes_to_visit_requests_full_contact_without_llm_rewrite(self):
+        for virtual in (False, True):
+            state = self.state()
+            state["ultimo_lote"] = [self.codes[0]]
+            state["propiedad_activa_id"] = self.codes[0]
+            state["objetivo"] = "evaluar_resultados"
+            state["historial"] = [{"role": "assistant", "content": "¿Coordinamos una visita?"}]
+            if virtual:
+                reply = await self.engine().process("test-user", "Sí")
+            else:
+                reply = await bot.procesar_mensaje("test-user", "Sí")
+            self.assertIn("nombre completo", reply.lower())
+            self.assertIn("WhatsApp", reply)
+            self.assertIn("correo", reply.lower())
+            self.assertEqual(state["objetivo"], "captura_lead")
+
+    async def test_unsupported_operations_and_broken_link(self):
+        self.state()
+        engine = self.engine()
+        reply = await engine.process("test-user", "Grábame en tus contactos")
+        self.assertIn("no tengo una función", reply)
+        reply = await engine.process("test-user", "📷 Envió una foto.")
+        self.assertIn("código o enlace", reply)
+        bot.sesiones["test-user"]["propiedad_activa_id"] = self.codes[0]
+        reply = await engine.process("test-user", "No me abre el link")
+        self.assertIn("https://www.mettryc.com/inmueble/" + self.codes[0], reply)
+
+    async def test_card_preserves_zero_unknown_and_decimal_area(self):
+        raw = raw_property(self.codes[0])
+        for raw_area, expected in (("418.11", 418.11), ("272.99", 272.99), ("1.200,50", 1200.5), ("1,200.50", 1200.5), ("160,25", 160.25)):
+            self.assertEqual(bot.extraer_area_principal_wasi({"area": raw_area}), expected)
+        raw.update(bedrooms=None, bathrooms=0, garages="0", area="160.25")
+        prop = bot.normalizar_propiedad_wasi(raw)
+        reply = await bot.formatear_ficha(prop, False)
+        self.assertIn("160,25 m²", reply)
+        self.assertIn("🛏️ N/D", reply)
+        self.assertIn("🛁 0", reply)
+        self.assertIn("🚗 0", reply)
+
+    async def test_profile_learning_uses_existing_filters_column(self):
+        from agente_virtual.learning import PatyLearningRecorder
+        from agente_virtual.learning_analyzer import PatyLearningAnalyzer
+        recorder = PatyLearningRecorder()
+        recorder.enabled = True
+        state = self.state()
+        state["filtros"]["caracteristicas"] = ["planta eléctrica"]
+        state["estado_conversacion"] = "propiedades_mostradas"
+        state["ultima_intencion"] = "busqueda_propiedad"
+        with patch.object(recorder, "_append") as append:
+            recorder.record_turn(sender="test-user", state=state, user_message="Prueba", assistant_response="Opciones")
+        event = append.call_args.args[0][0]
+        self.assertEqual(event["filters"]["caracteristicas"], ["planta eléctrica"])
+        self.assertEqual(event["filters"]["perfil_faltante"], [])
+        # Apps Script devuelve filters como JSON dentro de una celda.
+        event["filters"] = json.dumps(event["filters"])
+        quality = PatyLearningAnalyzer.summarize([event])["calidad_datos"]
+        self.assertEqual(quality["listados_con_perfil_completo"], 1)
+        self.assertEqual(quality["listados_con_perfil_incompleto"], 0)
 
 
 if __name__ == "__main__":
