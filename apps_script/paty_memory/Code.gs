@@ -53,9 +53,12 @@ function estadisticasOfertas(folder) {
     stats[variant].offers++;
     const lead = state.lead || {};
     const phone = String(lead.whatsapp || '').replace(/\D/g, '');
+    const email = String(lead.correo || '').trim();
     if (state.lead_confirmado === true && state.notificacion_enviada === true
         && state.agente_asignado && typeof lead.nombre === 'string'
-        && lead.nombre.trim().length >= 2 && phone.length >= 10 && phone.length <= 15
+        && lead.nombre.trim().split(/\s+/).length >= 2
+        && /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(email)
+        && phone.length >= 10 && phone.length <= 15
         && lead.whatsapp_confirmado === true)
       stats[variant].notified++;
   }

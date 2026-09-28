@@ -19,8 +19,8 @@ def _fold(word: str) -> str:
                    if unicodedata.category(ch) != "Mn")
 
 
-def nombre_prospecto_valido(value: Any) -> bool:
-    """Acepta un nombre de pila o varios nombres, sin aceptar saludos."""
+def nombre_prospecto_parcial_valido(value: Any) -> bool:
+    """Conserva un nombre de pila mientras se solicita el apellido."""
     name = str(value or "").strip()
     words = name.split()
     return bool(
@@ -30,7 +30,14 @@ def nombre_prospecto_valido(value: Any) -> bool:
     )
 
 
+def nombre_prospecto_valido(value: Any) -> bool:
+    """Un lead requiere al menos nombre y apellido."""
+    return len(str(value or "").split()) >= 2 and nombre_prospecto_parcial_valido(value)
+
+
 def contacto_prospecto_completo(lead: dict) -> bool:
     phone = re.sub(r"\D", "", str(lead.get("whatsapp") or ""))
     return bool(nombre_prospecto_valido(lead.get("nombre"))
-                and 10 <= len(phone) <= 15 and lead.get("whatsapp_confirmado"))
+                and 10 <= len(phone) <= 15 and lead.get("whatsapp_confirmado")
+                and re.fullmatch(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+                                 str(lead.get("correo") or ""), re.IGNORECASE))

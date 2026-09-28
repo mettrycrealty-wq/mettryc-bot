@@ -26,7 +26,7 @@ class LearningMetricsTests(unittest.TestCase):
     def test_colleague_is_reported_separately_from_client(self):
         summary = PatyLearningAnalyzer.summarize([
             {"event_type": "conversation_turn", "conversation_id": "c1", "role": "cliente",
-             "schema_version": "2",
+             "schema_version": "3",
              "lead_captured": True, "lead_complete": True, "lead_confirmed": True,
              "notification_sent": True},
             {"event_type": "conversation_turn", "conversation_id": "c2",
@@ -47,11 +47,22 @@ class LearningMetricsTests(unittest.TestCase):
     def test_contact_counts_without_assignment_or_telegram(self):
         summary = PatyLearningAnalyzer.summarize([
             {"event_type": "conversation_turn", "conversation_id": "ana",
-             "schema_version": 2, "role": "cliente", "lead_captured": True,
+             "schema_version": 3, "role": "cliente", "lead_captured": True,
              "lead_complete": True, "lead_confirmed": False,
              "lead_assigned": False, "notification_sent": False},
         ])
         self.assertEqual(summary["conversaciones_con_lead"], 1)
+        self.assertEqual(summary["conversaciones_asignadas"], 0)
+        self.assertEqual(summary["conversaciones_con_lead_notificado"], 0)
+
+    def test_old_two_field_leads_do_not_count_as_new_three_field_leads(self):
+        summary = PatyLearningAnalyzer.summarize([
+            {"event_type": "conversation_turn", "conversation_id": "v2",
+             "schema_version": "2", "lead_captured": True,
+             "lead_assigned": True, "notification_sent": True},
+        ])
+        self.assertEqual(summary["conversaciones_con_lead"], 0)
+        self.assertEqual(summary["conversaciones_con_contacto_parcial"], 1)
         self.assertEqual(summary["conversaciones_asignadas"], 0)
         self.assertEqual(summary["conversaciones_con_lead_notificado"], 0)
 

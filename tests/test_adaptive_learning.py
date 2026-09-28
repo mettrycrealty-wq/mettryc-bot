@@ -28,10 +28,10 @@ class LearningOutcomeTests(unittest.TestCase):
         self.assertNotEqual(first_id, events[-1]["conversation_id"])
         self.assertTrue(events[-1]["colleague_notified"])
 
-    def test_name_and_whatsapp_count_before_confirmation_or_notification(self):
+    def test_complete_contact_counts_before_confirmation_or_notification(self):
         recorder = PatyLearningRecorder(); recorder.enabled = True
         events = []; recorder._append = lambda rows: events.extend(rows)
-        state = {"rol": "cliente", "lead": {"nombre": "Ana", "correo": None,
+        state = {"rol": "cliente", "lead": {"nombre": "Ana Pérez", "correo": None,
                  "whatsapp": "584121234567", "whatsapp_confirmado": True},
                  "lead_confirmado": False, "agente_asignado": None,
                  "notificacion_enviada": False}
@@ -39,9 +39,15 @@ class LearningOutcomeTests(unittest.TestCase):
                              assistant_response="Confirmemos tus datos")
         self.assertFalse(events[0]["lead_confirmed"])
         self.assertFalse(events[0]["notification_sent"])
-        self.assertTrue(events[0]["lead_captured"])
-        self.assertFalse(events[0]["contact_partial"])
-        self.assertEqual(events[1]["event"], "lead_contact_captured")
+        self.assertFalse(events[0]["lead_captured"])
+        self.assertTrue(events[0]["contact_partial"])
+        state["lead"]["correo"] = "ana@example.com"
+        recorder.record_turn(sender="a", state=state, user_message="ana@example.com",
+                             assistant_response="Confirmemos tus datos")
+        self.assertTrue(events[1]["lead_captured"])
+        self.assertFalse(events[1]["contact_partial"])
+        self.assertEqual(events[1]["schema_version"], 3)
+        self.assertEqual(events[2]["event"], "lead_contact_captured")
         state["lead_confirmado"] = True
         state["agente_asignado"] = {"nombre": "Luis"}
         state["notificacion_enviada"] = True

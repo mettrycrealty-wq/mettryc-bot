@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 from geografia import DICCIONARIO_GEOGRAFICO
 from agente_virtual.learning_analyzer import PatyLearningAnalyzer
 from agente_virtual.learning import PatyLearningRecorder
-from lead_rules import contacto_prospecto_completo, nombre_prospecto_valido
+from lead_rules import contacto_prospecto_completo, nombre_prospecto_parcial_valido, nombre_prospecto_valido
 from conversation_store import conversation_store_from_environment, ConversationStoreUnavailable
 # ============================================================
 # LOGS Y CONFIGURACIÓN
@@ -2318,7 +2318,7 @@ REGLAS PRINCIPALES
 3. Nunca preguntes de nuevo un dato que ya aparezca en el estado.
 4. Puedes responder una pregunta y continuar naturalmente el flujo.
 5. Haz una sola pregunta principal por turno, salvo que sea natural
-   pedir nombre y WhatsApp juntos. El correo es opcional.
+   pedir nombre completo, WhatsApp y correo electrónico juntos.
 6. Si el usuario solo saluda, responde el saludo y pregunta cómo
    puedes ayudarlo. No inicies un interrogatorio inmobiliario.
 7. Si solicita hablar con una persona, agente, asesor o humano,
@@ -2468,8 +2468,8 @@ SIN RESULTADOS
 
 CAPTURA DE LEAD
 
-Extrae nombre y WhatsApp de cualquier mensaje; acepta también el correo si lo ofrece.
-No exijas apellido ni correo para asignar un prospecto.
+Extrae nombre completo, WhatsApp y correo de cualquier mensaje.
+Solicita los tres datos antes de confirmar y asignar al prospecto.
 Si quiere usar el número del chat, establece usar_numero_actual.
 No vuelvas a pedir información existente.
 
@@ -3142,7 +3142,7 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
     lead = estado.setdefault("lead", {})
 
     nombre = actualizaciones.get("nombre")
-    if nombre and nombre_prospecto_valido(normalizar_nombre(nombre)):
+    if nombre and nombre_prospecto_parcial_valido(normalizar_nombre(nombre)):
         lead["nombre"] = normalizar_nombre(nombre)
 
     correo = extraer_correo(mensaje) or actualizaciones.get("correo")
@@ -3973,14 +3973,22 @@ def mensaje_solicitud_datos_lead(estado: dict, saludo: bool = False) -> str:
         return mensaje_confirmacion_lead(estado)
 
     introduccion = (
-        "¡Con gusto! Para asignarte un asesor, necesito:"
+        "¡Con gusto! 📝 Para ponerte en contacto con un asesor, compárteme:"
         if saludo
-        else "Para continuar, me faltan estos datos:"
+        else "📝 Para continuar, me falta:" if len(faltantes) == 1
+        else "📝 Para continuar, me faltan estos datos:"
     )
+    lineas = []
+    for campo in faltantes:
+        emoji = "📱" if "WhatsApp" in campo else "✉️" if "correo" in campo else "👤"
+        lineas.append(f"{emoji} {campo[0].upper() + campo[1:]}")
 
-    lineas = [f"{i}. {campo.capitalize()}" for i, campo in enumerate(faltantes, start=1)]
-
-    return introduccion + "\n" + "\n".join(lineas) + "\n\nPuedes enviarlos juntos en un solo mensaje."
+    cierre = (
+        "Cuando puedas, envíame ese dato."
+        if len(faltantes) == 1
+        else "Puedes enviármelos juntos en un solo mensaje."
+    )
+    return introduccion + "\n" + "\n".join(lineas) + "\n\n" + cierre
 
 
 async def atender_solicitud_captador(
@@ -4248,9 +4256,14 @@ def datos_lead_faltantes(estado: dict) -> List[str]:
     faltantes = []
 
     if not nombre_prospecto_valido(lead.get("nombre")):
-        faltantes.append("tu nombre")
+        faltantes.append(
+            "tu apellido" if nombre_prospecto_parcial_valido(lead.get("nombre"))
+            else "tu nombre completo (nombre y apellido)"
+        )
     if not (normalizar_telefono(lead.get("whatsapp")) and lead.get("whatsapp_confirmado")):
         faltantes.append("número de WhatsApp")
+    if not correo_valido(lead.get("correo")):
+        faltantes.append("correo electrónico")
 
     return faltantes
 
@@ -4334,7 +4347,23 @@ def actualizar_lead_desde_mensaje(estado: dict, mensaje: str) -> List[str]:
         ):
             nombre_candidato = texto_filtrado
 
-    if nombre_candidato and nombre_prospecto_valido(nombre_candidato):
+    apellido = re.search(
+        r"\b(?:mi\s+)?apellido\s+es\s+([A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,40})\b",
+        texto_nombre, re.IGNORECASE,
+    )
+    if apellido and nombre_prospecto_parcial_valido(lead.get("nombre")):
+        actual = str(lead["nombre"]).strip()
+        if len(actual.split()) == 1:
+            nombre_candidato = actual + " " + apellido.group(1)
+    elif (nombre_candidato and len(nombre_candidato.split()) == 1
+          and estado.get("objetivo") == "captura_lead"
+          and not coincidencia_nombre
+          and nombre_prospecto_parcial_valido(lead.get("nombre"))
+          and len(str(lead["nombre"]).split()) == 1
+          and normalizar_texto(nombre_candidato) != normalizar_texto(lead["nombre"])):
+        nombre_candidato = str(lead["nombre"]).strip() + " " + nombre_candidato
+
+    if nombre_candidato and nombre_prospecto_parcial_valido(nombre_candidato):
         nombre = normalizar_nombre(nombre_candidato)
         if lead.get("nombre") != nombre:
             lead["nombre"] = nombre
@@ -4352,9 +4381,9 @@ def mensaje_confirmacion_lead(estado: dict) -> str:
 
     return (
         "✔️ Estos son los datos que registré:\n"
-        f"- Nombre: {lead.get('nombre') or 'N/D'}\n"
-        f"- Correo (opcional): {lead.get('correo') or 'No indicado'}\n"
-        f"- WhatsApp: {whatsapp}\n\n"
+        f"- 👤 Nombre completo: {lead.get('nombre') or 'N/D'}\n"
+        f"- 📱 WhatsApp: {whatsapp}\n"
+        f"- ✉️ Correo electrónico: {lead.get('correo') or 'N/D'}\n\n"
         "¿Está todo correcto? Responde Sí o No."
     )
 
@@ -4661,7 +4690,7 @@ async def completar_y_asignar_lead(estado: dict) -> str:
         estado["estado_conversacion"] = "asignacion_pendiente"
         estado["lead_confirmacion_pendiente"] = True
         return (
-            "Tengo tu nombre y WhatsApp, pero no pude confirmar la asignación "
+            "Tengo tu nombre completo, WhatsApp y correo, pero no pude confirmar la asignación "
             "a un asesor. ¿Quieres que lo intente de nuevo?"
         )
 

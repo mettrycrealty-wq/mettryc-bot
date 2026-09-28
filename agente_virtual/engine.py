@@ -945,7 +945,11 @@ class AgenteVirtualEngine:
             )
 
         if state.get("objetivo") == "captura_lead":
-            if self._looks_like_data_turn_without_analysis(legacy, text):
+            nombre_incompleto = (
+                not legacy.nombre_prospecto_valido((state.get("lead") or {}).get("nombre"))
+                and legacy.nombre_prospecto_parcial_valido(text)
+            )
+            if self._looks_like_data_turn_without_analysis(legacy, text) or nombre_incompleto:
                 result = await self.bridge.capture_lead(state, text)
                 return result.message
 
@@ -967,6 +971,7 @@ class AgenteVirtualEngine:
             for marker in (
                 "me llamo",
                 "mi nombre es",
+                "apellido",
                 "soy ",
                 "mi whatsapp",
                 "mi telefono",
