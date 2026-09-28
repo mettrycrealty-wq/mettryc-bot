@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from lead_rules import contacto_prospecto_completo
 
 
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
@@ -108,18 +109,12 @@ class PatyLearningRecorder:
                 pause_detected = False
 
         lead = state.get("lead") or {}
-        lead_captured = bool(
-            lead.get("nombre")
-            or lead.get("correo")
-            or lead.get("whatsapp")
-        )
-        lead_complete = bool(
-            lead.get("nombre") and lead.get("correo")
-            and lead.get("whatsapp") and lead.get("whatsapp_confirmado")
-        )
+        lead_complete = contacto_prospecto_completo(lead)
         lead_confirmed = bool(state.get("lead_confirmado") and lead_complete)
         lead_assigned = bool(state.get("agente_asignado") and lead_confirmed)
         notification_sent = bool(state.get("notificacion_enviada") and lead_assigned)
+        lead_captured = notification_sent
+        contact_partial = bool(lead.get("nombre") or lead.get("whatsapp") or lead.get("correo"))
         colleague_notified = state.get("estado_conversacion") == "colega_notificado"
 
         learning["turn_count"] = int(learning.get("turn_count") or 0) + 1
@@ -166,6 +161,7 @@ class PatyLearningRecorder:
                 if key != "caracteristicas"
             },
             "lead_captured": lead_captured,
+            "contact_partial": contact_partial,
             "lead_complete": lead_complete,
             "lead_confirmed": lead_confirmed,
             "lead_assigned": lead_assigned,
@@ -173,6 +169,7 @@ class PatyLearningRecorder:
             "colleague_notified": colleague_notified,
             "advisor_offer_variant": state.get("advisor_offer_variant"),
             "advisor_offer_present": bool(state.pop("_advisor_offer_this_turn", False)),
+            "schema_version": 2,
             "pause_detected": pause_detected,
             "possible_abandonment": bool(
                 learning.get("possible_abandonment")

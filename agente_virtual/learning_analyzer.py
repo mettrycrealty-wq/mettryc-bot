@@ -118,6 +118,7 @@ class PatyLearningAnalyzer:
             }
 
         converted = set()
+        partial_contacts = set()
         assigned = set()
         abandoned = set()
         completed = set()
@@ -127,10 +128,21 @@ class PatyLearningAnalyzer:
 
         for cid, rows in conversations.items():
 
-            if any(truth(r.get("lead_captured")) for r in rows):
+            # Antes de v2 lead_captured significaba cualquier dato suelto:
+            # los registros antiguos no demuestran asignación y aviso.
+            if any(
+                truth(r.get("contact_partial"))
+                or (str(r.get("schema_version")) != "2" and truth(r.get("lead_captured")))
+                for r in rows
+            ):
+                partial_contacts.add(cid)
+
+            if any(str(r.get("schema_version")) == "2" and truth(r.get("lead_captured"))
+                   for r in rows):
                 converted.add(cid)
 
-            if any(truth(r.get("lead_assigned")) for r in rows):
+            if any(str(r.get("schema_version")) == "2" and truth(r.get("lead_assigned"))
+                   for r in rows):
                 assigned.add(cid)
 
             if any(truth(r.get("possible_abandonment")) for r in rows):
@@ -240,7 +252,7 @@ class PatyLearningAnalyzer:
             )
             role_totals = by_role[role]
             role_totals["conversaciones"] += 1
-            role_totals["contacto_parcial"] += int(cid in converted)
+            role_totals["contacto_parcial"] += int(cid in partial_contacts)
             role_totals["contacto_completo"] += int(cid in completed)
             role_totals["lead_confirmado"] += int(cid in confirmed)
             role_totals["lead_notificado"] += int(cid in notified)
@@ -301,8 +313,7 @@ class PatyLearningAnalyzer:
             "turnos": len(turns),
             "conversaciones": total_conversations,
             "conversaciones_con_lead": len(converted),
-            # La métrica histórica sólo indica algún dato parcial de contacto.
-            "conversaciones_con_contacto_parcial": len(converted),
+            "conversaciones_con_contacto_parcial": len(partial_contacts),
             "conversaciones_con_contacto_completo": len(completed),
             "conversaciones_con_lead_confirmado": len(confirmed),
             "conversaciones_con_lead_notificado": len(notified),
@@ -310,6 +321,9 @@ class PatyLearningAnalyzer:
             "conversaciones_asignadas": len(assigned),
             "posibles_abandonos": len(abandoned),
             "tasa_captura_lead": round(conversion_rate, 4),
+            "tasa_contacto_parcial": round(
+                len(partial_contacts) / total_conversations if total_conversations else 0.0, 4
+            ),
             "tasa_asignacion": round(assignment_rate, 4),
             "intenciones": dict(intents),
             "senales_comerciales": dict(signals),

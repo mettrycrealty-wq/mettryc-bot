@@ -51,7 +51,12 @@ function estadisticasOfertas(folder) {
         || !Number.isFinite(date) || now - date < 86400000
         || now - date > 30 * 86400000) continue;
     stats[variant].offers++;
-    if (state.lead_confirmado === true && state.notificacion_enviada === true)
+    const lead = state.lead || {};
+    const phone = String(lead.whatsapp || '').replace(/\D/g, '');
+    if (state.lead_confirmado === true && state.notificacion_enviada === true
+        && state.agente_asignado && typeof lead.nombre === 'string'
+        && lead.nombre.trim().length >= 2 && phone.length >= 10 && phone.length <= 15
+        && lead.whatsapp_confirmado === true)
       stats[variant].notified++;
   }
   return {ok: true, stats: stats};
