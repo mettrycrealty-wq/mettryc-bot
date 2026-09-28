@@ -60,9 +60,16 @@ test('learning counts only mature client offers with confirmed notification',()=
   s.call('acquire',{lease:360});
   s.call('commit',{state:{rol:'cliente',advisor_offer_variant:'B',
     advisor_offer_at:new Date(1000000-2*86400000).toISOString(),
-    lead_confirmado:true,notificacion_enviada:true},ttl:60,duplicate_ttl:180});
+    lead:{nombre:'Ana', whatsapp:'584121234567', whatsapp_confirmado:true},
+    agente_asignado:{nombre:'Luis'},lead_confirmado:true,notificacion_enviada:true},ttl:60,duplicate_ttl:180});
+  const next = {sender:'f'.repeat(64), owner:'d'.repeat(32), message:'e'.repeat(64)};
+  s.call('acquire',{...next,lease:360});
+  s.call('commit',{...next,state:{rol:'cliente',advisor_offer_variant:'B',
+    advisor_offer_at:new Date(1000000-2*86400000).toISOString(),
+    lead:{nombre:'Pablo', whatsapp:'584121234568', whatsapp_confirmado:true},
+    agente_asignado:null,lead_confirmado:true,notificacion_enviada:true},ttl:60,duplicate_ttl:180});
   const stats=s.ctx.estadisticasOfertas(s.folder).stats;
-  assert.equal(stats.B.offers,1);
+  assert.equal(stats.B.offers,2);
   assert.equal(stats.B.notified,1);
   assert.equal(stats.A.offers,0);
 });

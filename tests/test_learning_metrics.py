@@ -26,6 +26,7 @@ class LearningMetricsTests(unittest.TestCase):
     def test_colleague_is_reported_separately_from_client(self):
         summary = PatyLearningAnalyzer.summarize([
             {"event_type": "conversation_turn", "conversation_id": "c1", "role": "cliente",
+             "schema_version": "2",
              "lead_captured": True, "lead_complete": True, "lead_confirmed": True,
              "notification_sent": True},
             {"event_type": "conversation_turn", "conversation_id": "c2",
@@ -34,6 +35,25 @@ class LearningMetricsTests(unittest.TestCase):
         self.assertEqual(summary["por_rol"]["cliente"]["lead_notificado"], 1)
         self.assertEqual(summary["por_rol"]["colega_inmobiliario"]["colega_notificado"], 1)
         self.assertEqual(summary["por_rol"]["colega_inmobiliario"]["lead_notificado"], 0)
+
+    def test_old_partial_contact_is_not_counted_as_qualified_lead(self):
+        summary = PatyLearningAnalyzer.summarize([
+            {"event_type": "conversation_turn", "conversation_id": "old",
+             "role": "cliente", "lead_captured": True}
+        ])
+        self.assertEqual(summary["conversaciones_con_lead"], 0)
+        self.assertEqual(summary["conversaciones_con_contacto_parcial"], 1)
+
+    def test_contact_counts_without_assignment_or_telegram(self):
+        summary = PatyLearningAnalyzer.summarize([
+            {"event_type": "conversation_turn", "conversation_id": "ana",
+             "schema_version": 2, "role": "cliente", "lead_captured": True,
+             "lead_complete": True, "lead_confirmed": False,
+             "lead_assigned": False, "notification_sent": False},
+        ])
+        self.assertEqual(summary["conversaciones_con_lead"], 1)
+        self.assertEqual(summary["conversaciones_asignadas"], 0)
+        self.assertEqual(summary["conversaciones_con_lead_notificado"], 0)
 
     def test_empty_events_have_zero_coverage(self):
         summary = PatyLearningAnalyzer.summarize([])

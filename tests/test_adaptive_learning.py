@@ -8,7 +8,7 @@ from agente_virtual.offer_optimizer import AdaptiveOfferOptimizer, select_winner
 
 
 class LearningOutcomeTests(unittest.TestCase):
-    def test_partial_contact_is_not_a_confirmed_notified_lead(self):
+    def test_partial_contact_is_not_a_captured_lead(self):
         recorder = PatyLearningRecorder()
         recorder.enabled = True
         events = []
@@ -16,7 +16,8 @@ class LearningOutcomeTests(unittest.TestCase):
         state = {"rol": "cliente", "lead": {"nombre": "Ana"}}
         recorder.record_turn(sender="u", state=state, user_message="Soy Ana",
                              assistant_response="Hola Ana")
-        self.assertTrue(events[0]["lead_captured"])
+        self.assertTrue(events[0]["contact_partial"])
+        self.assertFalse(events[0]["lead_captured"])
         self.assertFalse(events[0]["lead_complete"])
         self.assertFalse(events[0]["lead_confirmed"])
         self.assertFalse(events[0]["notification_sent"])
@@ -27,21 +28,29 @@ class LearningOutcomeTests(unittest.TestCase):
         self.assertNotEqual(first_id, events[-1]["conversation_id"])
         self.assertTrue(events[-1]["colleague_notified"])
 
-    def test_confirmed_lead_requires_successful_notification(self):
+    def test_name_and_whatsapp_count_before_confirmation_or_notification(self):
         recorder = PatyLearningRecorder(); recorder.enabled = True
         events = []; recorder._append = lambda rows: events.extend(rows)
-        state = {"rol": "cliente", "lead": {"nombre": "Ana", "correo": "a@b.com",
+        state = {"rol": "cliente", "lead": {"nombre": "Ana", "correo": None,
                  "whatsapp": "584121234567", "whatsapp_confirmado": True},
-                 "lead_confirmado": True, "agente_asignado": {"nombre": "Luis"},
+                 "lead_confirmado": False, "agente_asignado": None,
                  "notificacion_enviada": False}
-        recorder.record_turn(sender="a", state=state, user_message="Sí",
-                             assistant_response="Confirmado")
-        self.assertTrue(events[0]["lead_confirmed"])
+        recorder.record_turn(sender="a", state=state, user_message="Ana 584121234567",
+                             assistant_response="Confirmemos tus datos")
+        self.assertFalse(events[0]["lead_confirmed"])
         self.assertFalse(events[0]["notification_sent"])
+        self.assertTrue(events[0]["lead_captured"])
+        self.assertFalse(events[0]["contact_partial"])
+        self.assertEqual(events[1]["event"], "lead_contact_captured")
+        state["lead_confirmado"] = True
+        state["agente_asignado"] = {"nombre": "Luis"}
         state["notificacion_enviada"] = True
         recorder.record_turn(sender="a", state=state, user_message="Gracias",
                              assistant_response="De nada")
-        self.assertTrue(events[-1]["notification_sent"])
+        turn = next(e for e in reversed(events) if e["event"] == "conversation_turn")
+        self.assertTrue(turn["notification_sent"])
+        self.assertTrue(turn["lead_captured"])
+        self.assertEqual(sum(e["event"] == "lead_contact_captured" for e in events), 1)
 
 
 class AdaptiveOffersTests(unittest.IsolatedAsyncioTestCase):

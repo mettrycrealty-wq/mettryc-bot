@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 from geografia import DICCIONARIO_GEOGRAFICO
 from agente_virtual.learning_analyzer import PatyLearningAnalyzer
 from agente_virtual.learning import PatyLearningRecorder
+from lead_rules import contacto_prospecto_completo, nombre_prospecto_valido
 from conversation_store import conversation_store_from_environment, ConversationStoreUnavailable
 # ============================================================
 # LOGS Y CONFIGURACIÓN
@@ -2317,7 +2318,7 @@ REGLAS PRINCIPALES
 3. Nunca preguntes de nuevo un dato que ya aparezca en el estado.
 4. Puedes responder una pregunta y continuar naturalmente el flujo.
 5. Haz una sola pregunta principal por turno, salvo que sea natural
-   pedir nombre, correo y WhatsApp juntos.
+   pedir nombre y WhatsApp juntos. El correo es opcional.
 6. Si el usuario solo saluda, responde el saludo y pregunta cómo
    puedes ayudarlo. No inicies un interrogatorio inmobiliario.
 7. Si solicita hablar con una persona, agente, asesor o humano,
@@ -2467,7 +2468,8 @@ SIN RESULTADOS
 
 CAPTURA DE LEAD
 
-Extrae nombre, correo y WhatsApp de cualquier mensaje.
+Extrae nombre y WhatsApp de cualquier mensaje; acepta también el correo si lo ofrece.
+No exijas apellido ni correo para asignar un prospecto.
 Si quiere usar el número del chat, establece usar_numero_actual.
 No vuelvas a pedir información existente.
 
@@ -3140,7 +3142,7 @@ def aplicar_decision(estado: dict, decision: DecisionAgente, mensaje: str) -> bo
     lead = estado.setdefault("lead", {})
 
     nombre = actualizaciones.get("nombre")
-    if nombre and nombre_valido(nombre):
+    if nombre and nombre_prospecto_valido(normalizar_nombre(nombre)):
         lead["nombre"] = normalizar_nombre(nombre)
 
     correo = extraer_correo(mensaje) or actualizaciones.get("correo")
@@ -4238,22 +4240,15 @@ def es_respuesta_negativa(texto: str) -> bool:
 
 def lead_completo(estado: dict) -> bool:
     lead = estado.get("lead", {})
-    return bool(
-        nombre_valido(lead.get("nombre"))
-        and correo_valido(lead.get("correo"))
-        and normalizar_telefono(lead.get("whatsapp"))
-        and lead.get("whatsapp_confirmado")
-    )
+    return contacto_prospecto_completo(lead)
 
 
 def datos_lead_faltantes(estado: dict) -> List[str]:
     lead = estado.get("lead", {})
     faltantes = []
 
-    if not nombre_valido(lead.get("nombre")):
-        faltantes.append("nombre completo")
-    if not correo_valido(lead.get("correo")):
-        faltantes.append("correo electrónico")
+    if not nombre_prospecto_valido(lead.get("nombre")):
+        faltantes.append("tu nombre")
     if not (normalizar_telefono(lead.get("whatsapp")) and lead.get("whatsapp_confirmado")):
         faltantes.append("número de WhatsApp")
 
@@ -4331,7 +4326,7 @@ def actualizar_lead_desde_mensaje(estado: dict, mensaje: str) -> List[str]:
         palabras = texto_filtrado.split()
 
         if (
-            2 <= len(palabras) <= 6
+            1 <= len(palabras) <= 6
             and not any(
                 normalizar_texto(p) in palabras_bloqueadas_nombre
                 for p in palabras
@@ -4339,11 +4334,11 @@ def actualizar_lead_desde_mensaje(estado: dict, mensaje: str) -> List[str]:
         ):
             nombre_candidato = texto_filtrado
 
-    if nombre_candidato and nombre_valido(nombre_candidato):
+    if nombre_candidato and nombre_prospecto_valido(nombre_candidato):
         nombre = normalizar_nombre(nombre_candidato)
         if lead.get("nombre") != nombre:
             lead["nombre"] = nombre
-            actualizados.append("nombre completo")
+            actualizados.append("nombre")
 
     return list(dict.fromkeys(actualizados))
 
@@ -4358,7 +4353,7 @@ def mensaje_confirmacion_lead(estado: dict) -> str:
     return (
         "✔️ Estos son los datos que registré:\n"
         f"- Nombre: {lead.get('nombre') or 'N/D'}\n"
-        f"- Correo: {lead.get('correo') or 'N/D'}\n"
+        f"- Correo (opcional): {lead.get('correo') or 'No indicado'}\n"
         f"- WhatsApp: {whatsapp}\n\n"
         "¿Está todo correcto? Responde Sí o No."
     )
@@ -4433,7 +4428,7 @@ async def notificar_lead_cliente(estado: dict) -> bool:
         f"ID: {estado.get('lead_id')}\n"
         f"Motivo: {estado.get('motivo_contacto') or 'Contacto'}\n"
         f"Nombre: {lead.get('nombre')}\n"
-        f"Correo: {lead.get('correo')}\n"
+        f"Correo: {lead.get('correo') or 'No indicado'}\n"
         f"WhatsApp: {whatsapp or 'N/D'}\n"
         f"Contacto: {f'https://wa.me/{whatsapp}' if whatsapp else 'N/D'}\n\n"
         "📋 BÚSQUEDA\n"
@@ -4646,6 +4641,11 @@ async def notificar_colega_administradores(estado: dict, mensaje_original: str) 
 
 
 async def completar_y_asignar_lead(estado: dict) -> str:
+    if not lead_completo(estado):
+        estado["lead_confirmado"] = False
+        estado["lead_confirmacion_pendiente"] = False
+        return mensaje_solicitud_datos_lead(estado)
+
     estado["lead_confirmacion_pendiente"] = False
     estado["lead_confirmado"] = True
 
@@ -4655,25 +4655,37 @@ async def completar_y_asignar_lead(estado: dict) -> str:
     if not estado.get("agente_asignado"):
         estado["agente_asignado"] = await asignar_agente_round_robin()
 
+    agente = estado.get("agente_asignado")
+    if not agente:
+        estado["objetivo"] = "captura_lead"
+        estado["estado_conversacion"] = "asignacion_pendiente"
+        estado["lead_confirmacion_pendiente"] = True
+        return (
+            "Tengo tu nombre y WhatsApp, pero no pude confirmar la asignación "
+            "a un asesor. ¿Quieres que lo intente de nuevo?"
+        )
+
     if not estado.get("notificacion_enviada"):
         estado["notificacion_enviada"] = await notificar_lead_cliente(estado)
+
+    if not estado.get("notificacion_enviada"):
+        estado["objetivo"] = "captura_lead"
+        estado["estado_conversacion"] = "notificacion_pendiente"
+        estado["lead_confirmacion_pendiente"] = True
+        return (
+            f"Asigné tu solicitud a {agente.get('nombre') or 'un asesor'}, "
+            "pero no pude confirmar el aviso por Telegram. "
+            "¿Quieres que lo intente de nuevo?"
+        )
 
     estado["objetivo"] = "lead_asignado"
     estado["estado_conversacion"] = "lead_asignado"
 
-    agente = estado.get("agente_asignado")
     nombre = estado["lead"].get("nombre") or ""
-
-    if agente:
-        return (
-            f"¡Listo, {nombre}! {agente.get('nombre')} recibió tu "
-            "solicitud y te contactará por WhatsApp. "
-            "¡Gracias por confiar en Mettryc Realty!"
-        )
-
     return (
-        f"¡Listo, {nombre}! Registré tu solicitud. "
-        "El equipo de Mettryc Realty te contactará por WhatsApp."
+        f"¡Listo, {nombre}! Asigné tu solicitud a "
+        f"{agente.get('nombre') or 'un asesor'} y envié el aviso por Telegram. "
+        "Te contactarán por WhatsApp. ¡Gracias por confiar en Mettryc Realty!"
     )
 
 # ============================================================
