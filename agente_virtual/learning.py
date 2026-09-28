@@ -113,8 +113,11 @@ class PatyLearningRecorder:
         lead_confirmed = bool(state.get("lead_confirmado") and lead_complete)
         lead_assigned = bool(state.get("agente_asignado") and lead_confirmed)
         notification_sent = bool(state.get("notificacion_enviada") and lead_assigned)
-        lead_captured = notification_sent
-        contact_partial = bool(lead.get("nombre") or lead.get("whatsapp") or lead.get("correo"))
+        lead_captured = lead_complete
+        contact_partial = bool(
+            (lead.get("nombre") or lead.get("whatsapp") or lead.get("correo"))
+            and not lead_complete
+        )
         colleague_notified = state.get("estado_conversacion") == "colega_notificado"
 
         learning["turn_count"] = int(learning.get("turn_count") or 0) + 1

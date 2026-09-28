@@ -44,6 +44,17 @@ class LearningMetricsTests(unittest.TestCase):
         self.assertEqual(summary["conversaciones_con_lead"], 0)
         self.assertEqual(summary["conversaciones_con_contacto_parcial"], 1)
 
+    def test_contact_counts_without_assignment_or_telegram(self):
+        summary = PatyLearningAnalyzer.summarize([
+            {"event_type": "conversation_turn", "conversation_id": "ana",
+             "schema_version": 2, "role": "cliente", "lead_captured": True,
+             "lead_complete": True, "lead_confirmed": False,
+             "lead_assigned": False, "notification_sent": False},
+        ])
+        self.assertEqual(summary["conversaciones_con_lead"], 1)
+        self.assertEqual(summary["conversaciones_asignadas"], 0)
+        self.assertEqual(summary["conversaciones_con_lead_notificado"], 0)
+
     def test_empty_events_have_zero_coverage(self):
         summary = PatyLearningAnalyzer.summarize([])
         self.assertEqual(summary["calidad_datos"]["turnos_evaluados"], 0)

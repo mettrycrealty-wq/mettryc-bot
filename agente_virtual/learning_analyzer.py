@@ -129,7 +129,7 @@ class PatyLearningAnalyzer:
         for cid, rows in conversations.items():
 
             # Antes de v2 lead_captured significaba cualquier dato suelto:
-            # los registros antiguos no demuestran asignación y aviso.
+            # los registros antiguos no demuestran nombre y WhatsApp juntos.
             if any(
                 truth(r.get("contact_partial"))
                 or (str(r.get("schema_version")) != "2" and truth(r.get("lead_captured")))
