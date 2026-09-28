@@ -120,6 +120,10 @@ class PatyLearningAnalyzer:
         converted = set()
         assigned = set()
         abandoned = set()
+        completed = set()
+        confirmed = set()
+        notified = set()
+        colleagues_notified = set()
 
         for cid, rows in conversations.items():
 
@@ -131,6 +135,15 @@ class PatyLearningAnalyzer:
 
             if any(truth(r.get("possible_abandonment")) for r in rows):
                 abandoned.add(cid)
+
+            if any(truth(r.get("lead_complete")) for r in rows):
+                completed.add(cid)
+            if any(truth(r.get("lead_confirmed")) for r in rows):
+                confirmed.add(cid)
+            if any(truth(r.get("notification_sent")) for r in rows):
+                notified.add(cid)
+            if any(truth(r.get("colleague_notified")) for r in rows):
+                colleagues_notified.add(cid)
 
         intents = Counter(
             str(e.get("intent") or "sin_intencion")
@@ -206,8 +219,32 @@ class PatyLearningAnalyzer:
                 "asignadas": 0,
             }
         )
+        by_role: dict[str, dict[str, int]] = {
+            role: {
+                "conversaciones": 0,
+                "contacto_parcial": 0,
+                "contacto_completo": 0,
+                "lead_confirmado": 0,
+                "lead_notificado": 0,
+                "colega_notificado": 0,
+            }
+            for role in ("cliente", "colega_inmobiliario", "desconocido")
+        }
 
         for cid, rows in conversations.items():
+
+            role = next(
+                (str(r.get("role")) for r in reversed(rows)
+                 if r.get("role") in {"cliente", "colega_inmobiliario"}),
+                "desconocido",
+            )
+            role_totals = by_role[role]
+            role_totals["conversaciones"] += 1
+            role_totals["contacto_parcial"] += int(cid in converted)
+            role_totals["contacto_completo"] += int(cid in completed)
+            role_totals["lead_confirmado"] += int(cid in confirmed)
+            role_totals["lead_notificado"] += int(cid in notified)
+            role_totals["colega_notificado"] += int(cid in colleagues_notified)
 
             turn = next(
                 (
@@ -264,6 +301,12 @@ class PatyLearningAnalyzer:
             "turnos": len(turns),
             "conversaciones": total_conversations,
             "conversaciones_con_lead": len(converted),
+            # La métrica histórica sólo indica algún dato parcial de contacto.
+            "conversaciones_con_contacto_parcial": len(converted),
+            "conversaciones_con_contacto_completo": len(completed),
+            "conversaciones_con_lead_confirmado": len(confirmed),
+            "conversaciones_con_lead_notificado": len(notified),
+            "conversaciones_colega_notificado": len(colleagues_notified),
             "conversaciones_asignadas": len(assigned),
             "posibles_abandonos": len(abandoned),
             "tasa_captura_lead": round(conversion_rate, 4),
@@ -275,6 +318,7 @@ class PatyLearningAnalyzer:
             "roles": dict(roles),
             "calidad_datos": data_quality,
             "por_origen": dict(by_origin),
+            "por_rol": by_role,
         }
 
     async def analyze(

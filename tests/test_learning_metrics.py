@@ -20,6 +20,20 @@ class LearningMetricsTests(unittest.TestCase):
         self.assertEqual(quality["cobertura_origen"], 0.5)
         self.assertEqual(quality["cobertura_senal_comercial"], 0.5)
         self.assertEqual(quality["cobertura_siguiente_paso"], 0.5)
+        self.assertEqual(summary["por_rol"]["cliente"]["conversaciones"], 1)
+        self.assertEqual(summary["por_rol"]["cliente"]["lead_notificado"], 0)
+
+    def test_colleague_is_reported_separately_from_client(self):
+        summary = PatyLearningAnalyzer.summarize([
+            {"event_type": "conversation_turn", "conversation_id": "c1", "role": "cliente",
+             "lead_captured": True, "lead_complete": True, "lead_confirmed": True,
+             "notification_sent": True},
+            {"event_type": "conversation_turn", "conversation_id": "c2",
+             "role": "colega_inmobiliario", "colleague_notified": True},
+        ])
+        self.assertEqual(summary["por_rol"]["cliente"]["lead_notificado"], 1)
+        self.assertEqual(summary["por_rol"]["colega_inmobiliario"]["colega_notificado"], 1)
+        self.assertEqual(summary["por_rol"]["colega_inmobiliario"]["lead_notificado"], 0)
 
     def test_empty_events_have_zero_coverage(self):
         summary = PatyLearningAnalyzer.summarize([])

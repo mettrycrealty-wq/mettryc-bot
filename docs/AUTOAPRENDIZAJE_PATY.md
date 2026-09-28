@@ -1,0 +1,28 @@
+# Primera etapa de autoaprendizaje de Paty
+
+Preparado el 28 de septiembre de 2026. Respaldo previo: rama `backup/pre-autoaprendizaje-2026-09-27`, commit `5227d0c38551a99323efdfa83dea7af93193dedd`.
+
+## Qué hace
+
+- El motor habitual y el virtual registran turnos de aprendizaje en `agente_virtual/learning.py`, si `PATY_LEARNING_ENABLED` está activo (valor por defecto `true`). El motor habitual no lo hacía antes. Las llamadas de registro pasan por otro hilo para que no bloqueen el servidor completo; el turno todavía espera la respuesta del registrador, con el límite de espera del webhook de aprendizaje.
+- Separa contacto parcial, contacto completo, lead confirmado, asignación, notificación lograda y solicitudes de colegas notificadas. `conversaciones_con_lead` y `tasa_captura_lead` conservan el significado histórico de *algún dato de contacto*: no las uses como tasa de leads válidos. Consulta las métricas nuevas en `/admin/paty-learning?include_ai=false`, que requiere `x-api-key`.
+- El motor virtual ahora registra las señales comerciales que detecta. Cuando un cliente indica interés alto en una propiedad identificada y la consulta inmobiliaria resultó bien, puede invitarlo **una sola vez** a hablar con un asesor. La aceptación, captura y notificación siguen usando el flujo de negocio existente. Un colega no recibe esa invitación comercial. La ficha y los datos WASI conservan su formato y fuente.
+- Hay dos variantes predefinidas, A y B. Se reparten de forma estable por conversación; no se generan instrucciones nuevas a partir del contenido de un cliente. La app de memoria Drive expone `offer_stats` con únicamente conteos agregados de conversaciones maduras (24 horas a 30 días). Si cada variante tiene al menos 30 conversaciones y una diferencia de al menos 5 puntos porcentuales con intervalos de confianza que no se solapan, Paty usa automáticamente la variante mejor observada. Recalcula hasta cada seis horas; ante errores, conserva la distribución y no inventa un ganador.
+
+Esta primera etapa ajusta una invitación; no reentrena Gemini, no cambia respuestas factuales de propiedades ni aprende automáticamente frases inéditas. Para colegas mide respuestas y derivaciones por separado. La calidad conversacional general y las conversiones posteriores (visita realizada/cierre) requieren ejemplos evaluados y resultados aportados por los agentes antes de automatizar nuevos cambios.
+
+## Activación en el entorno existente
+
+1. En el proyecto independiente **Paty - memoria Drive** de Apps Script, reemplaza `Código.gs` con la versión nueva de `apps_script/paty_memory/Code.gs`. Guarda y actualiza la **implementación existente** con una versión nueva. Conserva el mismo `PATY_FOLDER_ID`, `PATY_TOKEN` y URL `/exec`; no ejecutes de nuevo el instalador ni crees otra carpeta.
+2. Despliega `main` de GitHub en Render y verifica `/health`: `inventario` mayor que cero, `persistencia: "google_drive"` y `persistencia_disponible: true`.
+3. Comprueba en `/admin/status`, con el encabezado `x-api-key`, `aprendizaje.registro_activo` y `aprendizaje.google_sheets_configurado`. El registrador usa `PATY_LEARNING_WEBHOOK_URL`; para leer los informes, `PATY_LEARNING_READ_URL`. La app de memoria Drive almacena el estado y calcula el ensayo; no requiere otra URL.
+4. El envío normal a `/webhook` solo usa el motor virtual si `AGENTE_VIRTUAL_ACTIVO=true`; si falta, queda en el motor habitual y aprende de esos turnos, pero la invitación adaptable todavía no se ejecuta. Antes de cambiar esa variable, prueba `/webhook-agente-virtual` con un cliente y un colega usando tu `API_KEYS_AGENTES`. No copies la clave en conversaciones ni URLs.
+5. En la cuenta Drive, revisa que la carpeta privada acumule archivos de sesión después de conversaciones reales. El primer resumen del ensayo no puede escoger ganador sin volumen; la decisión inicial estable A/B es esperada. Las métricas nuevas en Google Sheets dependen de que el Apps Script de aprendizaje existente guarde y devuelva los nuevos campos del evento. Si no lo hace, los contadores de `/admin/paty-learning` permanecerán incompletos hasta adaptar ese proyecto por separado; no se modifica automáticamente.
+
+## Aceptación y reversión
+
+Una prueba de cliente debe ver la ficha real y, solo cuando manifieste intención alta, una pregunta breve para contactar a un asesor. Responder «no» mantiene la conversación; responder «sí» conduce al flujo de consentimiento y datos. Un colega debe recibir datos WASI/captador sin oferta comercial. Comprueba una captura incompleta: debe contarse como `contacto_parcial`, no como `lead_confirmado`. La notificación efectiva requiere `lead_confirmado` y `notificacion_enviada`.
+
+Para detener la variante adaptable sin cambiar el registro de turnos, desactiva `AGENTE_VIRTUAL_ACTIVO` y redespliega. Para volver al código anterior, usa el respaldo anterior. La decisión estadística solo se basa en los archivos de sesión aún conservados en Drive y puede olvidar un resultado si se reinicia manualmente una sesión o se borran archivos; no equivale a medir ventas cerradas. Los archivos vencidos no se eliminan físicamente automáticamente: aplica tu política de retención.
+
+Pruebas sin cuentas reales: `python -m unittest discover -s tests -v` y `node --test tests/drive_script.test.cjs`. El funcionamiento real de Sheets y las respuestas en Render deben comprobarse después de la activación.
