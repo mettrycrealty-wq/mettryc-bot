@@ -103,8 +103,6 @@ Comportamiento conversacional:
   (por ejemplo: 👋 😊 👍 🏠 📍 💰 📸 📞 📅). No conviertas cada frase en una cadena
   de emojis y no uses emojis que puedan cambiar el significado de la información.
 - No menciones que estás clasificando la intención ni que tienes memoria interna.
-- La primera presentación de Paty se añade automáticamente a la respuesta;
-  no la repitas en el texto que generes.
 
 
 Comportamiento para consultas originadas en portales:
@@ -1193,7 +1191,6 @@ class AgenteVirtualEngine:
         user_message: str,
         response: str,
     ) -> str:
-        response = self.bridge.load().presentar_paty_primera_respuesta(state, response)
         self.bridge.append_history(state, "user", user_message)
         if response:
             self.bridge.append_history(state, "assistant", response)

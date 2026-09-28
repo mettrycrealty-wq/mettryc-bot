@@ -86,22 +86,6 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
     def engine(self, **analysis):
         return AgenteVirtualEngine(router=Router(**analysis), bridge=LegacyMettrycBridge(bot))
 
-    async def test_first_legacy_reply_presents_paty_once(self):
-        with patch.object(bot, "decidir_con_ia", new=AsyncMock(side_effect=RuntimeError("offline"))):
-            first = await bot.procesar_mensaje("new-user", "Hola")
-            second = await bot.procesar_mensaje("new-user", "Hola")
-        self.assertEqual(first, bot.PRESENTACION_PATY)
-        self.assertNotIn("Paty la IA de Mettryc Realty", second)
-
-    async def test_virtual_first_reply_presents_paty_and_keeps_the_search(self):
-        engine = self.engine(intent="busqueda_propiedad", operation="venta", property_type="casa", city="Valencia")
-        first = await engine.process("new-user", "Busco una casa en venta en Valencia")
-        second = await engine.process("new-user", "Para mí")
-        self.assertTrue(first.startswith(bot.PRESENTACION_PATY))
-        self.assertIn("¿buscas la propiedad", first)
-        self.assertIn("Opción 1", second)
-        self.assertNotIn("Paty la IA de Mettryc Realty", second)
-
     async def test_summary_does_not_fill_detail_cache(self):
         self.assertEqual(bot.property_detail_cache, {})
         detail = await bot.consultar_detalle_propiedad_wasi(self.codes[0])
@@ -193,7 +177,7 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         before = deepcopy(state)
         engine = self.engine(intent="conversacion_casual")
         reply = await engine.process("test-user", "Qué bonito está el día, ¿verdad?")
-        self.assertEqual(reply, bot.PRESENTACION_PATY + "\n\nClaro, seguimos conversando.")
+        self.assertEqual(reply, "Claro, seguimos conversando.")
         self.assertEqual(state["ultimo_lote"], before["ultimo_lote"])
         self.assertEqual(state["propiedades_enviadas"], before["propiedades_enviadas"])
         self.assertEqual(state["filtros"], before["filtros"])
@@ -336,7 +320,7 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot, "llamar_openrouter_json", new=AsyncMock(return_value=bot.RespuestaPropiedadIA(
             respuesta="Tiene planta eléctrica."))):
             response = await engine.process("test-user", "¿Tiene planta eléctrica?")
-        self.assertEqual(response, bot.PRESENTACION_PATY + "\n\nTiene planta eléctrica.")
+        self.assertEqual(response, "Tiene planta eléctrica.")
         self.assertNotIn("advisor_offer_variant", state)
 
     async def test_wasi_failure_never_appends_an_advisor_offer(self):
@@ -420,13 +404,13 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=bot.app), base_url="http://test") as client:
                         result = await client.post(route, json={"sender": "test-user", "message": "¿La segunda tiene planta eléctrica?", "message_id": "question"}, headers={"x-api-key": "test-key"})
                 self.assertEqual(result.status_code, 200)
-                self.assertEqual(result.json()["replies"][0]["message"], bot.PRESENTACION_PATY + "\n\nLa segunda tiene planta eléctrica.")
+                self.assertEqual(result.json()["replies"][0]["message"], "La segunda tiene planta eléctrica.")
 
     async def test_question_with_explicit_code_answers_fact_instead_of_only_card(self):
         self.state()
         with patch.object(bot, "llamar_openrouter_json", new=AsyncMock(return_value=bot.RespuestaPropiedadIA(respuesta="Tiene planta eléctrica."))):
             reply = await self.engine(intent="pregunta_propiedad").process("test-user", "¿El inmueble 1000002 tiene planta eléctrica?")
-        self.assertEqual(reply, bot.PRESENTACION_PATY + "\n\nTiene planta eléctrica.")
+        self.assertEqual(reply, "Tiene planta eléctrica.")
 
 
 if __name__ == "__main__":

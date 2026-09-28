@@ -1309,30 +1309,6 @@ def guardar_sesion(sender: str, estado: dict) -> None:
     sesiones[sender] = estado
 
 
-PRESENTACION_PATY = (
-    "¡Hola! Soy Paty la IA de Mettryc Realty. "
-    "Puedo ayudarte de forma rápida si me explicas con detalle qué necesitas."
-)
-
-
-def presentar_paty_primera_respuesta(estado: dict, respuesta: str) -> str:
-    """Presenta a Paty una vez sin tapar la respuesta a una consulta concreta."""
-    if not respuesta or estado.get("presentacion_enviada"):
-        return respuesta
-    if any(item.get("role") == "assistant" for item in estado.get("historial", [])):
-        return respuesta
-
-    estado["presentacion_enviada"] = True
-    texto = respuesta.strip()
-    primera_frase, punto, resto = texto.partition(".")
-    if "soy paty" in primera_frase.lower():
-        texto = resto.strip() if punto else ""
-    if texto in {"", "¡Hola! ¿Cómo puedo ayudarte?", "¿Cómo puedo ayudarte?",
-                 "¿En qué puedo ayudarte?"}:
-        return PRESENTACION_PATY
-    return PRESENTACION_PATY + "\n\n" + texto
-
-
 def agregar_historial(estado: dict, rol: Literal["user", "assistant"], contenido: str) -> None:
     contenido = str(contenido or "").strip()
     if not contenido:
@@ -2786,7 +2762,10 @@ def decision_fallback(mensaje: str, estado: dict) -> DecisionAgente:
         )
 
     return DecisionAgente(
-        mensaje="¡Hola! ¿Cómo puedo ayudarte?",
+        mensaje=(
+            "¡Hola! Soy Paty, asesora virtual de Mettryc Realty. "
+            "¿Cómo puedo ayudarte?"
+        ),
         rol=rol,
         confianza_rol=1.0 if rol else 0.0,
         intencion_principal="conversar",
@@ -5641,7 +5620,6 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             # al usuario sin respuesta. El chatbot antiguo permanece intacto.
 
     async def finalizar(respuesta: str) -> str:
-        respuesta = presentar_paty_primera_respuesta(estado, respuesta)
         agregar_historial(estado, "user", texto)
         if respuesta:
             agregar_historial(estado, "assistant", respuesta)
@@ -5672,9 +5650,7 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
     # --------------------------------------------------------
     if texto_norm == "/reiniciar":
         estado = reiniciar_busqueda(estado)
-        respuesta = presentar_paty_primera_respuesta(
-            estado, "🧹 Reinicié la búsqueda. ¿Cómo puedo ayudarte ahora?"
-        )
+        respuesta = "🧹 Reinicié la búsqueda. ¿Cómo puedo ayudarte ahora?"
         agregar_historial(estado, "user", texto)
         agregar_historial(estado, "assistant", respuesta)
         guardar_sesion(sender, estado)
