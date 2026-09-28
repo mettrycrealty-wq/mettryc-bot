@@ -172,7 +172,7 @@ class PatyLearningRecorder:
             "colleague_notified": colleague_notified,
             "advisor_offer_variant": state.get("advisor_offer_variant"),
             "advisor_offer_present": bool(state.pop("_advisor_offer_this_turn", False)),
-            "schema_version": 2,
+            "schema_version": 3,
             "pause_detected": pause_detected,
             "possible_abandonment": bool(
                 learning.get("possible_abandonment")

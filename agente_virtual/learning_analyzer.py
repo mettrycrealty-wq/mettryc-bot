@@ -128,31 +128,31 @@ class PatyLearningAnalyzer:
 
         for cid, rows in conversations.items():
 
-            # Antes de v2 lead_captured significaba cualquier dato suelto:
-            # los registros antiguos no demuestran nombre y WhatsApp juntos.
+            # Las versiones anteriores no demuestran nombre completo,
+            # WhatsApp y correo juntos; no se convierten retroactivamente.
             if any(
                 truth(r.get("contact_partial"))
-                or (str(r.get("schema_version")) != "2" and truth(r.get("lead_captured")))
+                or (str(r.get("schema_version")) != "3" and truth(r.get("lead_captured")))
                 for r in rows
             ):
                 partial_contacts.add(cid)
 
-            if any(str(r.get("schema_version")) == "2" and truth(r.get("lead_captured"))
+            if any(str(r.get("schema_version")) == "3" and truth(r.get("lead_captured"))
                    for r in rows):
                 converted.add(cid)
 
-            if any(str(r.get("schema_version")) == "2" and truth(r.get("lead_assigned"))
+            if any(str(r.get("schema_version")) == "3" and truth(r.get("lead_assigned"))
                    for r in rows):
                 assigned.add(cid)
 
             if any(truth(r.get("possible_abandonment")) for r in rows):
                 abandoned.add(cid)
 
-            if any(truth(r.get("lead_complete")) for r in rows):
+            if any(str(r.get("schema_version")) == "3" and truth(r.get("lead_complete")) for r in rows):
                 completed.add(cid)
-            if any(truth(r.get("lead_confirmed")) for r in rows):
+            if any(str(r.get("schema_version")) == "3" and truth(r.get("lead_confirmed")) for r in rows):
                 confirmed.add(cid)
-            if any(truth(r.get("notification_sent")) for r in rows):
+            if any(str(r.get("schema_version")) == "3" and truth(r.get("notification_sent")) for r in rows):
                 notified.add(cid)
             if any(truth(r.get("colleague_notified")) for r in rows):
                 colleagues_notified.add(cid)
