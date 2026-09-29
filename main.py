@@ -475,6 +475,14 @@ def obtener_datos_captador(propiedad: dict) -> dict:
     return {"nombre": "", "telefono": "", "fuente": None, "tipo": None}
 
 
+def telefono_contacto_usuario(usuario: dict) -> str:
+    """Prioriza WhatsApp y celular antes del teléfono general del perfil."""
+    if not isinstance(usuario, dict):
+        return ""
+    return next((numero for clave in ("whatsapp", "cell_phone", "phone")
+                 if (numero := normalizar_telefono(usuario.get(clave)))), "")
+
+
 def obtener_contacto_oficina(propiedad: dict) -> dict:
     """El usuario de WASI representa a la oficina, no al asesor captador."""
     raw = propiedad.get("detalle_raw") or {}
@@ -486,7 +494,7 @@ def obtener_contacto_oficina(propiedad: dict) -> dict:
                  propiedad.get("captador_wasi") or "").strip()
     if nombre == "Asesor Mettryc":
         nombre = ""
-    telefono = (normalizar_telefono(usuario.get("phone")) or
+    telefono = (telefono_contacto_usuario(usuario) or
                 normalizar_telefono(propiedad.get("telefono_oficina_wasi")) or
                 normalizar_telefono(propiedad.get("telefono_captador_wasi")) or "")
     return {"nombre": nombre, "telefono": telefono,
@@ -502,21 +510,21 @@ def lineas_contacto_colega(contacto: dict) -> List[str]:
         telefono = contacto.get("telefono")
         return [f"🏢 *Oficina Mettryc:* {nombre}",
                 (f"📲 *WhatsApp de la oficina:* https://wa.me/{telefono}" if telefono
-                 else "📲 *WhatsApp de la oficina:* No disponible en WASI.")]
-    return ["👤 *Asesor Mettryc:* Contacto no disponible en WASI.",
-            "🏢 *Oficina Mettryc:* Contacto no disponible en WASI."]
+                 else "📲 *WhatsApp de la oficina:* No disponible por ahora.")]
+    return ["👤 *Asesor Mettryc:* Contacto no disponible por ahora.",
+            "🏢 *Oficina Mettryc:* Contacto no disponible por ahora."]
 
 
 def respuesta_contacto_colega(contacto: dict, *, oficina_solicitada: bool = False) -> str:
     if contacto.get("tipo") == "asesor":
-        encabezado = "Claro, colega. Este es el asesor encargado según la observación privada:"
+        encabezado = "Claro, colega. Este es el contacto del asesor encargado:"
     elif contacto.get("tipo") == "oficina":
-        encabezado = ("Te comparto el contacto de la oficina registrado en WASI:"
+        encabezado = ("Te comparto el contacto de la oficina:"
                       if oficina_solicitada else
-                      "La observación privada no tiene nombre y WhatsApp completos del asesor. "
-                      "Te comparto el contacto de la oficina registrado en WASI:")
+                      "No tengo el nombre y WhatsApp completos del asesor de esta propiedad. "
+                      "Te comparto el contacto de la oficina:")
     else:
-        return ("No pude confirmar ni el contacto del asesor ni el de la oficina en WASI. "
+        return ("No pude confirmar ni el contacto del asesor ni el de la oficina. "
                 "Puedo solicitar ayuda al equipo administrativo si lo deseas.")
     respuesta = encabezado + "\n" + "\n".join(lineas_contacto_colega(contacto))
     if not contacto.get("telefono"):
@@ -1591,7 +1599,7 @@ def normalizar_propiedad_wasi(valor: Dict[str, Any]) -> dict:
         "caracteristicas_texto": " ".join(generales + internas + externas),
 
         "oficina_wasi": captador,
-        "telefono_oficina_wasi": usuario.get("phone") or "",
+        "telefono_oficina_wasi": telefono_contacto_usuario(usuario),
 
         "imagenes": valor.get("galleries") or valor.get("images") or [],
         "video": valor.get("video") or valor.get("video_url"),
@@ -2401,8 +2409,8 @@ ROLES
   un cliente.
 - Pedir hablar con un asesor no convierte a la persona en colega.
 - Si es colega, nunca solicites datos personales de su cliente.
-- Los colegas reciben SIEMPRE los datos del captador (nombre y
-  WhatsApp) en cada ficha de propiedad que se les muestre.
+- Los colegas reciben el contacto del asesor cuando está completo; si
+  falta algún dato, reciben el contacto disponible de la oficina.
 - Si un colega solicita atención humana, el sistema notificará
   solamente a los administradores.
 - Los clientes que soliciten visita o atención humana entran en el
@@ -2433,8 +2441,8 @@ REGLAS ESPECIALES PARA COLEGAS
 - Pregunta por habitaciones o características especiales junto con
   la pregunta de presupuesto, pero no las hagas obligatorias.
 - Cuando los criterios estén listos, usa buscar_propiedades.
-- El programa enviará cinco opciones, todas con nombre y WhatsApp
-  del captador.
+- El programa enviará hasta cinco opciones con el contacto confirmado
+  del asesor o de la oficina cuando esté disponible.
 - Nunca solicites datos personales del cliente del colega.
 - Nunca conviertas a un colega en cliente en mensajes posteriores.
 
@@ -2501,9 +2509,10 @@ PROPIEDADES
 - Si pide más opciones, usa mostrar_mas_propiedades.
 - Si pregunta por características de una propiedad, usa
   consultar_propiedad.
-- Si Wasi no especifica algo, debes decir que no está especificado.
+- Si la ficha no especifica algo, debes decir que no está especificado.
   Nunca concluyas que una propiedad no tiene una característica solo
   porque no aparece registrada.
+- No menciones el nombre del sistema de inventario ni de herramientas internas a las personas.
 
 SIN RESULTADOS
 
@@ -4098,9 +4107,9 @@ async def atender_solicitud_oficina(
     try:
         detalle = await consultar_detalle_propiedad_wasi(property_id)
     except WasiConsultaError:
-        return "No pude confirmar el contacto de la oficina en WASI ahora. Inténtalo nuevamente más tarde."
+        return "No pude confirmar el contacto de la oficina ahora. Inténtalo nuevamente más tarde."
     if not detalle:
-        return "No encontré ese inmueble en WASI para confirmar el contacto de su oficina."
+        return "No encontré ese inmueble para confirmar el contacto de su oficina."
     estado["propiedad_interes"] = detalle
     estado["propiedad_activa_id"] = property_id
     estado["ultima_propiedad_consultada_id"] = property_id
@@ -5010,9 +5019,9 @@ async def iniciar_visita(
         try:
             detalle = await consultar_detalle_propiedad_wasi(property_id)
         except WasiConsultaError:
-            return "No pude confirmar el contacto del asesor ni el de la oficina en WASI ahora. Inténtalo nuevamente más tarde."
+            return "No pude confirmar el contacto del asesor ni el de la oficina ahora. Inténtalo nuevamente más tarde."
         if not detalle:
-            return "No encontré ese inmueble en WASI para confirmar un contacto de visita."
+            return "No encontré ese inmueble para confirmar un contacto de visita."
         estado["propiedad_interes"] = detalle
         contacto = obtener_datos_captador(detalle)
 
