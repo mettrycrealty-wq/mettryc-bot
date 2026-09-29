@@ -1789,6 +1789,47 @@ async def consultar_detalle_propiedad_wasi(codigo: str) -> Optional[dict]:
     raise WasiConsultaError("detalle_no_disponible")
 
 
+async def propiedad_con_contacto_oficina(propiedad: dict) -> dict:
+    """Consulta el perfil del mismo usuario si la ficha omite su celular."""
+    if obtener_contacto_oficina(propiedad)["telefono"]:
+        return propiedad
+    raw = propiedad.get("detalle_raw")
+    if not isinstance(raw, dict):
+        return propiedad
+    usuario_ficha = raw.get("user_data")
+    id_usuario = str(raw.get("id_user") or
+                     (usuario_ficha.get("id_user") if isinstance(usuario_ficha, dict) else "") or "")
+    if not id_usuario.isdigit() or not WASI_TOKEN or not WASI_COMPANY_ID:
+        return propiedad
+    try:
+        respuesta = await http_client.get(
+            f"https://api.wasi.co/v1/user/get/{id_usuario}",
+            params={"wasi_token": WASI_TOKEN, "id_company": WASI_COMPANY_ID,
+                    "for_contact": "true"},
+            timeout=min(WASI_TIMEOUT, 8),
+        )
+        respuesta.raise_for_status()
+        usuario = respuesta.json()
+    except (httpx.HTTPError, ValueError, TypeError):
+        return propiedad
+    if (not isinstance(usuario, dict) or
+            str(usuario.get("status", "success")).lower() in {"error", "failed", "false"} or
+            str(usuario.get("id_user") or "") != id_usuario or
+            not telefono_contacto_usuario(usuario)):
+        return propiedad
+    # La coincidencia de id_user evita atribuir a la oficina datos de otro usuario.
+    actualizado = dict(propiedad)
+    actualizado["detalle_raw"] = {**raw, "user_data": usuario}
+    return actualizado
+
+
+async def datos_captador_confirmados(propiedad: dict) -> dict:
+    contacto = obtener_datos_captador(propiedad)
+    if contacto["tipo"] == "asesor" or contacto["telefono"]:
+        return contacto
+    return obtener_datos_captador(await propiedad_con_contacto_oficina(propiedad))
+
+
 # ============================================================
 # CATÁLOGO GEOGRÁFICO
 # ============================================================
@@ -3943,16 +3984,19 @@ async def construir_respuesta_fichas(
         introduccion = "Encontré estas opciones que pueden encajar con lo que buscas:"
 
     async def contacto_confirmado(propiedad: dict) -> dict:
-        if propiedad.get("_detalle_completo"):
-            return propiedad
-        asesor = extraer_asesor_desde_observaciones(propiedad)
+        detalle = propiedad
+        if not propiedad.get("_detalle_completo"):
+            asesor = extraer_asesor_desde_observaciones(propiedad)
+            if asesor["nombre"] and asesor["telefono"]:
+                return propiedad
+            try:
+                detalle = await consultar_detalle_propiedad_wasi(str(propiedad.get("id") or "")) or propiedad
+            except WasiConsultaError:
+                return propiedad
+        asesor = extraer_asesor_desde_observaciones(detalle)
         if asesor["nombre"] and asesor["telefono"]:
-            return propiedad
-        try:
-            detalle = await consultar_detalle_propiedad_wasi(str(propiedad.get("id") or ""))
-            return detalle or propiedad
-        except WasiConsultaError:
-            return propiedad
+            return detalle
+        return await propiedad_con_contacto_oficina(detalle)
 
     contactos = (await asyncio.gather(*(contacto_confirmado(p) for p in propiedades))
                  if es_colega else propiedades)
@@ -4087,7 +4131,7 @@ async def atender_solicitud_captador(
     estado["propiedad_interes"] = detalle
     estado["propiedad_activa_id"] = property_id
 
-    contacto = obtener_datos_captador(detalle or propiedad)
+    contacto = await datos_captador_confirmados(detalle or propiedad)
 
     estado["accion_pendiente_rol"] = None
     estado["pregunta_pendiente"] = None
@@ -4115,7 +4159,8 @@ async def atender_solicitud_oficina(
     estado["ultima_propiedad_consultada_id"] = property_id
     estado["estado_conversacion"] = "oficina_entregada"
     estado["pregunta_pendiente"] = None
-    return respuesta_contacto_colega(obtener_contacto_oficina(detalle), oficina_solicitada=True)
+    oficina = obtener_contacto_oficina(await propiedad_con_contacto_oficina(detalle))
+    return respuesta_contacto_colega(oficina, oficina_solicitada=True)
 
 def detalle_propiedad_para_ia(propiedad: dict) -> dict:
     return {
@@ -5023,7 +5068,7 @@ async def iniciar_visita(
         if not detalle:
             return "No encontré ese inmueble para confirmar un contacto de visita."
         estado["propiedad_interes"] = detalle
-        contacto = obtener_datos_captador(detalle)
+        contacto = await datos_captador_confirmados(detalle)
 
         estado["accion_pendiente_rol"] = None
         estado["pregunta_pendiente"] = None

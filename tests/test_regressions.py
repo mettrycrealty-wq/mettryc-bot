@@ -41,6 +41,7 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.calls = []
         self.summaries = {code: raw_property(code) for code in self.codes}
         self.details = {code: raw_property(code, description="Tiene planta eléctrica.", built_area="90") for code in self.codes}
+        self.users = {}
         self.fail_details = False
         self.client = httpx.AsyncClient(transport=httpx.MockTransport(self.transport))
         self.patches = [patch.object(bot, "http_client", self.client),
@@ -73,6 +74,9 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
                 **{str(i): prop for i, prop in enumerate(self.summaries.values())}})
         if self.fail_details:
             return httpx.Response(503, json={"status": "error"})
+        if "/user/get/" in request.url.path:
+            user_id = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, json=self.users.get(user_id, {"status": "error"}))
         code = request.url.path.rsplit("/", 1)[-1]
         code = request.url.params.get("id_property", code)
         return httpx.Response(200, json=self.details.get(code, {"status": "success"}))
@@ -665,6 +669,74 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://wa.me/584143334444", reply)
         self.assertNotIn("584142223333", reply)
         self.assertNotIn("WASI", reply.upper())
+
+    async def test_office_phone_looks_up_matching_user_profile_when_property_omits_it(self):
+        code = self.codes[0]
+        self.details[code]["id_user"] = 42
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo"
+        self.details[code]["user_data"] = {
+            "id_user": 42, "first_name": "Mettryc", "last_name": "Valencia",
+        }
+        self.users["42"] = {
+            "status": "success", "id_user": "42", "first_name": "Mettryc",
+            "last_name": "Valencia", "phone": "02412223333",
+            "cell_phone": "04142223333",
+        }
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        reply = await bot.atender_solicitud_captador(state, codigo=code)
+        self.assertIn("Mettryc Valencia", reply)
+        self.assertIn("https://wa.me/584142223333", reply)
+        self.assertNotIn("582412223333", reply)
+        self.assertNotIn("WASI", reply.upper())
+        calls = [r for r in self.calls if "/user/get/" in r.url.path]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].url.params.get("for_contact"), "true")
+
+        reply = await bot.atender_solicitud_oficina(state, codigo=code)
+        self.assertIn("https://wa.me/584142223333", reply)
+        reply = await bot.iniciar_visita(state, posicion=None, codigo=code)
+        self.assertIn("https://wa.me/584142223333", reply)
+
+    async def test_user_profile_with_another_id_is_never_used_as_office(self):
+        code = self.codes[0]
+        self.details[code]["id_user"] = 42
+        self.details[code]["observations"] = ""
+        self.details[code]["user_data"] = {
+            "first_name": "Mettryc", "last_name": "Valencia",
+        }
+        self.users["42"] = {
+            "status": "success", "id_user": "99", "first_name": "Otro",
+            "last_name": "Usuario", "cell_phone": "04149999999",
+        }
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        reply = await bot.atender_solicitud_captador(state, codigo=code)
+        self.assertIn("Mettryc Valencia", reply)
+        self.assertNotIn("https://wa.me/", reply)
+        self.assertNotIn("Otro Usuario", reply)
+
+    async def test_colleague_card_gets_office_profile_but_complete_advisor_skips_lookup(self):
+        code = self.codes[0]
+        self.details[code]["id_user"] = 42
+        self.details[code]["user_data"] = {
+            "first_name": "Mettryc", "last_name": "Valencia",
+        }
+        self.users["42"] = {
+            "status": "success", "id_user": "42", "first_name": "Mettryc",
+            "last_name": "Valencia", "cell_phone": "04142223333",
+        }
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo"
+        reply = await bot.construir_respuesta_fichas(state, [bot.buscar_por_codigo(code)])
+        self.assertIn("https://wa.me/584142223333", reply)
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo\nWhatsApp: 04141234567"
+        bot.property_detail_cache.clear()
+        self.calls.clear()
+        reply = await bot.atender_solicitud_captador(state, codigo=code)
+        self.assertIn("https://wa.me/584141234567", reply)
+        self.assertFalse(any("/user/get/" in r.url.path for r in self.calls))
 
     async def test_contact_failures_and_missing_phone_hide_inventory_provider(self):
         code = self.codes[0]
