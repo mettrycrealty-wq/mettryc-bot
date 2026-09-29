@@ -645,6 +645,45 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("584141234567", reply)
         self.assertNotIn("584149999999", reply)
 
+    async def test_office_whatsapp_prefers_mobile_fields_over_landline(self):
+        code = self.codes[0]
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo"
+        self.details[code]["user_data"] = {
+            "first_name": "Oficina", "last_name": "Centro",
+            "phone": "02412223333", "cell_phone": "04142223333",
+        }
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        reply = await bot.atender_solicitud_captador(state, codigo=code)
+        self.assertIn("https://wa.me/584142223333", reply)
+        self.assertNotIn("582412223333", reply)
+        self.assertNotIn("WASI", reply.upper())
+
+        self.details[code]["user_data"]["whatsapp"] = "04143334444"
+        bot.property_detail_cache.clear()
+        reply = await bot.atender_solicitud_oficina(state, codigo=code)
+        self.assertIn("https://wa.me/584143334444", reply)
+        self.assertNotIn("584142223333", reply)
+        self.assertNotIn("WASI", reply.upper())
+
+    async def test_contact_failures_and_missing_phone_hide_inventory_provider(self):
+        code = self.codes[0]
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo"
+        self.details[code]["user_data"] = {
+            "first_name": "Oficina", "last_name": "Centro", "phone": "",
+        }
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        reply = await bot.atender_solicitud_captador(state, codigo=code)
+        self.assertIn("WhatsApp de la oficina:* No disponible", reply)
+        self.assertNotIn("WASI", reply.upper())
+        self.fail_details = True
+        bot.property_detail_cache.clear()
+        reply = await bot.atender_solicitud_oficina(state, codigo=code)
+        self.assertNotIn("WASI", reply.upper())
+        reply = await bot.iniciar_visita(state, posicion=None, codigo=code)
+        self.assertNotIn("WASI", reply.upper())
+
     async def test_colleague_unreachable_advisor_gets_office_in_both_engines(self):
         code = self.codes[0]
         self.details[code]["observations"] = "Nombre: Ana Ejemplo\nWhatsApp: 04141234567"
