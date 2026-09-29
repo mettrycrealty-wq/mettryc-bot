@@ -365,12 +365,14 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_colleague_cards_still_include_captador(self):
         state = self.state()
         state["rol"] = "colega_inmobiliario"
-        for prop in bot.inventory_cache["inventario"]:
-            prop["captador_wasi"] = "Ana Ejemplo"
-            prop["telefono_captador_wasi"] = "584120000001"
+        self.details[self.codes[0]]["observations"] = "Nombre: Ana Ejemplo\nWhatsApp: 04141234567"
+        self.details[self.codes[0]]["user_data"] = {
+            "first_name": "Oficina", "last_name": "Centro", "phone": "04142223333",
+        }
         reply = await bot.mostrar_propiedades(state)
-        self.assertIn("Captador:* Ana Ejemplo", reply)
-        self.assertIn("https://wa.me/584120000001", reply)
+        self.assertIn("Asesor Mettryc:* Ana Ejemplo", reply)
+        self.assertIn("https://wa.me/584141234567", reply)
+        self.assertNotIn("https://wa.me/584142223333", reply)
 
     async def test_confirmed_lead_still_assigns_using_legacy(self):
         state = self.state()
@@ -595,8 +597,87 @@ class BotRegressionTests(unittest.IsolatedAsyncioTestCase):
         reply = await self.engine(intent="detalle_propiedad", property_position=2).process(
             "test-user", "Me interesa la opción 2")
         self.assertIn("https://www.mettryc.com/inmueble/" + state["ultimo_lote"][1], reply)
-        self.assertIn("Captador:", reply)
+        self.assertIn("Oficina Mettryc:", reply)
         self.assertNotIn("¿Quieres agendar una visita para conocerla?", reply)
+
+    async def test_colleague_contact_sources_never_mix_advisor_and_office(self):
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        code = self.codes[0]
+        self.details[code]["user_data"] = {
+            "first_name": "Oficina", "last_name": "Centro", "phone": "04142223333",
+        }
+        for observations, expected_type in (
+            ("Nombre: Ana Ejemplo\nWhatsApp: 04141234567", "asesor"),
+            ("Nombre: Ana Ejemplo", "oficina"),
+            ("WhatsApp: 04141234567", "oficina"),
+            ("", "oficina"),
+        ):
+            with self.subTest(observations=observations):
+                self.details[code]["observations"] = observations
+                bot.property_detail_cache.clear()
+                detail = await bot.consultar_detalle_propiedad_wasi(code)
+                contact = bot.obtener_datos_captador(detail)
+                self.assertEqual(contact["tipo"], expected_type)
+                reply = await bot.atender_solicitud_captador(state, codigo=code)
+                if expected_type == "asesor":
+                    self.assertIn("Ana Ejemplo", reply)
+                    self.assertIn("584141234567", reply)
+                    self.assertNotIn("584142223333", reply)
+                else:
+                    self.assertIn("Oficina Centro", reply)
+                    self.assertIn("584142223333", reply)
+                    self.assertNotIn("584141234567", reply)
+                    self.assertNotIn("El captador", reply)
+
+    async def test_colleague_visit_uses_wasi_even_if_sheet_has_a_different_phone(self):
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        code = self.codes[0]
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo\nWhatsApp: 04141234567"
+        self.details[code]["user_data"] = {
+            "first_name": "Oficina", "last_name": "Centro", "phone": "04142223333",
+        }
+        bot.sheets_cache["captadores"] = {"Ana Ejemplo": "584149999999"}
+        with patch.object(bot, "sincronizar_google_sheet", new=AsyncMock(
+            side_effect=AssertionError("No consultar Sheets para contactos"))):
+            reply = await bot.iniciar_visita(state, posicion=None, codigo=code)
+        self.assertIn("584141234567", reply)
+        self.assertNotIn("584149999999", reply)
+
+    async def test_colleague_unreachable_advisor_gets_office_in_both_engines(self):
+        code = self.codes[0]
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo\nWhatsApp: 04141234567"
+        self.details[code]["user_data"] = {
+            "first_name": "Oficina", "last_name": "Centro", "phone": "04142223333",
+        }
+        for virtual in (False, True):
+            with self.subTest(virtual=virtual):
+                bot.sesiones.clear()
+                state = self.state()
+                state["rol"] = "colega_inmobiliario"
+                state["propiedad_activa_id"] = code
+                state["propiedad_interes"] = bot.buscar_por_codigo(code)
+                self.assertFalse(bot.solicita_ayuda_contacto_oficina("No me responde mi cliente", state))
+                self.assertTrue(bot.solicita_ayuda_contacto_oficina("No pude comunicarme con el asesor", state))
+                if virtual:
+                    reply = await self.engine(intent="conversacion_casual").process(
+                        "test-user", "No me responde el asesor, ¿me ayudas?")
+                else:
+                    reply = await bot.procesar_mensaje("test-user", "No me responde el asesor, ¿me ayudas?")
+                self.assertIn("Oficina Centro", reply)
+                self.assertIn("584142223333", reply)
+                self.assertNotIn("584141234567", reply)
+
+    async def test_missing_office_contact_does_not_invent_one(self):
+        code = self.codes[0]
+        self.details[code]["observations"] = "Nombre: Ana Ejemplo"
+        self.details[code]["user_data"] = {}
+        state = self.state()
+        state["rol"] = "colega_inmobiliario"
+        reply = await bot.atender_solicitud_captador(state, codigo=code)
+        self.assertIn("No pude confirmar", reply)
+        self.assertNotIn("https://wa.me/", reply)
 
 
 if __name__ == "__main__":

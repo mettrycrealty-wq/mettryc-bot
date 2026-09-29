@@ -190,6 +190,14 @@ class AgenteVirtualEngine:
                 lead_result,
             )
 
+        if legacy.solicita_ayuda_contacto_oficina(text, state):
+            state["ultima_intencion"] = "contacto_oficina"
+            respuesta = await legacy.atender_solicitud_oficina(
+                state, posicion=legacy.detectar_posicion(text),
+                codigo=legacy.extraer_codigo_inmueble(text, permitir_solo_digitos=False),
+            )
+            return await self._finalize(sender, state, text, respuesta)
+
         operational = operational_reply(state, text)
         if operational:
             return await self._finalize(sender, state, text, operational)
