@@ -464,13 +464,64 @@ def extraer_asesor_desde_observaciones(propiedad: dict) -> dict:
 
 
 def obtener_datos_captador(propiedad: dict) -> dict:
+    """Entrega un contacto completo de una sola fuente, sin mezclar personas."""
     principal = extraer_asesor_desde_observaciones(propiedad)
-    nombre_respaldo = str(propiedad.get("captador_wasi") or "").strip()
-    telefono_respaldo = normalizar_telefono(propiedad.get("telefono_captador_wasi")) or ""
-    nombre = principal.get("nombre") or nombre_respaldo or "Captador no identificado"
-    telefono = principal.get("telefono") or telefono_respaldo
-    fuente = "observaciones" if principal.get("nombre") or principal.get("telefono") else ("campos_wasi" if nombre_respaldo or telefono_respaldo else None)
-    return {"nombre":nombre,"telefono":telefono,"fuente":fuente}
+    if principal["nombre"] and principal["telefono"]:
+        return {**principal, "tipo": "asesor"}
+
+    oficina = obtener_contacto_oficina(propiedad)
+    if oficina["nombre"] or oficina["telefono"]:
+        return oficina
+    return {"nombre": "", "telefono": "", "fuente": None, "tipo": None}
+
+
+def obtener_contacto_oficina(propiedad: dict) -> dict:
+    """El usuario de WASI representa a la oficina, no al asesor captador."""
+    raw = propiedad.get("detalle_raw") or {}
+    usuario = raw.get("user_data") if isinstance(raw, dict) else None
+    if not isinstance(usuario, dict):
+        usuario = {}
+    nombre_raw = (f"{usuario.get('first_name') or ''} {usuario.get('last_name') or ''}").strip()
+    nombre = str(nombre_raw or propiedad.get("oficina_wasi") or
+                 propiedad.get("captador_wasi") or "").strip()
+    if nombre == "Asesor Mettryc":
+        nombre = ""
+    telefono = (normalizar_telefono(usuario.get("phone")) or
+                normalizar_telefono(propiedad.get("telefono_oficina_wasi")) or
+                normalizar_telefono(propiedad.get("telefono_captador_wasi")) or "")
+    return {"nombre": nombre, "telefono": telefono,
+            "fuente": "user_data" if nombre or telefono else None, "tipo": "oficina"}
+
+
+def lineas_contacto_colega(contacto: dict) -> List[str]:
+    if contacto.get("tipo") == "asesor":
+        return [f"👤 *Asesor Mettryc:* {contacto['nombre']}",
+                f"📲 *WhatsApp del asesor:* https://wa.me/{contacto['telefono']}"]
+    if contacto.get("tipo") == "oficina":
+        nombre = contacto.get("nombre") or "Nombre no disponible"
+        telefono = contacto.get("telefono")
+        return [f"🏢 *Oficina Mettryc:* {nombre}",
+                (f"📲 *WhatsApp de la oficina:* https://wa.me/{telefono}" if telefono
+                 else "📲 *WhatsApp de la oficina:* No disponible en WASI.")]
+    return ["👤 *Asesor Mettryc:* Contacto no disponible en WASI.",
+            "🏢 *Oficina Mettryc:* Contacto no disponible en WASI."]
+
+
+def respuesta_contacto_colega(contacto: dict, *, oficina_solicitada: bool = False) -> str:
+    if contacto.get("tipo") == "asesor":
+        encabezado = "Claro, colega. Este es el asesor encargado según la observación privada:"
+    elif contacto.get("tipo") == "oficina":
+        encabezado = ("Te comparto el contacto de la oficina registrado en WASI:"
+                      if oficina_solicitada else
+                      "La observación privada no tiene nombre y WhatsApp completos del asesor. "
+                      "Te comparto el contacto de la oficina registrado en WASI:")
+    else:
+        return ("No pude confirmar ni el contacto del asesor ni el de la oficina en WASI. "
+                "Puedo solicitar ayuda al equipo administrativo si lo deseas.")
+    respuesta = encabezado + "\n" + "\n".join(lineas_contacto_colega(contacto))
+    if not contacto.get("telefono"):
+        respuesta += "\nPuedo solicitar ayuda al equipo administrativo si lo deseas."
+    return respuesta
 
 
 def extraer_correo(texto: str) -> Optional[str]:
@@ -605,17 +656,6 @@ def normalizar_tipo_propiedad(valor: Any) -> str:
             return tipo
 
     return texto
-
-
-def tokens_nombre(valor: Any) -> Set[str]:
-    bloqueadas = {
-        "de", "del", "la", "el", "los", "las", "asesor", "asesora",
-    }
-    return {
-        token
-        for token in normalizar_texto(valor).split()
-        if len(token) >= 2 and token not in bloqueadas
-    }
 
 
 def tokens_zona(valor: Any) -> Set[str]:
@@ -1035,6 +1075,27 @@ def solicita_datos_captador(texto: str) -> bool:
     ]
 
     return any(frase in normalizado for frase in frases)
+
+
+def solicita_ayuda_contacto_oficina(texto: str, estado: dict) -> bool:
+    if estado.get("rol") != "colega_inmobiliario":
+        return False
+    normalizado = normalizar_texto(texto)
+    if re.search(r"\b(?:contacto|numero|whatsapp|telefono)\s+(?:de\s+)?(?:la\s+)?oficina\b", normalizado):
+        return True
+    sin_respuesta = re.search(
+        r"\b(?:no\s+(?:me\s+)?(?:responde|contesta)|"
+        r"no\s+(?:logro|puedo|pude|consigo|he\s+podido|he\s+logrado)\s+"
+        r"(?:contactar|comunicarme)|no\s+(?:me\s+)?(?:atiende|respondio))\b",
+        normalizado,
+    )
+    if not sin_respuesta:
+        return False
+    if any(word in normalizado for word in ("asesor", "asesora", "captador", "encargado")):
+        return True
+    ultimo = next((item.get("content", "") for item in reversed(estado.get("historial", []))
+                   if item.get("role") == "assistant"), "")
+    return "whatsapp del asesor" in normalizar_texto(ultimo)
 
 
 def detectar_operacion(texto: str) -> Optional[str]:
@@ -1529,8 +1590,8 @@ def normalizar_propiedad_wasi(valor: Dict[str, Any]) -> dict:
         "caracteristicas_externas": externas,
         "caracteristicas_texto": " ".join(generales + internas + externas),
 
-        "captador_wasi": captador or "Asesor Mettryc",
-        "telefono_captador_wasi": usuario.get("phone") or "",
+        "oficina_wasi": captador,
+        "telefono_oficina_wasi": usuario.get("phone") or "",
 
         "imagenes": valor.get("galleries") or valor.get("images") or [],
         "video": valor.get("video") or valor.get("video_url"),
@@ -2192,53 +2253,6 @@ async def sincronizar_google_sheet(force: bool = False) -> bool:
                 type(exc).__name__, str(exc)[:200],
             )
             return False
-
-
-def cruzar_captador_con_sheet(nombre_wasi: str) -> dict:
-    nombre_normalizado = normalizar_texto(nombre_wasi)
-    captadores = sheets_cache.get("captadores", {})
-
-    for nombre_sheet, telefono in captadores.items():
-        if normalizar_texto(nombre_sheet) == nombre_normalizado:
-            return {
-                "nombre": nombre_sheet,
-                "telefono": telefono,
-                "tipo_coincidencia": "exacta",
-            }
-
-    tokens_wasi = tokens_nombre(nombre_wasi)
-    mejor: Optional[dict] = None
-    mejor_score = 0.0
-
-    for nombre_sheet, telefono in captadores.items():
-        tokens_sheet = tokens_nombre(nombre_sheet)
-
-        if not tokens_wasi or not tokens_sheet:
-            continue
-
-        interseccion = tokens_wasi.intersection(tokens_sheet)
-        union = tokens_wasi.union(tokens_sheet)
-
-        score_jaccard = len(interseccion) / len(union) if union else 0.0
-        cobertura = len(interseccion) / len(tokens_wasi) if tokens_wasi else 0.0
-        score = max(score_jaccard, cobertura)
-
-        if score > mejor_score:
-            mejor_score = score
-            mejor = {
-                "nombre": nombre_sheet,
-                "telefono": telefono,
-                "tipo_coincidencia": "aproximada",
-            }
-
-    if mejor and mejor_score >= 0.65:
-        return mejor
-
-    return {
-        "nombre": nombre_wasi or "Asesor Mettryc",
-        "telefono": None,
-        "tipo_coincidencia": "no_encontrada",
-    }
 
 
 async def asignar_agente_round_robin() -> Optional[dict]:
@@ -3867,6 +3881,7 @@ def mensaje_diagnostico(diagnostico: dict) -> str:
 
 async def formatear_ficha(
     propiedad: dict, es_colega: bool, posicion: Optional[int] = None,
+    contacto_propiedad: Optional[dict] = None,
 ) -> str:
     operacion = propiedad.get("operacion_buscada")
 
@@ -3900,21 +3915,10 @@ async def formatear_ficha(
     if diferencias:
         lineas.append("ℹ️ *Consideraciones:* " + "; ".join(diferencias[:2]))
 
-    # FIX (requisito explícito del usuario): para colegas SIEMPRE se
-    # incluyen los datos del captador en cada ficha.
+    # El contacto del asesor y el de la oficina son personas distintas.
     if es_colega:
-        datos_captador = obtener_datos_captador(propiedad)
-
-        lineas.append(f"👤 *Captador:* {datos_captador['nombre']}")
-
-        if datos_captador["telefono"]:
-            lineas.append(
-                f"📲 *WhatsApp captador:* https://wa.me/{datos_captador['telefono']}"
-            )
-        else:
-            lineas.append(
-                "📲 *WhatsApp captador:* No disponible en la información de la propiedad."
-            )
+        contacto = obtener_datos_captador(contacto_propiedad or propiedad)
+        lineas.extend(lineas_contacto_colega(contacto))
 
     return "\n".join(lineas)
 
@@ -3929,15 +3933,30 @@ async def construir_respuesta_fichas(
     else:
         introduccion = "Encontré estas opciones que pueden encajar con lo que buscas:"
 
+    async def contacto_confirmado(propiedad: dict) -> dict:
+        if propiedad.get("_detalle_completo"):
+            return propiedad
+        asesor = extraer_asesor_desde_observaciones(propiedad)
+        if asesor["nombre"] and asesor["telefono"]:
+            return propiedad
+        try:
+            detalle = await consultar_detalle_propiedad_wasi(str(propiedad.get("id") or ""))
+            return detalle or propiedad
+        except WasiConsultaError:
+            return propiedad
+
+    contactos = (await asyncio.gather(*(contacto_confirmado(p) for p in propiedades))
+                 if es_colega else propiedades)
     fichas = []
-    for indice, propiedad in enumerate(propiedades, start=1):
+    for indice, (propiedad, contacto) in enumerate(zip(propiedades, contactos), start=1):
         fichas.append(
-            await formatear_ficha(propiedad, es_colega, None if especifica else indice)
+            await formatear_ficha(propiedad, es_colega, None if especifica else indice,
+                                 contacto_propiedad=contacto)
         )
 
     if es_colega:
         cierre = (
-            "Puedes contactar al captador indicado en la ficha. "
+            "Puedes usar el contacto indicado en cada ficha. "
             "También puedes pedirme más opciones o preguntarme "
             "algo sobre una propiedad."
         )
@@ -4059,32 +4078,35 @@ async def atender_solicitud_captador(
     estado["propiedad_interes"] = detalle
     estado["propiedad_activa_id"] = property_id
 
-    datos_captador = obtener_datos_captador(detalle or propiedad)
-
-    nombre_captador = datos_captador["nombre"]
-    telefono_captador = datos_captador["telefono"]
+    contacto = obtener_datos_captador(detalle or propiedad)
 
     estado["accion_pendiente_rol"] = None
     estado["pregunta_pendiente"] = None
     estado["estado_conversacion"] = "captador_entregado"
 
-    if telefono_captador:
-        return (
-            "Claro, colega. El captador de esta propiedad es "
-            f"{nombre_captador}.\n📲 WhatsApp: https://wa.me/{telefono_captador}"
-        )
+    return respuesta_contacto_colega(contacto)
 
-    if nombre_captador and nombre_captador != "Captador no identificado":
-        return (
-            f"El captador registrado en Wasi es {nombre_captador}, "
-            "pero no pude localizar su WhatsApp en la información de la "
-            "propiedad. Si quieres, puedo notificar al equipo administrativo."
-        )
 
-    return (
-        "No pude identificar al captador de esta propiedad en la información "
-        "disponible de Wasi. Si quieres, puedo notificar al equipo administrativo."
-    )
+async def atender_solicitud_oficina(
+    estado: dict, posicion: Optional[int] = None, codigo: Optional[str] = None,
+) -> str:
+    """Da la oficina de WASI si el colega no consigue contactar al asesor."""
+    propiedad = resolver_propiedad_contexto(estado, posicion=posicion, codigo=codigo)
+    if not propiedad:
+        return "Indícame el número de la opción o el código del inmueble para ubicar su oficina."
+    property_id = str(propiedad.get("id") or "")
+    try:
+        detalle = await consultar_detalle_propiedad_wasi(property_id)
+    except WasiConsultaError:
+        return "No pude confirmar el contacto de la oficina en WASI ahora. Inténtalo nuevamente más tarde."
+    if not detalle:
+        return "No encontré ese inmueble en WASI para confirmar el contacto de su oficina."
+    estado["propiedad_interes"] = detalle
+    estado["propiedad_activa_id"] = property_id
+    estado["ultima_propiedad_consultada_id"] = property_id
+    estado["estado_conversacion"] = "oficina_entregada"
+    estado["pregunta_pendiente"] = None
+    return respuesta_contacto_colega(obtener_contacto_oficina(detalle), oficina_solicitada=True)
 
 def detalle_propiedad_para_ia(propiedad: dict) -> dict:
     return {
@@ -4985,26 +5007,22 @@ async def iniciar_visita(
         )
 
     if estado.get("rol") == "colega_inmobiliario":
-        await sincronizar_google_sheet()
-        cruce = cruzar_captador_con_sheet(propiedad.get("captador_wasi", ""))
+        try:
+            detalle = await consultar_detalle_propiedad_wasi(property_id)
+        except WasiConsultaError:
+            return "No pude confirmar el contacto del asesor ni el de la oficina en WASI ahora. Inténtalo nuevamente más tarde."
+        if not detalle:
+            return "No encontré ese inmueble en WASI para confirmar un contacto de visita."
+        estado["propiedad_interes"] = detalle
+        contacto = obtener_datos_captador(detalle)
 
         estado["accion_pendiente_rol"] = None
         estado["pregunta_pendiente"] = None
         estado["estado_conversacion"] = "visita_colega"
 
-        if cruce.get("telefono"):
-            return (
-                "Perfecto, colega. El captador de esta propiedad es "
-                f"{cruce.get('nombre')}. Puedes coordinar la visita "
-                "directamente por WhatsApp aquí: "
-                f"https://wa.me/{cruce['telefono']}"
-            )
-
-        return (
-            "Identifiqué la propiedad, pero el teléfono del captador "
-            "no aparece actualmente en el directorio. Si quieres, "
-            "puedo notificar al equipo administrativo para que "
-            "te ayude a coordinar la visita."
+        return respuesta_contacto_colega(contacto) + (
+            "\nPuedes coordinar la visita directamente con ese contacto."
+            if contacto.get("telefono") else ""
         )
 
     estado["accion_pendiente_rol"] = None
@@ -5648,6 +5666,14 @@ async def procesar_mensaje(sender: str, mensaje: str) -> str:
             )
         guardar_sesion(sender, estado)
         return respuesta
+
+    if solicita_ayuda_contacto_oficina(texto, estado):
+        estado["ultima_intencion"] = "contacto_oficina"
+        respuesta = await atender_solicitud_oficina(
+            estado, posicion=detectar_posicion(texto),
+            codigo=extraer_codigo_inmueble(texto, permitir_solo_digitos=False),
+        )
+        return await finalizar(respuesta)
 
     respuesta_operativa = operational_reply(estado, texto)
     if respuesta_operativa:
